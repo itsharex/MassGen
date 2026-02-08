@@ -349,7 +349,22 @@ class Orchestrator(ChatAgent):
             snapshot_path = Path(self._snapshot_storage)
             # Clean existing directory if it exists and has contents
             if snapshot_path.exists() and any(snapshot_path.iterdir()):
-                shutil.rmtree(snapshot_path)
+                def on_rm_error(func, path, exc_info):
+                    # Handle read-only files (common in git repos on Windows)
+                    import stat
+                    try:
+                        # Always try to force writable - os.access can be unreliable on Windows
+                        os.chmod(path, stat.S_IWRITE)
+                        func(path)
+                    except Exception:
+                        # If recovery failed, raise the new exception
+                        raise
+                
+                # Use onexc for Python 3.12+ (which user has), falls back to onerror for older
+                if hasattr(shutil, "rmtree") and "onexc" in shutil.rmtree.__code__.co_varnames:
+                     shutil.rmtree(snapshot_path, onexc=on_rm_error)
+                else:
+                     shutil.rmtree(snapshot_path, onerror=on_rm_error)
             snapshot_path.mkdir(parents=True, exist_ok=True)
 
         # Configure orchestration paths for each agent with filesystem support
