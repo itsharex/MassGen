@@ -1633,6 +1633,11 @@ class WorkspaceStructureSection(SystemPromptSection):
                 content_parts.append(f"Your project code is at `{wt_path}`. **All code changes must be made here.**")
                 content_parts.append(f"Run `cd {wt_path}` before starting any code work.\n")
                 content_parts.append(f"Scratch space: `{wt_path}/.massgen_scratch/` (git-excluded, for experiments)\n")
+                content_parts.append(
+                    f"**Important**: Internal files (`tasks/changedoc.md`, `tasks/evolving_skill/`, "
+                    f"implementation checklists) belong in your main workspace directory, NOT in the "
+                    f"project worktree at `{wt_path}`. Only write actual project deliverables to the worktree.\n",
+                )
 
                 content_parts.append("### Code Branches\n")
                 if self.branch_name:
@@ -2144,7 +2149,9 @@ class FilesystemBestPracticesSection(SystemPromptSection):
             "**Never delete system-managed directories**: `.worktree/`, `.git/`, symlinks to shared "
             "tools, or any directory you did not create.\n"
             "- **Organization**: Keep files logically organized. If you're combining work from "
-            "multiple agents, structure the result clearly.\n",
+            "multiple agents, structure the result clearly.\n"
+            "- **Internal Documents**: Never write internal documents (decision journals, evolving "
+            "skills, checklists) to the project directory. These belong in your main workspace.\n",
         )
 
         # Comparison tools (conditional on mode)
@@ -2866,13 +2873,15 @@ class PlanningModeSection(SystemPromptSection):
 
 _CHANGEDOC_FIRST_ROUND_PROMPT = """## Change Document (Decision Journal)
 
-**Before you start writing your answer**, create `tasks/changedoc.md` in your workspace.
-This is your decision journal — start it first, then update it as you make each significant
-decision while working.
+**Before you start writing your answer**, create `tasks/changedoc.md` in your main agent \
+workspace directory (NOT in the project code directory or worktree). The changedoc is an internal \
+decision journal — it must never be written to the project directory where it could end up in \
+the repository. Start it first, then update it as you make each significant decision while \
+working.
 
 ### Workflow
 
-1. **Create `tasks/changedoc.md` immediately** when you begin working. Write the Summary with your initial approach.
+1. **Create `tasks/changedoc.md` immediately** in your workspace when you begin working. Write the Summary with your initial approach.
 2. **Log each significant decision as you make it.** When you choose an approach, architecture, tool, or trade-off — write a DEC entry in the changedoc before or as you implement it.
 3. **After implementing**, fill in the Implementation field on each decision with the actual files and symbols.
 4. **Submit your answer** via `new_answer` once your work is complete. The changedoc should already be up to date.
@@ -2935,13 +2944,15 @@ Write concisely — explain your thinking to a colleague who will pick up your w
 
 _CHANGEDOC_SUBSEQUENT_ROUND_PROMPT = """## Change Document (Decision Journal)
 
-**Before you start writing your answer**, create `tasks/changedoc.md` in your workspace.
-This is your decision journal — start it first by inheriting from the prior agent's changedoc,
-then update it as you make each decision.
+**Before you start writing your answer**, create `tasks/changedoc.md` in your main agent \
+workspace directory (NOT in the project code directory or worktree). The changedoc is an \
+internal decision journal — it must never be written to the project directory where it could \
+end up in the repository. Start it first by inheriting from the prior agent's changedoc, then \
+update it as you make each decision.
 
 ### Workflow
 
-1. **Create `tasks/changedoc.md` immediately** when you begin working. Copy the prior agent's
+1. **Create `tasks/changedoc.md` immediately** in your workspace when you begin working. Copy the prior agent's
 changedoc as your starting point (their changedoc content is shown in `<changedoc>` tags
 alongside their answer).
 2. **Log each decision as you make it.** When you keep, change, or add a decision — update the changedoc before or as you implement it.
@@ -3026,7 +3037,9 @@ _CHANGEDOC_PRESENTER_INSTRUCTIONS = """
 ### Change Document Consolidation
 
 The agents' answers include changedoc decision journals (shown in `<changedoc>` tags).
-Your final output MUST include a consolidated `tasks/changedoc.md` in your workspace that:
+Your final output MUST include a consolidated `tasks/changedoc.md` in your main agent \
+workspace directory (NOT in the project code directory or worktree — the changedoc is an \
+internal decision journal) that:
 
 1. **Finalizes the Summary** to reflect the final delivered answer.
 2. **Consolidates Decisions** into the definitive list. Remove superseded decisions. Keep the final version of each with full rationale.
@@ -3636,7 +3649,8 @@ After execution, the actual scripts live in `scripts/` and can be reused.
 
 ### Required Steps
 
-1. **BEFORE starting work**: Create `tasks/evolving_skill/SKILL.md` with your workflow plan
+1. **BEFORE starting work**: Create `tasks/evolving_skill/SKILL.md` in your main agent workspace directory \
+(NOT in the project code directory or worktree). Evolving skills are internal artifacts and must not be written to the project repository.
 2. **During execution**: Follow your plan, create scripts as documented
 3. **BEFORE answering**: Verify outputs work (run code, view visuals, check files)
 4. **AFTER completing work**: Update SKILL.md with Learnings section
@@ -3645,7 +3659,8 @@ After execution, the actual scripts live in `scripts/` and can be reused.
 
 1. **Be specific** - Workflow steps should be actionable, not vague
 2. **Document tools upfront** - Plan scripts before writing them
-3. **Test like a user** - Verify artifacts through interaction, not just observation (click buttons, play games, navigate pages, run with edge cases, etc)
+3. **Test like a user** - Verify artifacts through interaction, not just observation \
+(click buttons, play games, navigate pages, run with edge cases, etc)
 4. **Update with learnings** - The skill improves through use
 5. **Keep scripts reusable** - Design tools to work in similar future tasks"""
 

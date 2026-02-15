@@ -324,6 +324,8 @@ class Orchestrator(ChatAgent):
         self._isolation_manager: Optional["IsolationContextManager"] = None
         self._isolation_worktree_paths: Dict[str, str] = {}  # worktree_path -> original_path
         self._isolation_removed_paths: Dict = {}  # original_path -> ManagedPath
+        # Rework signal from review modal (set by _review_isolated_changes, consumed by caller)
+        self._pending_review_rework: Optional[Dict[str, Any]] = None
 
         # Human input hook for injecting user input during execution
         # Shared across all agents (one per orchestration session)
@@ -9205,10 +9207,20 @@ Your answer:"""
                     selected_agent_id=self._selected_agent,
                 ):
                     yield chunk
-            # Clear the references after review
-            self._isolation_manager = None
-            self._isolation_worktree_paths = {}
-            self._isolation_removed_paths = {}
+
+            # Check if rework was requested — if so, keep isolation alive
+            if self._pending_review_rework:
+                # Isolation is preserved; the display layer will handle
+                # re-submission with feedback. Do NOT clear references.
+                logger.info(
+                    "[Orchestrator] Review rework requested: %s",
+                    self._pending_review_rework,
+                )
+            else:
+                # Clear the references after review
+                self._isolation_manager = None
+                self._isolation_worktree_paths = {}
+                self._isolation_removed_paths = {}
 
             # Check if restart was requested
             if self.restart_pending and self.current_attempt < (self.max_attempts - 1):
@@ -10479,9 +10491,43 @@ INSTRUCTIONS FOR NEXT ATTEMPT:
 
         logger.info(f"[Orchestrator] Review phase: display={display}, has_modal={hasattr(display, 'show_change_review_modal') if display else False}")
 
-        if display and hasattr(display, "show_change_review_modal"):
+        if display and hasattr(display, "show_final_answer_modal"):
             try:
-                logger.info("[Orchestrator] Showing review modal...")
+                logger.info("[Orchestrator] Showing final answer modal...")
+                # Build context_paths summary from the changes
+                context_paths_summary: Optional[Dict[str, List[str]]] = None
+                new_files: List[str] = []
+                modified_files: List[str] = []
+                for ctx in all_changes:
+                    for change in ctx.get("changes", []):
+                        path = change.get("path", "")
+                        status = change.get("status", "")
+                        if status == "A":
+                            new_files.append(path)
+                        elif status in ("M", "D", "R"):
+                            modified_files.append(path)
+                if new_files or modified_files:
+                    context_paths_summary = {"new": new_files, "modified": modified_files}
+
+                model_name = ""
+                if agent and hasattr(agent, "backend") and hasattr(agent.backend, "config"):
+                    model_name = agent.backend.config.get("model", "")
+
+                review_result = await display.show_final_answer_modal(
+                    changes=all_changes,
+                    answer_content=self._final_presentation_content or "",
+                    vote_results=self._get_vote_results(),
+                    agent_id=selected_agent_id,
+                    model_name=model_name,
+                    context_paths=context_paths_summary,
+                )
+                logger.info(f"[Orchestrator] Final answer modal returned: approved={review_result.approved}")
+            except Exception as e:
+                logger.warning(f"[Orchestrator] Final answer modal failed: {e}, rejecting for safety")
+                review_result = ReviewResult(approved=False, metadata={"error": str(e)})
+        elif display and hasattr(display, "show_change_review_modal"):
+            try:
+                logger.info("[Orchestrator] Showing review modal (fallback)...")
                 review_result = await display.show_change_review_modal(all_changes)
                 logger.info(f"[Orchestrator] Review modal returned: approved={review_result.approved}")
             except Exception as e:
@@ -10491,7 +10537,21 @@ INSTRUCTIONS FOR NEXT ATTEMPT:
             # Non-TUI mode: auto-approve all changes
             logger.info("[Orchestrator] Non-TUI mode: auto-approving isolated changes")
 
-        # 5. Apply approved changes
+        # 5. Handle rework/quick_fix: keep isolation alive, signal caller
+        if getattr(review_result, "action", None) in ("rework", "quick_fix"):
+            self._pending_review_rework = {
+                "action": review_result.action,
+                "feedback": getattr(review_result, "feedback", None),
+                "agent_id": selected_agent_id,
+            }
+            yield StreamChunk(
+                type="status",
+                content="Rework requested — isolation preserved for re-presentation...",
+                source=selected_agent_id,
+            )
+            return  # Skip cleanup — isolation stays alive for the rework turn
+
+        # 6. Apply approved changes
         if review_result.approved:
             applier = ChangeApplier()
             applied_files: List[str] = []

@@ -2002,6 +2002,170 @@ class TextualTerminalDisplay(TerminalDisplay):
                 pass
             return ReviewResult(approved=False, metadata={"error": "timeout"})
 
+    async def show_final_answer_modal(
+        self,
+        changes: List[Dict[str, Any]],
+        answer_content: str,
+        vote_results: Dict[str, Any],
+        agent_id: str,
+        model_name: str = "",
+        post_eval_content: Optional[str] = None,
+        post_eval_status: str = "none",
+        context_paths: Optional[Dict] = None,
+    ) -> "ReviewResult":
+        """Show the tabbed Final Answer modal with optional Review Changes tab.
+
+        Combines the final answer presentation with diff review into a single
+        modal. The Answer tab shows vote info and the winning answer. The
+        Review Changes tab (shown only when changes exist) provides the full
+        diff review UI.
+
+        Args:
+            changes: List of context change dicts (same format as show_change_review_modal)
+            answer_content: The final answer markdown text
+            vote_results: Vote results dict with winner, vote_counts, is_tie
+            agent_id: ID of the winning agent
+            model_name: Model name used by the agent
+            post_eval_content: Optional post-evaluation text
+            post_eval_status: "none" or "verified"
+            context_paths: Optional dict with "new" and "modified" path lists
+
+        Returns:
+            ReviewResult with approval status and selected files
+        """
+        import asyncio
+
+        from massgen.filesystem_manager import ReviewResult
+
+        if not self._app:
+            logger.warning("[FinalAnswer] Cannot show modal - no app instance")
+            return ReviewResult(approved=False, metadata={"error": "no_app"})
+
+        from .textual.widgets.modals.final_answer_modal import (
+            FinalAnswerModal,
+            FinalAnswerModalData,
+        )
+
+        data = FinalAnswerModalData(
+            answer_content=answer_content,
+            vote_results=vote_results,
+            agent_id=agent_id,
+            model_name=model_name,
+            post_eval_content=post_eval_content,
+            post_eval_status=post_eval_status,
+            changes=changes,
+            context_paths=context_paths,
+        )
+        # Store for re-opening from the card's "View Full Answer" button
+        self._last_final_answer_modal_data = data
+
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[ReviewResult] = loop.create_future()
+
+        def show_modal():
+            try:
+                modal = FinalAnswerModal(data=data)
+
+                def handle_result(result: ReviewResult) -> None:
+                    if not result_future.done():
+                        loop.call_soon_threadsafe(result_future.set_result, result)
+
+                self._app.push_screen(modal, handle_result)
+            except Exception as e:
+                logger.exception(f"[FinalAnswer] Error showing modal: {e}")
+                if not result_future.done():
+                    loop.call_soon_threadsafe(
+                        result_future.set_result,
+                        ReviewResult(approved=False, metadata={"error": str(e)}),
+                    )
+
+        try:
+            self._app.call_from_thread(show_modal)
+        except Exception as e:
+            logger.exception(f"[FinalAnswer] call_from_thread failed: {e}")
+            return ReviewResult(approved=False, metadata={"error": str(e)})
+
+        try:
+            result = await asyncio.wait_for(result_future, timeout=300)
+            # Store the result so re-opening from "View Full Answer" knows the action taken
+            self._last_final_answer_result = result
+            return result
+        except asyncio.TimeoutError:
+            logger.warning("[FinalAnswer] Modal timed out after 5 minutes")
+            try:
+                self._app.call_from_thread(self._app.pop_screen)
+            except Exception:
+                pass
+            return ReviewResult(approved=False, metadata={"error": "timeout"})
+
+    def _dispatch_review_rework(self, rework_info: Dict[str, Any]) -> None:
+        """Dispatch a review rework by submitting feedback as a new question.
+
+        Called after the orchestrator signals that the user wants to rework
+        changes from the review modal instead of applying or rejecting them.
+        Mirrors the _continue_planning_refinement pattern.
+
+        Args:
+            rework_info: Dict with keys: action, feedback, agent_id
+        """
+        if not self._app:
+            return
+
+        action = rework_info.get("action", "rework")
+        feedback = (rework_info.get("feedback") or "").strip()
+        rework_info.get("agent_id", "")
+
+        if not feedback:
+            try:
+                self._app.call_from_thread(
+                    lambda: self._app.notify(
+                        "Cannot rework without feedback.",
+                        severity="warning",
+                        timeout=4,
+                    ),
+                )
+            except Exception:
+                pass
+            return
+
+        # Build rework prompt
+        if action == "quick_fix":
+            rework_prompt = f"Quick fix requested for the presented changes. " f"Apply the following feedback and re-present:\n\n{feedback}"
+        else:
+            rework_prompt = f"Rework requested for the presented changes. " f"Apply the following feedback and re-present:\n\n{feedback}"
+
+        def submit_rework():
+            try:
+                mode_label = "Quick Fix" if action == "quick_fix" else "Rework"
+                self._app.notify(
+                    f"{mode_label}: re-running with feedback...",
+                    severity="information",
+                    timeout=3,
+                )
+
+                question_input = getattr(self._app, "question_input", None)
+                if question_input:
+                    question_input.disabled = True
+                    question_input.value = rework_prompt
+
+                    def do_submit():
+                        try:
+                            self._app._submit_question(rework_prompt)
+                        finally:
+                            if question_input:
+                                question_input.disabled = False
+
+                    self._app.call_later(do_submit)
+                else:
+                    self._app.call_later(lambda: self._app._submit_question(rework_prompt))
+            except Exception as e:
+                logger.exception(f"[ReviewRework] Error dispatching rework: {e}")
+
+        try:
+            self._app.call_from_thread(submit_rework)
+        except Exception as e:
+            logger.exception(f"[ReviewRework] call_from_thread failed: {e}")
+
     def _execute_approved_plan(
         self,
         approval: "PlanApprovalResult",
@@ -6035,11 +6199,8 @@ Type your question and press Enter to ask the agents.
                     tui_log("[TextualDisplay] Final card already exists, reusing it")
                     card = existing_cards[0]
                     self._final_presentation_card = card
-                    # Still need to do the lock and complete
                     if answer and not getattr(card, "_final_content", []):
                         card.append_chunk(answer)
-                    timeline.lock_to_final_answer("final_presentation_card")
-                    card.set_locked_mode(True)
                     card.complete()
                     return
 
@@ -6077,13 +6238,10 @@ Type your question and press Enter to ask the agents.
                     # Only add content if card is empty (streaming may have already populated it)
                     if answer and not getattr(card, "_final_content", []):
                         card.append_chunk(answer)
-                    # Auto-lock timeline to show only final answer
-                    timeline.lock_to_final_answer("final_presentation_card")
-                    card.set_locked_mode(True)
                     card.complete()
                     try:
                         logger.info(
-                            "[FinalAnswer] Card completed and locked to timeline",
+                            "[FinalAnswer] Card completed in timeline",
                         )
                     except Exception as e:
                         tui_log(f"[TextualDisplay] {e}")
@@ -6192,17 +6350,12 @@ Type your question and press Enter to ask the agents.
                 if self._final_presentation_card._post_eval_status in ("none", "evaluating"):
                     self._final_presentation_card.set_post_eval_status("verified")
 
-                # Auto-lock timeline to show only final answer
+                # Auto-collapse task plan and update input when final answer shows
                 if agent_id in self.agent_widgets:
                     panel = self.agent_widgets[agent_id]
                     try:
-                        timeline = panel.query_one(f"#{panel._timeline_section_id}", TimelineSection)
-                        timeline.lock_to_final_answer("final_presentation_card")
-                        self._final_presentation_card.set_locked_mode(True)
-                        # Auto-collapse task plan when final answer shows
                         if hasattr(panel, "_task_plan_host"):
                             panel._task_plan_host.collapse()
-                        # Update input placeholder to encourage follow-up
                         if hasattr(self, "question_input"):
                             self.question_input.placeholder = "Type your follow-up question..."
                     except Exception as e:
@@ -6499,21 +6652,17 @@ Type your question and press Enter to ask the agents.
                     timeline.mount(card)
                     self._final_presentation_card = card
 
-                    # Auto-lock timeline to show only final answer
-                    def auto_lock_after_add():
+                    # Auto-collapse task plan and update input after card is added
+                    def after_card_add():
                         try:
-                            timeline.lock_to_final_answer("winner_selected_card")
-                            card.set_locked_mode(True)
-                            # Auto-collapse task plan when final answer shows
                             if hasattr(panel, "_task_plan_host"):
                                 panel._task_plan_host.collapse()
-                            # Update input placeholder to encourage follow-up
                             if hasattr(self, "question_input"):
                                 self.question_input.placeholder = "Type your follow-up question..."
                         except Exception as e:
                             tui_log(f"[TextualDisplay] {e}")
 
-                    self.set_timer(0.1, auto_lock_after_add)
+                    self.set_timer(0.1, after_card_add)
 
                     # Scroll to show the card
                     timeline.scroll_to_widget("winner_selected_card")
@@ -8715,6 +8864,64 @@ Type your question and press Enter to ask the agents.
             self._show_context_modal()
             event.stop()
 
+        def on_final_presentation_card_view_final_answer(
+            self,
+            event: FinalPresentationCard.ViewFinalAnswer,
+        ) -> None:
+            """Re-open FinalAnswerModal from the card's View button.
+
+            Reuses the stored modal data (with changes) so the Review
+            Changes tab is still available, but marked as already approved.
+            """
+            from .textual.widgets.modals.final_answer_modal import (
+                FinalAnswerModal,
+                FinalAnswerModalData,
+            )
+
+            card = event.card
+            display = self.coordination_display
+
+            # Reuse stored data if available (includes changes for review tab)
+            stored = getattr(display, "_last_final_answer_modal_data", None)
+            # Determine prior action from stored result
+            stored_result = getattr(display, "_last_final_answer_result", None)
+            if stored_result is not None:
+                prior_action = "approved" if stored_result.approved else "rejected"
+            else:
+                prior_action = "approved"  # Default if no result stored yet
+
+            if stored is not None:
+                data = FinalAnswerModalData(
+                    answer_content=stored.answer_content,
+                    vote_results=stored.vote_results,
+                    agent_id=stored.agent_id,
+                    model_name=stored.model_name,
+                    post_eval_content=stored.post_eval_content,
+                    post_eval_status=stored.post_eval_status,
+                    changes=stored.changes,
+                    context_paths=stored.context_paths,
+                    prior_action=prior_action,
+                )
+            else:
+                data = FinalAnswerModalData(
+                    answer_content=card.get_content(),
+                    vote_results=card.vote_results,
+                    agent_id=card.agent_id,
+                    model_name=card.model_name,
+                    context_paths=card.context_paths,
+                    prior_action=prior_action,
+                )
+            modal = FinalAnswerModal(data=data)
+
+            def _on_modal_dismissed(_result=None):
+                # Scroll the final card into view after modal closes
+                try:
+                    card.scroll_visible(animate=True, top=False)
+                except Exception:
+                    pass
+
+            self.push_screen(modal, _on_modal_dismissed)
+
         def on_button_pressed(self, event: Button.Pressed) -> None:
             """Handle button clicks in main app."""
             if event.button.id == "turn_cancel_button":
@@ -9688,7 +9895,7 @@ Type your question and press Enter to ask the agents.
                 answer_preview: Preview of the winning answer
             """
             # Get model name for richer display
-            model_name = self.coordination_display.agent_models.get(winner_id, "")
+            self.coordination_display.agent_models.get(winner_id, "")
 
             # 1. Update StatusBar with winner announcement
             if self._status_bar:
@@ -9714,21 +9921,7 @@ Type your question and press Enter to ask the agents.
             except Exception as e:
                 tui_log(f"[TextualDisplay] {e}")  # Tab bar might not be available
 
-            # 3. Enhanced toast notification for winner
-            winner_display = f"{winner_id}" + (f" ({model_name})" if model_name else "")
-
-            # Truncate answer preview
-            preview = answer_preview[:80].replace("\n", " ") if answer_preview else ""
-            if len(answer_preview or "") > 80:
-                preview += "..."
-
-            self.notify(
-                f"🏆 [bold yellow]Consensus Reached![/]\n" f"Winner: [bold]{winner_display}[/]\n" f"Preview: {preview}",
-                severity="information",
-                timeout=10,
-            )
-
-            # 4. Add orchestrator event
+            # 3. Add orchestrator event
             self.add_orchestrator_event(f"🏆 Winner: {winner_id} selected by consensus")
 
         def notify_phase(self, phase: str) -> None:
