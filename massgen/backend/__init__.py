@@ -26,6 +26,7 @@ from .claude import ClaudeBackend
 from .claude_code import ClaudeCodeBackend
 from .cli_base import CLIBackend
 from .codex import CodexBackend
+from .copilot import CopilotBackend
 from .gemini import GeminiBackend
 from .grok import GrokBackend
 from .lmstudio import LMStudioBackend
@@ -55,6 +56,7 @@ __all__ = [
     "CLIBackend",
     "ClaudeCodeBackend",
     "CodexBackend",
+    "CopilotBackend",
     # "GeminiCLIBackend",
 ]
 

@@ -1033,6 +1033,9 @@ def create_app(
                 # Claude Code always shows - works with CLI login, CLAUDE_CODE_API_KEY, or ANTHROPIC_API_KEY
                 # Mark as available but the notes will explain auth requirements
                 has_api_key = True
+            elif backend_type == "copilot":
+                # Copilot always shows - works with gh CLI login, no API key needed
+                has_api_key = True
             elif caps.env_var:
                 api_key = os.getenv(caps.env_var, "")
                 # Check it's not empty and not a placeholder from .env.example

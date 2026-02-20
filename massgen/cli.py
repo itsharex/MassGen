@@ -66,6 +66,7 @@ from .backend.chat_completions import ChatCompletionsBackend
 from .backend.claude import ClaudeBackend
 from .backend.claude_code import ClaudeCodeBackend
 from .backend.codex import CodexBackend
+from .backend.copilot import CopilotBackend
 from .backend.gemini import GeminiBackend
 from .backend.grok import GrokBackend
 from .backend.inference import InferenceBackend
@@ -1485,6 +1486,10 @@ def create_backend(backend_type: str, **kwargs) -> Any:
             )
         return GeminiBackend(api_key=api_key, **kwargs)
 
+    elif backend_type == "copilot":
+        # Copilot uses local auth via SDK, no API key required here
+        return CopilotBackend(api_key="copilot-local", **kwargs)
+
     elif backend_type == "chatcompletion":
         api_key = kwargs.get("api_key")
         base_url = kwargs.get("base_url")
@@ -1982,6 +1987,10 @@ def create_agents_from_config(
             agent_config = AgentConfig.create_sglang_config(**backend_params)
         elif backend_type_lower == "claude_code":
             agent_config = AgentConfig.create_claude_code_config(**backend_params)
+        elif backend_type_lower == "copilot":
+            # Copilot maps to standard Config with minimal params?
+            # Or dedicated config if needed. For now standard.
+            agent_config = AgentConfig(backend_params=backend_params)
         elif backend_type_lower == "azure_openai":
             agent_config = AgentConfig.create_azure_openai_config(**backend_params)
         else:
@@ -9538,6 +9547,7 @@ Environment Variables:
             "grok",
             "openai",
             "azure_openai",
+            "copilot",
             "claude_code",
             "zai",
             "lmstudio",

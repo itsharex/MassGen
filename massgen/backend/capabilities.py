@@ -625,6 +625,25 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         env_var="UI_TARS_API_KEY",
         notes="OpenAI-compatible API via HuggingFace Inference Endpoints. UI-TARS-1.5-7B model for GUI automation with vision and reasoning. Requires UI_TARS_ENDPOINT environment variable.",
     ),
+    "copilot": BackendCapabilities(
+        backend_type="copilot",
+        provider_name="GitHub Copilot",
+        supported_capabilities={
+            "mcp",
+            "web_search",
+        },
+        builtin_tools=[],
+        filesystem_support="mcp",
+        models=[
+            "gpt-4.1",
+            "gpt-5-mini",
+            "claude-sonnet-4",
+            "gemini-2.5-pro",
+        ],
+        default_model="gpt-5-mini",
+        env_var=None,
+        notes="GitHub Copilot SDK integration. Requires 'copilot' package installed. Auth via GitHub subscription.",
+    ),
 }
 
 
