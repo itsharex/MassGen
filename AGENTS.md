@@ -295,6 +295,7 @@ Detailed documentation for specific modules lives in `docs/modules/`. **Always c
 - `docs/modules/subagents.md` - Subagent spawning, logging architecture, TUI integration
 - `docs/modules/interactive_mode.md` - Interactive mode architecture, launch_run MCP, system prompts, project workspace
 - `docs/modules/worktrees.md` - Worktree lifecycle, branch naming, scratch archives, system prompt integration
+- `docs/modules/composition.md` - **Composable primitives, phase architecture, domain-specific checklist gates** — how personas, eval criteria, decomposition, and planning compose for maximum quality
 
 ## MassGen Skills
 

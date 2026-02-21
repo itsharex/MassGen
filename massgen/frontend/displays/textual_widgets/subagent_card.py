@@ -332,18 +332,22 @@ class SubagentCard(Vertical, can_focus=True):
         yield Static(self._build_card_header(), id="subagent-card-title")
         with ScrollableContainer(id="subagent-scroll"):
             with Horizontal(id="subagent-columns"):
-                for sa in self._subagents:
+                # Use index suffix to avoid duplicate widget IDs when multiple
+                # subagents share the same sa.id (e.g., different parent agents
+                # each spawning a "bio_research" subagent).
+                for idx, sa in enumerate(self._subagents):
                     summary = self._get_summary_line(sa)
                     tools = self._get_tool_lines(sa)
+                    col_key = f"{sa.id}_{idx}"
                     column = SubagentColumn(
                         subagent=sa,
                         all_subagents=self._subagents,
                         summary=summary,
                         tools=tools,
                         open_callback=self._request_open,
-                        id=f"subagent_col_{sa.id}",
+                        id=f"subagent_col_{col_key}",
                     )
-                    self._columns[sa.id] = column
+                    self._columns[col_key] = column
                     yield column
 
     def on_mount(self) -> None:
@@ -421,8 +425,8 @@ class SubagentCard(Vertical, can_focus=True):
                 sa.elapsed_seconds = now - self._start_times[sa.id]
 
         # Advance pulse frames for running columns
-        for sa in self._subagents:
-            col = self._columns.get(sa.id)
+        for idx, sa in enumerate(self._subagents):
+            col = self._columns.get(f"{sa.id}_{idx}")
             if col:
                 col.advance_pulse()
 
@@ -449,26 +453,27 @@ class SubagentCard(Vertical, can_focus=True):
         except Exception:
             return
 
-        if len(self._columns) != len(self._subagents) or any(sa.id not in self._columns for sa in self._subagents):
+        if len(self._columns) != len(self._subagents) or any(f"{sa.id}_{idx}" not in self._columns for idx, sa in enumerate(self._subagents)):
             columns_container.remove_children()
             self._columns = {}
-            for sa in self._subagents:
+            for idx, sa in enumerate(self._subagents):
                 summary = self._get_summary_line(sa)
                 tools = self._get_tool_lines(sa)
+                col_key = f"{sa.id}_{idx}"
                 column = SubagentColumn(
                     subagent=sa,
                     all_subagents=self._subagents,
                     summary=summary,
                     tools=tools,
                     open_callback=self._request_open,
-                    id=f"subagent_col_{sa.id}",
+                    id=f"subagent_col_{col_key}",
                 )
-                self._columns[sa.id] = column
+                self._columns[col_key] = column
                 columns_container.mount(column)
             return
 
-        for sa in self._subagents:
-            column = self._columns.get(sa.id)
+        for idx, sa in enumerate(self._subagents):
+            column = self._columns.get(f"{sa.id}_{idx}")
             if column:
                 summary = self._get_summary_line(sa)
                 tools = self._get_tool_lines(sa)
@@ -647,7 +652,7 @@ class SubagentCard(Vertical, can_focus=True):
     def _focus_column(self, index: int) -> None:
         try:
             sa = self._subagents[index]
-            column = self._columns.get(sa.id)
+            column = self._columns.get(f"{sa.id}_{index}")
             if column:
                 column.focus()
         except (IndexError, KeyError):

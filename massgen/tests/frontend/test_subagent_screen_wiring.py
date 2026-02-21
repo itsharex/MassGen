@@ -114,8 +114,8 @@ def test_action_show_subagents_passes_status_callback(monkeypatch):
             return [card]
 
     app.agent_widgets = {"agent_a": _FakePanel()}
-    app._open_decomposition_runtime_subagent_screen = lambda: False
-    app._open_persona_runtime_subagent_screen = lambda: False
+    app._precollab_subagents = {}
+    app._open_precollab_screen = lambda sid: False
     app.notify = lambda *args, **kwargs: None
 
     captured: dict = {}

@@ -1049,6 +1049,21 @@ class ConfigValidator:
                             f"Use one of: {valid_values}",
                         )
 
+                if "checklist_criteria_preset" in coordination:
+                    preset = coordination["checklist_criteria_preset"]
+                    if preset is not None:
+                        from .evaluation_criteria_generator import (
+                            VALID_CRITERIA_PRESETS,
+                        )
+
+                        if preset not in VALID_CRITERIA_PRESETS:
+                            valid_values = ", ".join(sorted(VALID_CRITERIA_PRESETS))
+                            result.add_error(
+                                f"Invalid checklist_criteria_preset: '{preset}'",
+                                f"{location}.coordination.checklist_criteria_preset",
+                                f"Use one of: {valid_values}",
+                            )
+
         # Validate voting_sensitivity if present
         if "voting_sensitivity" in orchestrator_config:
             voting_sensitivity = orchestrator_config["voting_sensitivity"]

@@ -158,6 +158,8 @@ class SystemMessageBuilder:
         other_branches: dict[str, str] | None = None,
         branch_diff_summaries: dict[str, str] | None = None,
         novelty_pressure_data: dict[str, Any] | None = None,
+        custom_checklist_items: list[str] | None = None,
+        item_categories: dict[str, str] | None = None,
     ) -> str:
         """Build system message for coordination phase.
 
@@ -234,6 +236,8 @@ class SystemMessageBuilder:
                     checklist_require_gap_report=checklist_require_gap_report,
                     gap_report_mode=gap_report_mode,
                     has_changedoc=changedoc_enabled,
+                    custom_checklist_items=custom_checklist_items,
+                    item_categories=item_categories,
                 ),
             )
         else:
@@ -254,6 +258,8 @@ class SystemMessageBuilder:
                     answers_used=answers_used,
                     answer_cap=answer_cap,
                     has_changedoc=changedoc_enabled,
+                    custom_checklist_items=custom_checklist_items,
+                    item_categories=item_categories,
                 ),
             )
 

@@ -9,6 +9,7 @@ Tests cover:
 """
 
 from massgen.system_prompt_sections import (
+    _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC,
     _CHECKLIST_ITEMS_CHANGEDOC,
     ChangedocSection,
     EvaluationSection,
@@ -65,27 +66,26 @@ class TestRationalePreservation:
 # ---------------------------------------------------------------------------
 
 
-class TestT4AmbitionDefinition:
-    """Tests for T4 checklist item covering ambition/craft (replaces old T5 novelty)."""
+class TestE4StretchDefinition:
+    """Tests for E4 stretch checklist item covering polish/craft."""
 
-    def test_t4_mentions_synthesis_with_improvement(self):
-        """T4 item must clarify that synthesis with improvement counts."""
-        t4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
-        assert "synthesis" in t4_item.lower()
+    def test_e4_covers_care_beyond_correctness(self):
+        """E4 item must address quality beyond mere correctness."""
+        e4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
+        assert "beyond correctness" in e4_item.lower() or "care" in e4_item.lower()
 
-    def test_t4_covers_ambition_or_craft(self):
-        """T4 item must address creative ambition or meaningful craft."""
-        t4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
-        assert "ambition" in t4_item.lower() or "craft" in t4_item.lower()
+    def test_e4_mentions_creative_elements(self):
+        """E4 item must mention creative or distinguishing elements."""
+        e4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
+        assert "creative" in e4_item.lower() or "distinguish" in e4_item.lower()
 
     def test_changedoc_checklist_has_4_items(self):
         """Changedoc checklist must have exactly 4 items."""
         assert len(_CHECKLIST_ITEMS_CHANGEDOC) == 4
 
-    def test_t4_values_depth_not_just_novelty(self):
-        """T4 rewards depth (richer existing elements) not just novel additions."""
-        t4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
-        assert "richer" in t4_item.lower() or "elegant" in t4_item.lower()
+    def test_e4_is_stretch_category(self):
+        """E4 must be tagged as stretch (aspirational), not core."""
+        assert _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC["E4"] == "stretch"
 
 
 # ---------------------------------------------------------------------------
@@ -218,33 +218,37 @@ class TestFreshApproach:
 # ---------------------------------------------------------------------------
 
 
-class TestAdversarialCritique:
-    """Tests for reframing Per-Answer Assessment as adversarial critique."""
+class TestDiagnosticAnalysis:
+    """Tests for GEPA-style diagnostic analysis framework."""
 
-    def test_generic_analysis_has_adversarial_reviewer(self):
-        """Generic checklist analysis must frame the role as adversarial reviewer."""
+    def test_generic_analysis_has_failure_patterns(self):
+        """Generic checklist analysis must have Failure Patterns section."""
         analysis = _build_checklist_analysis()
-        assert "adversarial reviewer" in analysis
+        assert "Failure Patterns" in analysis
 
-    def test_generic_analysis_has_find_every_flaw(self):
-        """Generic checklist analysis must instruct to find every flaw."""
+    def test_generic_analysis_has_success_patterns(self):
+        """Generic checklist analysis must have Success Patterns section."""
         analysis = _build_checklist_analysis()
-        assert "find every flaw" in analysis
+        assert "Success Patterns" in analysis
 
-    def test_changedoc_analysis_has_adversarial_reviewer(self):
-        """Changedoc analysis must frame the role as adversarial reviewer."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "adversarial reviewer" in analysis
+    def test_generic_analysis_has_root_causes(self):
+        """Generic checklist analysis must have Root Causes section."""
+        analysis = _build_checklist_analysis()
+        assert "Root Causes" in analysis
 
-    def test_changedoc_analysis_has_find_every_flaw(self):
-        """Changedoc analysis must instruct to find every flaw."""
+    def test_changedoc_analysis_has_failure_patterns(self):
+        """Changedoc analysis must have Failure Patterns section."""
         analysis = _build_changedoc_checklist_analysis()
-        assert "find every flaw" in analysis
+        assert "Failure Patterns" in analysis
+
+    def test_changedoc_analysis_has_decision_audit(self):
+        """Changedoc analysis must still include Decision Audit."""
+        analysis = _build_changedoc_checklist_analysis()
+        assert "Decision Audit" in analysis
 
     def test_generic_analysis_no_assess_quality(self):
         """Generic analysis must not use the old 'assess quality' framing."""
         analysis = _build_checklist_analysis()
-        # The old "For each answer, assess:" phrasing should be replaced
         assert "Is it something you would be proud to deliver" not in analysis
 
     def test_changedoc_analysis_no_assess_quality(self):
@@ -264,16 +268,16 @@ class TestScoreCalibration:
     def test_gated_decision_has_calibration_anchors(self):
         """Gated decision must include score calibration anchor ranges."""
         decision = _build_checklist_gated_decision(_CHECKLIST_ITEMS_CHANGEDOC)
-        assert "90-100%" in decision
-        assert "70-89%" in decision
-        assert "50-69%" in decision
-        assert "30-49%" in decision
-        assert "Below 30%" in decision
+        assert "9-10" in decision
+        assert "7-8" in decision
+        assert "5-6" in decision
+        assert "3-4" in decision
+        assert "1-2" in decision
 
     def test_gated_decision_has_first_attempts_rarely(self):
         """Gated decision must warn that first attempts rarely score above 70%."""
         decision = _build_checklist_gated_decision(_CHECKLIST_ITEMS_CHANGEDOC)
-        assert "First attempts rarely score above 70%" in decision
+        assert "First attempts rarely score above 7" in decision
 
     def test_gated_decision_has_critique_score_consistency(self):
         """Gated decision must include critique-vs-score consistency check."""
@@ -290,8 +294,8 @@ class TestScoreCalibration:
             total=5,
             checklist_items=_CHECKLIST_ITEMS_CHANGEDOC,
         )
-        assert "90-100%" in decision
-        assert "70-89%" in decision
+        assert "9-10" in decision
+        assert "7-8" in decision
 
 
 # ---------------------------------------------------------------------------
@@ -299,31 +303,28 @@ class TestScoreCalibration:
 # ---------------------------------------------------------------------------
 
 
-class TestHardenedGapAnalysis:
-    """Tests for problem-focused gap analysis."""
+class TestDiagnosticGoalAlignment:
+    """Tests for GEPA-style goal alignment and cross-answer synthesis."""
 
-    def test_generic_gap_analysis_list_only_problems(self):
-        """Generic gap analysis must say 'List only problems'."""
+    def test_generic_has_goal_alignment(self):
+        """Generic analysis must have Goal Alignment section."""
         analysis = _build_checklist_analysis()
-        assert "List only problems" in analysis
+        assert "Goal Alignment" in analysis
 
-    def test_generic_gap_analysis_no_describe_what_works(self):
-        """Generic gap analysis must say 'do not describe what works'."""
+    def test_generic_goal_alignment_references_original_request(self):
+        """Goal alignment must score against the original request."""
         analysis = _build_checklist_analysis()
-        assert "do not describe what works" in analysis
+        assert "original request" in analysis or "original message" in analysis
 
-    def test_changedoc_gap_analysis_has_cross_check(self):
-        """Changedoc gap analysis must include cross-check instruction."""
+    def test_changedoc_has_goal_alignment(self):
+        """Changedoc analysis must have Goal Alignment section."""
         analysis = _build_changedoc_checklist_analysis()
-        assert "do the flaws from your Per-Answer Critique align" in analysis
+        assert "Goal Alignment" in analysis
 
-    def test_generic_gap_analysis_has_cross_check(self):
-        """Generic gap analysis must include cross-check between critique and gap."""
+    def test_generic_has_cross_answer_synthesis(self):
+        """Generic analysis must have Cross-Answer Synthesis section."""
         analysis = _build_checklist_analysis()
-        lower = analysis.lower()
-        assert "critique" in lower
-        # Check for the cross-check instruction
-        assert "revisit both" in lower
+        assert "Cross-Answer Synthesis" in analysis
 
 
 # ---------------------------------------------------------------------------
@@ -352,30 +353,30 @@ class TestExhaustionCriteria:
 
 
 class TestRecalibration:
-    """Tests for recalibration text between ideal and gap analysis."""
+    """Tests for recalibration text in goal alignment section."""
 
     def test_generic_analysis_has_recalibration(self):
-        """Generic analysis must have recalibration text after ideal section."""
+        """Generic analysis must have recalibration text in goal alignment."""
         analysis = _build_checklist_analysis()
-        assert "Hold this distance in mind when you score" in analysis
+        assert "score for that criterion must be low" in analysis
 
     def test_changedoc_analysis_has_recalibration(self):
-        """Changedoc analysis must have recalibration text after ideal decision set."""
+        """Changedoc analysis must have recalibration text in goal alignment."""
         analysis = _build_changedoc_checklist_analysis()
-        assert "Hold this distance in mind" in analysis
+        assert "distance in mind" in analysis
 
     def test_generic_recalibration_ordering(self):
-        """Recalibration must appear between ideal and gap analysis sections."""
+        """Recalibration must appear in Goal Alignment, before Fresh Approach."""
         analysis = _build_checklist_analysis()
-        ideal_pos = analysis.index("The Ideal Version")
-        recal_pos = analysis.index("Hold this distance in mind when you score")
-        gap_pos = analysis.index("### Gap Analysis")
-        assert ideal_pos < recal_pos < gap_pos
+        goal_pos = analysis.index("Goal Alignment")
+        recal_pos = analysis.index("score for that criterion must be low")
+        fresh_pos = analysis.index("Fresh Approach")
+        assert goal_pos < recal_pos < fresh_pos
 
     def test_changedoc_recalibration_ordering(self):
-        """Changedoc recalibration must appear between ideal decision set and gap analysis."""
+        """Changedoc recalibration must appear in Goal Alignment, before Substantiveness."""
         analysis = _build_changedoc_checklist_analysis()
-        ideal_pos = analysis.index("The Ideal Decision Set")
-        recal_pos = analysis.index("Hold this distance in mind")
-        gap_pos = analysis.index("### Gap Analysis")
-        assert ideal_pos < recal_pos < gap_pos
+        goal_pos = analysis.index("Goal Alignment")
+        recal_pos = analysis.index("distance in mind")
+        subst_pos = analysis.index("Substantiveness")
+        assert goal_pos < recal_pos < subst_pos

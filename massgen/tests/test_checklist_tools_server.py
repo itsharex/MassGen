@@ -125,14 +125,14 @@ class TestSubmitChecklistVerdict:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 2,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
-                scores={"T1": {"score": 80, "reasoning": "good"}, "T2": {"score": 75, "reasoning": "ok"}},
+                scores={"E1": {"score": 8, "reasoning": "good"}, "E2": {"score": 7, "reasoning": "ok"}},
                 improvements="",
             ),
         )
@@ -148,19 +148,19 @@ class TestSubmitChecklistVerdict:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 3,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
-                scores={"T1": {"score": 80, "reasoning": "good"}, "T2": {"score": 50, "reasoning": "bad"}, "T3": {"score": 90, "reasoning": "great"}},
+                scores={"E1": {"score": 8, "reasoning": "good"}, "E2": {"score": 5, "reasoning": "bad"}, "E3": {"score": 9, "reasoning": "great"}},
                 improvements="",
             ),
         )
         assert result["verdict"] == "new_answer"
         assert result["true_count"] == 2
-        assert "T2" in result["explanation"]
+        assert "E2" in result["explanation"]
 
     @pytest.mark.asyncio
     async def test_first_answer_forces_iterate(self, tmp_path):
@@ -171,13 +171,13 @@ class TestSubmitChecklistVerdict:
             "iterate_action": "new_answer",
             "has_existing_answers": False,
             "required": 1,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
-                scores={"T1": {"score": 100, "reasoning": "perfect"}},
+                scores={"E1": {"score": 10, "reasoning": "perfect"}},
                 improvements="",
             ),
         )
@@ -194,7 +194,7 @@ class TestSubmitChecklistVerdict:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 1,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
@@ -202,7 +202,7 @@ class TestSubmitChecklistVerdict:
         # Send scores as a JSON string (Codex behavior)
         result = json.loads(
             await handler(
-                scores='{"T1": {"score": 85, "reasoning": "good"}}',
+                scores='{"E1": {"score": 8, "reasoning": "good"}}',
                 improvements="",
             ),
         )
@@ -213,7 +213,7 @@ class TestSubmitChecklistVerdict:
     async def test_invalid_json_string_returns_error(self, tmp_path):
         """Invalid JSON string for scores should return an error."""
         items = ["Check 1"]
-        state = {"has_existing_answers": True, "required": 1, "cutoff": 70}
+        state = {"has_existing_answers": True, "required": 1, "cutoff": 7}
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(await handler(scores="not valid json", improvements=""))
@@ -228,13 +228,13 @@ class TestSubmitChecklistVerdict:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 1,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
-                scores={"T1": {"score": 30, "reasoning": "bad"}},
+                scores={"E1": {"score": 3, "reasoning": "bad"}},
                 improvements="Add error handling and validation",
             ),
         )
@@ -242,27 +242,51 @@ class TestSubmitChecklistVerdict:
         assert "Add error handling and validation" in result["explanation"]
 
     @pytest.mark.asyncio
-    async def test_missing_score_keys_default_to_zero(self, tmp_path):
-        """Missing score entries should default to score 0."""
+    async def test_missing_score_keys_rejected_when_existing_answers(self, tmp_path):
+        """Missing score entries should be rejected with incomplete_scores flag."""
         items = ["Check 1", "Check 2"]
         state = {
             "terminate_action": "vote",
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 2,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
-        # Only provide T1, T2 is missing
+        # Only provide E1, E2 is missing
         result = json.loads(
             await handler(
-                scores={"T1": {"score": 80, "reasoning": "good"}},
+                scores={"E1": {"score": 8, "reasoning": "good"}},
                 improvements="",
             ),
         )
-        assert result["true_count"] == 1
-        assert result["items"][1]["score"] == 0
+        assert result["verdict"] == "new_answer"
+        assert result["incomplete_scores"] is True
+        assert "E2" in result["explanation"]
+
+    @pytest.mark.asyncio
+    async def test_missing_score_keys_default_to_zero_on_first_answer(self, tmp_path):
+        """Missing score entries should default to 0 on first answer (no rejection)."""
+        items = ["Check 1", "Check 2"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": False,
+            "required": 2,
+            "cutoff": 7,
+        }
+        handler = _build_handler(_make_specs_file(tmp_path, items, state))
+
+        # Only provide E1, E2 is missing — first answer, so no rejection
+        result = json.loads(
+            await handler(
+                scores={"E1": {"score": 8, "reasoning": "good"}},
+                improvements="",
+            ),
+        )
+        assert result["verdict"] == "new_answer"
+        assert result.get("incomplete_scores") is not True
 
     @pytest.mark.asyncio
     async def test_custom_terminate_and_iterate_actions(self, tmp_path):
@@ -273,18 +297,162 @@ class TestSubmitChecklistVerdict:
             "iterate_action": "continue",
             "has_existing_answers": True,
             "required": 1,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
-                scores={"T1": {"score": 80, "reasoning": "good"}},
+                scores={"E1": {"score": 8, "reasoning": "good"}},
                 improvements="",
             ),
         )
         assert result["verdict"] == "stop"
+
+
+# ---------------------------------------------------------------------------
+# Incomplete score rejection
+# ---------------------------------------------------------------------------
+
+
+class TestIncompleteScoreRejection:
+    """Tests for incomplete score submission rejection."""
+
+    def test_missing_scores_rejected_with_existing_answers(self):
+        """Incomplete submissions with existing answers should be rejected."""
+        items = ["Check 1", "Check 2", "Check 3"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": True,
+            "required": 3,
+            "cutoff": 7,
+        }
+        result = evaluate_checklist_submission(
+            scores={"E1": {"score": 8, "reasoning": "good"}},
+            improvements="",
+            report_path="",
+            items=items,
+            state=state,
+        )
+        assert result["verdict"] == "new_answer"
+        assert result["incomplete_scores"] is True
+        assert "E2" in result["explanation"]
+        assert "E3" in result["explanation"]
+
+    def test_complete_submission_not_rejected(self):
+        """Complete submissions should proceed normally."""
+        items = ["Check 1", "Check 2"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": True,
+            "required": 2,
+            "cutoff": 7,
+        }
+        result = evaluate_checklist_submission(
+            scores={
+                "E1": {"score": 8, "reasoning": "good"},
+                "E2": {"score": 9, "reasoning": "great"},
+            },
+            improvements="",
+            report_path="",
+            items=items,
+            state=state,
+        )
+        assert result["verdict"] == "vote"
+        assert result.get("incomplete_scores") is not True
+
+    def test_empty_scores_rejected(self):
+        """Empty scores dict should be rejected when existing answers present."""
+        items = ["Check 1", "Check 2"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": True,
+            "required": 2,
+            "cutoff": 7,
+        }
+        result = evaluate_checklist_submission(
+            scores={},
+            improvements="",
+            report_path="",
+            items=items,
+            state=state,
+        )
+        assert result["verdict"] == "new_answer"
+        assert result["incomplete_scores"] is True
+
+    def test_first_answer_not_rejected_for_missing_scores(self):
+        """First answer (no existing answers) should not be rejected for missing scores."""
+        items = ["Check 1", "Check 2", "Check 3"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": False,
+            "required": 3,
+            "cutoff": 7,
+        }
+        result = evaluate_checklist_submission(
+            scores={"E1": {"score": 8, "reasoning": "good"}},
+            improvements="",
+            report_path="",
+            items=items,
+            state=state,
+        )
+        # First answer always iterates, but NOT because of incomplete scores
+        assert result["verdict"] == "new_answer"
+        assert result.get("incomplete_scores") is not True
+
+    def test_t_prefix_accepted_for_backward_compat(self):
+        """T-prefix keys should be accepted as equivalent to E-prefix."""
+        items = ["Check 1", "Check 2"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": True,
+            "required": 2,
+            "cutoff": 7,
+        }
+        result = evaluate_checklist_submission(
+            scores={
+                "T1": {"score": 8, "reasoning": "good"},
+                "T2": {"score": 9, "reasoning": "great"},
+            },
+            improvements="",
+            report_path="",
+            items=items,
+            state=state,
+        )
+        assert result["verdict"] == "vote"
+        assert result.get("incomplete_scores") is not True
+
+    def test_rejection_message_includes_all_missing_keys(self):
+        """Rejection message should list all missing keys."""
+        items = ["A", "B", "C", "D", "E"]
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": True,
+            "required": 5,
+            "cutoff": 7,
+        }
+        # Only E1 and E3 provided, missing E2, E4, E5
+        result = evaluate_checklist_submission(
+            scores={
+                "E1": {"score": 8, "reasoning": "ok"},
+                "E3": {"score": 7, "reasoning": "ok"},
+            },
+            improvements="",
+            report_path="",
+            items=items,
+            state=state,
+        )
+        assert result["incomplete_scores"] is True
+        assert "E2" in result["explanation"]
+        assert "E4" in result["explanation"]
+        assert "E5" in result["explanation"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,11 +489,11 @@ class TestGapReportGateRemoval:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 2,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         # All scores pass, no report path — verdict should be "vote"
         result = evaluate_checklist_submission(
-            scores={"T1": 80, "T2": 85},
+            scores={"E1": 8, "E2": 9},
             improvements="",
             report_path="",
             items=items,
@@ -344,10 +512,10 @@ class TestGapReportGateRemoval:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 1,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         result = evaluate_checklist_submission(
-            scores={"T1": 80},
+            scores={"E1": 8},
             improvements="",
             report_path="",
             items=items,
@@ -366,11 +534,11 @@ class TestGapReportGateRemoval:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 1,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         # Empty report path
         result = evaluate_checklist_submission(
-            scores={"T1": 90},
+            scores={"E1": 9},
             improvements="",
             report_path="",
             items=items,
@@ -381,7 +549,7 @@ class TestGapReportGateRemoval:
 
         # None-ish report path
         result2 = evaluate_checklist_submission(
-            scores={"T1": 90},
+            scores={"E1": 9},
             improvements="",
             report_path="nonexistent/path.md",
             items=items,
@@ -408,7 +576,7 @@ class TestSubstantivenessGating:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
             "require_substantiveness": True,
         }
@@ -417,10 +585,10 @@ class TestSubstantivenessGating:
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 95, "reasoning": "strong"},
-                    "T2": {"score": 95, "reasoning": "strong"},
-                    "T3": {"score": 95, "reasoning": "strong"},
-                    "T4": {"score": 95, "reasoning": "strong"},
+                    "E1": {"score": 10, "reasoning": "strong"},
+                    "E2": {"score": 10, "reasoning": "strong"},
+                    "E3": {"score": 10, "reasoning": "strong"},
+                    "E4": {"score": 10, "reasoning": "strong"},
                 },
                 improvements="No critical gaps",
             ),
@@ -438,7 +606,7 @@ class TestSubstantivenessGating:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
             "require_substantiveness": True,
         }
@@ -447,10 +615,10 @@ class TestSubstantivenessGating:
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 90, "reasoning": "core quality strong"},
-                    "T2": {"score": 88, "reasoning": "core quality strong"},
-                    "T3": {"score": 85, "reasoning": "core quality strong"},
-                    "T4": {"score": 58, "reasoning": "ambition limited"},
+                    "E1": {"score": 9, "reasoning": "core quality strong"},
+                    "E2": {"score": 9, "reasoning": "core quality strong"},
+                    "E3": {"score": 9, "reasoning": "core quality strong"},
+                    "E4": {"score": 6, "reasoning": "ambition limited"},
                 },
                 improvements="Only polish-level tweaks remain",
                 substantiveness={
@@ -475,7 +643,7 @@ class TestSubstantivenessGating:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
             "require_substantiveness": True,
         }
@@ -484,10 +652,10 @@ class TestSubstantivenessGating:
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 90, "reasoning": "core quality strong"},
-                    "T2": {"score": 88, "reasoning": "core quality strong"},
-                    "T3": {"score": 85, "reasoning": "core quality strong"},
-                    "T4": {"score": 58, "reasoning": "ambition limited"},
+                    "E1": {"score": 9, "reasoning": "core quality strong"},
+                    "E2": {"score": 9, "reasoning": "core quality strong"},
+                    "E3": {"score": 9, "reasoning": "core quality strong"},
+                    "E4": {"score": 6, "reasoning": "ambition limited"},
                 },
                 improvements="Need one major architecture revision",
                 substantiveness={
@@ -511,7 +679,7 @@ class TestSubstantivenessGating:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
             "require_substantiveness": True,
             "changedoc_mode": True,
@@ -521,10 +689,10 @@ class TestSubstantivenessGating:
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 90, "reasoning": "deliverable strong"},
-                    "T2": {"score": 88, "reasoning": "gaps addressed"},
-                    "T3": {"score": 55, "reasoning": "traceability gaps remain"},
-                    "T4": {"score": 58, "reasoning": "ambition limited"},
+                    "E1": {"score": 9, "reasoning": "deliverable strong"},
+                    "E2": {"score": 9, "reasoning": "gaps addressed"},
+                    "E3": {"score": 6, "reasoning": "traceability gaps remain"},
+                    "E4": {"score": 6, "reasoning": "ambition limited"},
                 },
                 improvements="Need to fix traceability mappings",
                 substantiveness={
@@ -548,7 +716,7 @@ class TestSubstantivenessGating:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_gap_report": False,
             "require_substantiveness": True,
             "changedoc_mode": True,
@@ -558,10 +726,10 @@ class TestSubstantivenessGating:
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 90, "reasoning": "deliverable strong"},
-                    "T2": {"score": 88, "reasoning": "gaps addressed"},
-                    "T3": {"score": 89, "reasoning": "traceability is complete"},
-                    "T4": {"score": 58, "reasoning": "ambition limited"},
+                    "E1": {"score": 9, "reasoning": "deliverable strong"},
+                    "E2": {"score": 9, "reasoning": "gaps addressed"},
+                    "E3": {"score": 9, "reasoning": "traceability is complete"},
+                    "E4": {"score": 6, "reasoning": "ambition limited"},
                 },
                 improvements="No substantive ambition paths remain",
                 substantiveness={
@@ -577,27 +745,28 @@ class TestSubstantivenessGating:
         assert result["convergence_offramp_triggered"] is True
 
     @pytest.mark.asyncio
-    async def test_t4_ambition_guidance_when_exhausted(self, tmp_path):
-        """When T4 fails and decision space is exhausted, give specific ambition guidance."""
+    async def test_stretch_criteria_guidance_when_exhausted(self, tmp_path):
+        """When stretch criteria fail and decision space is exhausted, give specific guidance."""
         items = ["Check 1", "Check 2", "Check 3", "Check 4"]
         state = {
             "terminate_action": "vote",
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 90,
+            "cutoff": 9,
             "require_gap_report": False,
             "require_substantiveness": True,
+            "item_categories": {"E1": "core", "E2": "core", "E3": "core", "E4": "stretch"},
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 78, "reasoning": "decent coverage"},
-                    "T2": {"score": 76, "reasoning": "decent rationale"},
-                    "T3": {"score": 85, "reasoning": "good traceability"},
-                    "T4": {"score": 38, "reasoning": "no genuine ambition"},
+                    "E1": {"score": 8, "reasoning": "decent coverage"},
+                    "E2": {"score": 8, "reasoning": "decent rationale"},
+                    "E3": {"score": 9, "reasoning": "good traceability"},
+                    "E4": {"score": 4, "reasoning": "no genuine ambition"},
                 },
                 improvements="Add attribution and fallback UX",
                 substantiveness={
@@ -610,32 +779,33 @@ class TestSubstantivenessGating:
             ),
         )
         assert result["verdict"] == "new_answer"
-        # Should contain T4-specific ambition guidance
-        assert "T4 (ambition/craft) failed" in result["explanation"]
-        assert "ambition deficit" in result["explanation"]
+        # Should contain stretch-specific guidance
+        assert "E4 (stretch crit" in result["explanation"]
+        assert "stretch-quality deficit" in result["explanation"]
 
     @pytest.mark.asyncio
-    async def test_t4_ambition_guidance_when_substantive_plan_exists(self, tmp_path):
-        """When T4 fails but structural work remains, give different ambition guidance."""
+    async def test_stretch_criteria_guidance_when_substantive_plan_exists(self, tmp_path):
+        """When stretch criteria fail but structural work remains, give different guidance."""
         items = ["Check 1", "Check 2", "Check 3", "Check 4"]
         state = {
             "terminate_action": "vote",
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 90,
+            "cutoff": 9,
             "require_gap_report": False,
             "require_substantiveness": True,
+            "item_categories": {"E1": "core", "E2": "core", "E3": "core", "E4": "stretch"},
         }
         handler = _build_handler(_make_specs_file(tmp_path, items, state))
 
         result = json.loads(
             await handler(
                 scores={
-                    "T1": {"score": 78, "reasoning": "decent coverage"},
-                    "T2": {"score": 76, "reasoning": "decent rationale"},
-                    "T3": {"score": 85, "reasoning": "good traceability"},
-                    "T4": {"score": 38, "reasoning": "no genuine ambition"},
+                    "E1": {"score": 8, "reasoning": "decent coverage"},
+                    "E2": {"score": 8, "reasoning": "decent rationale"},
+                    "E3": {"score": 9, "reasoning": "good traceability"},
+                    "E4": {"score": 4, "reasoning": "no genuine ambition"},
                 },
                 improvements="Add interactive timeline and fallback UX",
                 substantiveness={
@@ -648,9 +818,9 @@ class TestSubstantivenessGating:
             ),
         )
         assert result["verdict"] == "new_answer"
-        # Should still get ambition guidance but the non-exhausted variant
-        assert "T4 (ambition/craft) failed" in result["explanation"]
-        assert "creative ambition" in result["explanation"]
+        # Should still get stretch guidance but the non-exhausted variant
+        assert "E4 (stretch crit" in result["explanation"]
+        assert "care beyond correctness" in result["explanation"]
 
 
 class TestIterateVerdictBreadth:
@@ -664,15 +834,15 @@ class TestIterateVerdictBreadth:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "substantiveness_eval": {"required": True, "valid": True, "has_substantive_plan": True},
         }
         result = evaluate_checklist_submission(
             scores={
-                "T1": {"score": 60, "reasoning": "gaps in coverage"},
-                "T2": {"score": 55, "reasoning": "weak quality"},
-                "T3": {"score": 70, "reasoning": "decent polish"},
-                "T4": {"score": 50, "reasoning": "shallow"},
+                "E1": {"score": 6, "reasoning": "gaps in coverage"},
+                "E2": {"score": 5, "reasoning": "weak quality"},
+                "E3": {"score": 7, "reasoning": "decent polish"},
+                "E4": {"score": 5, "reasoning": "shallow"},
             },
             improvements="Add interactive timeline, redesign navigation, add real data sources",
             report_path="",
@@ -787,15 +957,15 @@ class TestVerdictEchoWithItems:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_substantiveness": True,
         }
         result = evaluate_checklist_submission(
             scores={
-                "T1": {"score": 60, "reasoning": "gaps"},
-                "T2": {"score": 55, "reasoning": "weak"},
-                "T3": {"score": 70, "reasoning": "ok"},
-                "T4": {"score": 50, "reasoning": "shallow"},
+                "E1": {"score": 6, "reasoning": "gaps"},
+                "E2": {"score": 5, "reasoning": "weak"},
+                "E3": {"score": 7, "reasoning": "ok"},
+                "E4": {"score": 5, "reasoning": "shallow"},
             },
             improvements="Various improvements needed",
             report_path="",
@@ -822,15 +992,15 @@ class TestVerdictEchoWithItems:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_substantiveness": True,
         }
         result = evaluate_checklist_submission(
             scores={
-                "T1": {"score": 60, "reasoning": "gaps"},
-                "T2": {"score": 55, "reasoning": "weak"},
-                "T3": {"score": 70, "reasoning": "ok"},
-                "T4": {"score": 50, "reasoning": "shallow"},
+                "E1": {"score": 6, "reasoning": "gaps"},
+                "E2": {"score": 5, "reasoning": "weak"},
+                "E3": {"score": 7, "reasoning": "ok"},
+                "E4": {"score": 5, "reasoning": "shallow"},
             },
             improvements="Major rework needed",
             report_path="",
@@ -908,15 +1078,15 @@ class TestTaskPlanCommitmentTracking:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_substantiveness": True,
         }
         result = evaluate_checklist_submission(
             scores={
-                "T1": {"score": 60, "reasoning": "gaps"},
-                "T2": {"score": 55, "reasoning": "weak"},
-                "T3": {"score": 70, "reasoning": "ok"},
-                "T4": {"score": 50, "reasoning": "shallow"},
+                "E1": {"score": 6, "reasoning": "gaps"},
+                "E2": {"score": 5, "reasoning": "weak"},
+                "E3": {"score": 7, "reasoning": "ok"},
+                "E4": {"score": 5, "reasoning": "shallow"},
             },
             improvements="Various improvements needed",
             report_path="",
@@ -942,15 +1112,15 @@ class TestTaskPlanCommitmentTracking:
             "iterate_action": "new_answer",
             "has_existing_answers": True,
             "required": 4,
-            "cutoff": 70,
+            "cutoff": 7,
             "require_substantiveness": True,
         }
         result = evaluate_checklist_submission(
             scores={
-                "T1": {"score": 60, "reasoning": "gaps"},
-                "T2": {"score": 55, "reasoning": "weak"},
-                "T3": {"score": 70, "reasoning": "ok"},
-                "T4": {"score": 50, "reasoning": "shallow"},
+                "E1": {"score": 6, "reasoning": "gaps"},
+                "E2": {"score": 5, "reasoning": "weak"},
+                "E3": {"score": 7, "reasoning": "ok"},
+                "E4": {"score": 5, "reasoning": "shallow"},
             },
             improvements="Various improvements needed",
             report_path="",
@@ -1027,7 +1197,7 @@ class TestChecklistStdioRegistration:
             "iterate_action": "new_answer",
             "has_existing_answers": False,
             "required": 3,
-            "cutoff": 70,
+            "cutoff": 7,
         }
         items = ["Check 1", "Check 2", "Check 3"]
         backend._checklist_state = checklist_state
@@ -1061,7 +1231,7 @@ class TestChecklistStdioRegistration:
         write_checklist_specs(items, state_v1, specs_path)
 
         # Simulate orchestrator updating state
-        state_v2 = {"has_existing_answers": True, "required": 2, "cutoff": 70, "remaining": 3}
+        state_v2 = {"has_existing_answers": True, "required": 2, "cutoff": 7, "remaining": 3}
         write_checklist_specs(items, state_v2, specs_path)
 
         data = json.loads(specs_path.read_text())
@@ -1142,7 +1312,7 @@ async def test_checklist_create_server_standalone_with_hook_dir(
                 "items": ["T1"],
                 "state": {
                     "required": 1,
-                    "cutoff": 70,
+                    "cutoff": 7,
                     "has_existing_answers": True,
                 },
             },
@@ -1175,3 +1345,154 @@ async def test_checklist_create_server_standalone_with_hook_dir(
 
     available_tools = {tool.name for tool in server._tool_manager._tools.values()}
     assert "submit_checklist" in available_tools
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic Report Gate
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnosticReportGate:
+    """Tests for required diagnostic report in checklist_gated mode."""
+
+    def _make_state(self, tmp_path, require_report=True, has_existing=True):
+        """Build a minimal state dict with diagnostic report gate enabled."""
+        return {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": has_existing,
+            "required": 2,
+            "cutoff": 7,
+            "require_diagnostic_report": require_report,
+            "workspace_path": str(tmp_path),
+        }
+
+    def _passing_scores(self):
+        return {"E1": 80, "E2": 85}
+
+    def test_missing_report_rejected_when_required(self, tmp_path):
+        """No report_path + gate active -> verdict overridden, gate triggered."""
+        state = self._make_state(tmp_path)
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path="",
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        assert result["report_gate_triggered"] is True
+        assert result["verdict"] == "new_answer"
+
+    def test_empty_report_rejected(self, tmp_path):
+        """Empty report file -> rejected."""
+        report = tmp_path / "diagnostic_report.md"
+        report.write_text("")
+        state = self._make_state(tmp_path)
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path=str(report),
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        assert result["report_gate_triggered"] is True
+        assert result["verdict"] == "new_answer"
+
+    def test_too_short_report_rejected(self, tmp_path):
+        """Report with < 100 chars -> rejected as lacking substance."""
+        report = tmp_path / "diagnostic_report.md"
+        report.write_text("Some notes.")
+        state = self._make_state(tmp_path)
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path=str(report),
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        assert result["report_gate_triggered"] is True
+        assert result["verdict"] == "new_answer"
+
+    def test_substantial_report_accepted(self, tmp_path):
+        """Report with real diagnostic content -> gate passes, scores determine verdict."""
+        report = tmp_path / "diagnostic_report.md"
+        report.write_text(
+            "## Failure Patterns\n\n"
+            "The login form has no error states. The CSS layout breaks on mobile.\n\n"
+            "## Root Causes\n\n"
+            "The responsive design was not tested across viewport sizes.\n\n"
+            "## Goal Alignment\n\n"
+            "The core request was a responsive website but mobile is broken.\n",
+        )
+        state = self._make_state(tmp_path)
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path=str(report),
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        assert result["report_gate_triggered"] is False
+        assert result["verdict"] == "vote"  # scores pass, report passes
+
+    def test_report_content_captured(self, tmp_path):
+        """Report content should be included in result for logging."""
+        report = tmp_path / "diagnostic_report.md"
+        content = "## Failure Patterns\n\nLogin form has no error states.\n\n" "## Root Causes\n\nMissing validation logic.\n\n" "## Goal Alignment\n\nCore requirements partially met.\n"
+        report.write_text(content)
+        state = self._make_state(tmp_path)
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path=str(report),
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        assert result["report"]["content"] == content
+
+    def test_gate_skipped_on_first_answer(self, tmp_path):
+        """First answer (has_existing_answers=False) -> gate not applied."""
+        state = self._make_state(tmp_path, has_existing=False)
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path="",
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        # First answer always iterates, but NOT because of report gate
+        assert result["report_gate_triggered"] is False
+
+    def test_gate_inactive_by_default(self, tmp_path):
+        """No require_diagnostic_report in state -> backward compat, no gate."""
+        state = {
+            "terminate_action": "vote",
+            "iterate_action": "new_answer",
+            "has_existing_answers": True,
+            "required": 1,
+            "cutoff": 7,
+            # No require_diagnostic_report key at all
+        }
+        result = evaluate_checklist_submission(
+            scores={"E1": 9},
+            improvements="",
+            report_path="",
+            items=["Check 1"],
+            state=state,
+        )
+        assert result["report_gate_triggered"] is False
+        assert result["verdict"] == "vote"
+
+    def test_report_required_in_changedoc_mode_too(self, tmp_path):
+        """Changedoc mode still requires separate diagnostic report."""
+        state = self._make_state(tmp_path)
+        state["changedoc_mode"] = True  # changedoc active
+        result = evaluate_checklist_submission(
+            scores=self._passing_scores(),
+            improvements="",
+            report_path="",  # no separate report
+            items=["Check 1", "Check 2"],
+            state=state,
+        )
+        assert result["report_gate_triggered"] is True
+        assert result["verdict"] == "new_answer"

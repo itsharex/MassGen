@@ -193,6 +193,7 @@ class Orchestrator(ChatAgent):
         enable_rate_limit: bool = False,
         trace_classification: str = "legacy",
         generated_personas: dict[str, Any] | None = None,
+        generated_evaluation_criteria: list | None = None,
         plan_session_id: str | None = None,
     ):
         """
@@ -219,6 +220,8 @@ class Orchestrator(ChatAgent):
                                   coordination/status as non-content for server mode.
             generated_personas: Pre-generated personas from previous turn (for multi-turn persistence)
                                Format: {agent_id: GeneratedPersona, ...}
+            generated_evaluation_criteria: Pre-generated evaluation criteria from previous turn
+                                          Format: [GeneratedCriterion, ...]
             plan_session_id: Optional plan session ID for plan execution mode (prevents workspace contamination)
         """
         super().__init__(
@@ -385,6 +388,15 @@ class Orchestrator(ChatAgent):
         if self._personas_generated:
             logger.info(
                 f"📝 Restored {len(self._generated_personas)} persona(s) from previous turn",
+            )
+
+        # Evaluation criteria generation tracking
+        # If criteria are passed in (from previous turn), use them and mark as already generated
+        self._generated_evaluation_criteria: list | None = generated_evaluation_criteria
+        self._evaluation_criteria_generated: bool = bool(generated_evaluation_criteria)
+        if self._evaluation_criteria_generated:
+            logger.info(
+                f"📝 Restored {len(self._generated_evaluation_criteria)} evaluation criteria from previous turn",
             )
 
         # Multi-turn session tracking (loaded by CLI, not managed by orchestrator)
@@ -681,6 +693,8 @@ class Orchestrator(ChatAgent):
             return
 
         from massgen.system_prompt_sections import (
+            _CHECKLIST_ITEM_CATEGORIES,
+            _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC,
             _CHECKLIST_ITEMS,
             _CHECKLIST_ITEMS_CHANGEDOC,
             _checklist_confidence_cutoff,
@@ -688,7 +702,23 @@ class Orchestrator(ChatAgent):
             _checklist_required_true,
         )
 
-        items = _CHECKLIST_ITEMS_CHANGEDOC if self._is_changedoc_enabled() else _CHECKLIST_ITEMS
+        # Use generated criteria if available, then preset, then defaults.
+        # Priority: dynamically generated > named preset > changedoc > generic.
+        if self._generated_evaluation_criteria is not None:
+            items = [c.text for c in self._generated_evaluation_criteria]
+            item_categories = {c.id: c.category for c in self._generated_evaluation_criteria}
+        elif preset := getattr(self.config.coordination_config, "checklist_criteria_preset", None):
+            from massgen.evaluation_criteria_generator import get_criteria_for_preset
+
+            criteria = get_criteria_for_preset(preset)
+            items = [c.text for c in criteria]
+            item_categories = {c.id: c.category for c in criteria}
+        elif self._is_changedoc_enabled():
+            items = list(_CHECKLIST_ITEMS_CHANGEDOC)
+            item_categories = dict(_CHECKLIST_ITEM_CATEGORIES_CHANGEDOC)
+        else:
+            items = list(_CHECKLIST_ITEMS)
+            item_categories = dict(_CHECKLIST_ITEM_CATEGORIES)
 
         for agent_id, agent in self.agents.items():
             backend = agent.backend
@@ -708,10 +738,13 @@ class Orchestrator(ChatAgent):
                 "require_gap_report": bool(
                     getattr(self.config, "checklist_require_gap_report", True),
                 ),
+                "require_diagnostic_report": bool(
+                    getattr(self.config, "checklist_require_gap_report", True),
+                ),
                 # Require explicit change substantiveness metadata so rounds can
                 # naturally terminate when only incremental work remains.
                 "require_substantiveness": True,
-                # Needed by checklist server to interpret T-item semantics.
+                # Needed by checklist server to interpret item semantics.
                 "changedoc_mode": self._is_changedoc_enabled(),
                 "workspace_path": getattr(
                     getattr(backend, "filesystem_manager", None),
@@ -721,6 +754,10 @@ class Orchestrator(ChatAgent):
                 # Pre-computed so stdio server doesn't need massgen imports
                 "required": _checklist_required_true(effective_t, num_items=len(items)),
                 "cutoff": _checklist_confidence_cutoff(effective_t),
+                # E-prefix for evaluation items (replaces legacy T-prefix)
+                "item_prefix": "E",
+                # Dynamic core/stretch categories for convergence off-ramp
+                "item_categories": item_categories,
             }
             backend._checklist_state = checklist_state
             backend._checklist_items = list(items)
@@ -766,7 +803,7 @@ class Orchestrator(ChatAgent):
         score_entry_schema = {
             "type": "object",
             "properties": {
-                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "score": {"type": "integer", "minimum": 0, "maximum": 10},
                 "reasoning": {
                     "type": "string",
                     "description": "Why you gave this score — reference specific evidence.",
@@ -781,11 +818,11 @@ class Orchestrator(ChatAgent):
                     "type": "object",
                     "description": (
                         "Your confidence scores with reasoning for each checklist item. "
-                        "Keys are item IDs (T1-T4), values are objects with 'score' (0-100) "
+                        f"Keys are item IDs (E1-E{len(checklist_items)}), values are objects with 'score' (0-10) "
                         "and 'reasoning' (justification for that score)."
                     ),
-                    "properties": {f"T{i+1}": score_entry_schema for i in range(len(checklist_items))},
-                    "required": [f"T{i+1}" for i in range(len(checklist_items))],
+                    "properties": {f"E{i+1}": score_entry_schema for i in range(len(checklist_items))},
+                    "required": [f"E{i+1}" for i in range(len(checklist_items))],
                 },
                 "improvements": {
                     "type": "string",
@@ -846,7 +883,7 @@ class Orchestrator(ChatAgent):
             name="submit_checklist",
             description=(
                 "Submit your checklist evaluation. Each score in 'scores' must be "
-                "an object with 'score' (0-100) and 'reasoning' (why you gave that "
+                "an object with 'score' (0-10) and 'reasoning' (why you gave that "
                 "score). The 'improvements' field should describe features or content "
                 "that an ideal answer would have but no existing answer has attempted. "
                 "The 'substantiveness' field must classify planned changes as "
@@ -1010,6 +1047,9 @@ class Orchestrator(ChatAgent):
                 ),
                 "cutoff": _checklist_confidence_cutoff(effective_t),
                 "require_gap_report": bool(
+                    getattr(self.config, "checklist_require_gap_report", True),
+                ),
+                "require_diagnostic_report": bool(
                     getattr(self.config, "checklist_require_gap_report", True),
                 ),
                 "require_substantiveness": True,
@@ -2191,6 +2231,175 @@ class Orchestrator(ChatAgent):
                 pass
             self._personas_generated = True  # Don't retry on failure
 
+    async def _generate_and_inject_evaluation_criteria(self) -> None:
+        """Generate task-specific evaluation criteria via a pre-collab subagent run.
+
+        When enabled, spawns a subagent to generate criteria specific to the current task.
+        Falls back to static defaults on failure. Follows the same pattern as persona generation.
+        """
+        if not hasattr(self.config, "coordination_config"):
+            return
+        if not hasattr(self.config.coordination_config, "evaluation_criteria_generator"):
+            return
+
+        ecg = self.config.coordination_config.evaluation_criteria_generator
+        if not ecg.enabled:
+            logger.info("[Orchestrator] Evaluation criteria generation disabled in config")
+            return
+
+        if self._evaluation_criteria_generated:
+            logger.info("[Orchestrator] Evaluation criteria already generated, skipping")
+            return
+
+        logger.info("[Orchestrator] Generating evaluation criteria via subagent")
+
+        try:
+            from .evaluation_criteria_generator import EvaluationCriteriaGenerator
+
+            generator = EvaluationCriteriaGenerator()
+
+            # Build parent agent configs for inheritance
+            parent_configs = []
+            for agent_id, agent in self.agents.items():
+                agent_cfg = {"id": agent_id}
+                if hasattr(agent, "backend") and hasattr(agent.backend, "config"):
+                    backend_cfg = {k: v for k, v in agent.backend.config.items() if k not in ("mcp_servers", "_config_path")}
+                    agent_cfg["backend"] = backend_cfg
+                parent_configs.append(agent_cfg)
+
+            # Get workspace path
+            parent_workspace = None
+            for agent in self.agents.values():
+                if hasattr(agent, "backend") and hasattr(agent.backend, "filesystem_manager") and agent.backend.filesystem_manager and agent.backend.filesystem_manager.cwd:
+                    parent_workspace = str(agent.backend.filesystem_manager.cwd)
+                    break
+
+            if not parent_workspace:
+                import tempfile
+
+                parent_workspace = tempfile.mkdtemp(prefix="massgen_criteria_")
+
+            # Get log directory
+            log_directory = None
+            try:
+                log_dir = get_log_session_dir()
+                if log_dir:
+                    log_directory = str(log_dir)
+            except Exception:
+                pass
+
+            # Determine if changedoc is enabled
+            has_changedoc = getattr(
+                self.config.coordination_config,
+                "enable_changedoc",
+                False,
+            )
+
+            # Display notification setup
+            display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
+            criteria_anchor_agent = next(iter(self.agents.keys()), None)
+            criteria_call_id = "criteria_generation_criteria_generation"
+
+            def _on_criteria_subagent_started(
+                subagent_id: str,
+                subagent_task: str,
+                timeout_seconds: int,
+                status_callback: Any,
+                log_path: str | None,
+            ) -> None:
+                if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_started"):
+                    try:
+                        display.notify_runtime_subagent_started(
+                            agent_id=criteria_anchor_agent,
+                            subagent_id=subagent_id,
+                            task=subagent_task,
+                            timeout_seconds=timeout_seconds,
+                            call_id=criteria_call_id,
+                            status_callback=status_callback,
+                            log_path=log_path,
+                        )
+                    except Exception:
+                        pass
+
+            criteria = await generator.generate_criteria_via_subagent(
+                task=self.current_task or "",
+                agent_configs=parent_configs,
+                has_changedoc=has_changedoc,
+                parent_workspace=parent_workspace,
+                log_directory=log_directory,
+                orchestrator_id=self.orchestrator_id,
+                min_criteria=ecg.min_criteria,
+                max_criteria=ecg.max_criteria,
+                on_subagent_started=_on_criteria_subagent_started,
+            )
+
+            self._generated_evaluation_criteria = criteria
+            self._evaluation_criteria_generated = True
+
+            # Save to log
+            self._save_evaluation_criteria_to_log(criteria)
+
+            source = generator.last_generation_source
+            logger.info(
+                f"[Orchestrator] Generated {len(criteria)} evaluation criteria (source: {source})",
+            )
+
+            # Notify display of completion
+            if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
+                try:
+                    if source == "subagent":
+                        criteria_preview = " | ".join(f"{c.id}: {c.text[:60]}..." if len(c.text) > 60 else f"{c.id}: {c.text}" for c in criteria[:3])
+                        display.notify_runtime_subagent_completed(
+                            agent_id=criteria_anchor_agent,
+                            subagent_id="criteria_generation",
+                            call_id=criteria_call_id,
+                            status="completed",
+                            answer_preview=criteria_preview or f"{len(criteria)} criteria generated.",
+                        )
+                    else:
+                        display.notify_runtime_subagent_completed(
+                            agent_id=criteria_anchor_agent,
+                            subagent_id="criteria_generation",
+                            call_id=criteria_call_id,
+                            status="completed",
+                            answer_preview=f"Using {len(criteria)} fallback criteria.",
+                        )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"[Orchestrator] Failed to generate evaluation criteria: {e}")
+            logger.warning("[Orchestrator] Continuing without criteria generation")
+            self._evaluation_criteria_generated = True  # Don't retry on failure
+            # Notify display of failure
+            try:
+                display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
+                criteria_anchor_agent = next(iter(self.agents.keys()), None)
+                if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
+                    display.notify_runtime_subagent_completed(
+                        agent_id=criteria_anchor_agent,
+                        subagent_id="criteria_generation",
+                        call_id="criteria_generation_criteria_generation",
+                        status="failed",
+                        error=str(e),
+                    )
+            except Exception:
+                pass
+
+    def _save_evaluation_criteria_to_log(self, criteria: list) -> None:
+        """Save generated evaluation criteria to a YAML file in the log directory."""
+        try:
+            import yaml
+
+            log_dir = get_log_session_dir()
+            criteria_file = log_dir / "generated_evaluation_criteria.yaml"
+            criteria_data = [{"id": c.id, "text": c.text, "category": c.category} for c in criteria]
+            with open(criteria_file, "w") as f:
+                yaml.dump(criteria_data, f, default_flow_style=False)
+            logger.info(f"[Orchestrator] Saved evaluation criteria to {criteria_file}")
+        except Exception as e:
+            logger.debug(f"[Orchestrator] Failed to save evaluation criteria to log: {e}")
+
     @staticmethod
     def _has_peer_answers(
         agent_id: str,
@@ -2236,6 +2445,14 @@ class Orchestrator(ChatAgent):
             Dictionary of agent_id -> GeneratedPersona
         """
         return self._generated_personas
+
+    def get_generated_evaluation_criteria(self) -> list | None:
+        """Get the generated evaluation criteria for persistence across turns.
+
+        Returns:
+            List of GeneratedCriterion objects, or None if not generated.
+        """
+        return self._generated_evaluation_criteria
 
     def _save_personas_to_log(self, personas: dict[str, Any]) -> None:
         """
@@ -3679,19 +3896,47 @@ Your answer:"""
                                 logger.info(f"[Orchestrator] Cleaned {cleaned} orphaned branches in {ctx_path}")
                             break  # Only need to clean once per repo
 
-        # Generate and inject personas if enabled (happens once per session)
-        if (
+        # Generate personas and/or evaluation criteria if enabled (happens once per session)
+        _persona_enabled = (
             hasattr(self.config, "coordination_config")
             and hasattr(self.config.coordination_config, "persona_generator")
             and self.config.coordination_config.persona_generator.enabled
             and not self._personas_generated
-        ):
+        )
+        _criteria_enabled = (
+            hasattr(self.config, "coordination_config")
+            and hasattr(self.config.coordination_config, "evaluation_criteria_generator")
+            and self.config.coordination_config.evaluation_criteria_generator.enabled
+            and not self._evaluation_criteria_generated
+        )
+
+        if _persona_enabled and _criteria_enabled:
+            yield StreamChunk(
+                type="preparation_status",
+                status="Generating personas and evaluation criteria...",
+                detail="Creating agent identities and task-specific criteria",
+            )
+            await asyncio.gather(
+                self._generate_and_inject_personas(),
+                self._generate_and_inject_evaluation_criteria(),
+            )
+        elif _persona_enabled:
             yield StreamChunk(
                 type="preparation_status",
                 status="Generating personas...",
                 detail="Creating unique agent identities",
             )
-        await self._generate_and_inject_personas()
+            await self._generate_and_inject_personas()
+        elif _criteria_enabled:
+            yield StreamChunk(
+                type="preparation_status",
+                status="Generating evaluation criteria...",
+                detail="Creating task-specific evaluation criteria",
+            )
+            await self._generate_and_inject_evaluation_criteria()
+        else:
+            # Neither enabled, still call persona generation for its guard logic
+            await self._generate_and_inject_personas()
 
         # Notify TUI of persona assignments for parallel mode.
         if (
@@ -8645,6 +8890,8 @@ Your answer:"""
                 other_branches=other_agent_branches if other_agent_branches else None,
                 branch_diff_summaries=branch_diff_summaries,
                 novelty_pressure_data=novelty_data,
+                custom_checklist_items=[c.text for c in self._generated_evaluation_criteria] if self._generated_evaluation_criteria else None,
+                item_categories={c.id: c.category for c in self._generated_evaluation_criteria} if self._generated_evaluation_criteria else None,
             )
 
             # Update checklist tool state if registered (mutable dict — tool closure reads this)
@@ -8660,12 +8907,19 @@ Your answer:"""
                                 True,
                             ),
                         ),
+                        "require_diagnostic_report": bool(
+                            getattr(
+                                self.config,
+                                "checklist_require_gap_report",
+                                True,
+                            ),
+                        ),
                         "workspace_path": getattr(
                             getattr(agent.backend, "filesystem_manager", None),
                             "cwd",
                             None,
                         ),
-                        "report_cutoff": 70,
+                        "report_cutoff": 7,
                     },
                 )
                 self._refresh_checklist_state_for_agent(agent_id)

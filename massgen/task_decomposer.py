@@ -194,6 +194,7 @@ Requirements:
                 coordination={
                     "enable_subagents": False,
                     "broadcast": False,
+                    "checklist_criteria_preset": "decomposition",
                 },
                 max_new_answers=5,
             )

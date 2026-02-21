@@ -2475,6 +2475,7 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
     run_single_question, and run_textual_interactive_mode.
     """
     from .agent_config import CoordinationConfig
+    from .evaluation_criteria_generator import EvaluationCriteriaGeneratorConfig
     from .persona_generator import PersonaGeneratorConfig
     from .subagent.models import SubagentOrchestratorConfig
     from .task_decomposer import TaskDecomposerConfig
@@ -2488,6 +2489,17 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
             diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
             persona_guidelines=pg_cfg.get("persona_guidelines"),
             persist_across_turns=pg_cfg.get("persist_across_turns", False),
+        )
+
+    # Parse evaluation_criteria_generator config if present
+    eval_criteria_config = EvaluationCriteriaGeneratorConfig()
+    if "evaluation_criteria_generator" in coord_cfg:
+        ec_cfg = coord_cfg["evaluation_criteria_generator"]
+        eval_criteria_config = EvaluationCriteriaGeneratorConfig(
+            enabled=ec_cfg.get("enabled", False),
+            persist_across_turns=ec_cfg.get("persist_across_turns", False),
+            min_criteria=ec_cfg.get("min_criteria", 4),
+            max_criteria=ec_cfg.get("max_criteria", 10),
         )
 
     # Parse task_decomposer config if present
@@ -2529,6 +2541,7 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
         skills_directory=coord_cfg.get("skills_directory", ".agent/skills"),
         load_previous_session_skills=coord_cfg.get("load_previous_session_skills", False),
         persona_generator=persona_generator_config,
+        evaluation_criteria_generator=eval_criteria_config,
         enable_subagents=coord_cfg.get("enable_subagents", False),
         subagent_default_timeout=coord_cfg.get("subagent_default_timeout", 300),
         subagent_max_concurrent=coord_cfg.get("subagent_max_concurrent", 3),
@@ -2920,6 +2933,22 @@ async def run_question_with_history(
         if generated_personas:
             logger.info("[CLI] Reusing persisted personas from previous turn")
 
+    # Get generated evaluation criteria from session info if persist_across_turns is enabled
+    generated_evaluation_criteria = None
+    if (
+        hasattr(orchestrator_config, "coordination_config")
+        and orchestrator_config.coordination_config
+        and hasattr(orchestrator_config.coordination_config, "evaluation_criteria_generator")
+        and orchestrator_config.coordination_config.evaluation_criteria_generator
+        and orchestrator_config.coordination_config.evaluation_criteria_generator.persist_across_turns
+    ):
+        raw_criteria = session_info.get("generated_evaluation_criteria")
+        if raw_criteria:
+            from .evaluation_criteria_generator import GeneratedCriterion
+
+            generated_evaluation_criteria = [GeneratedCriterion(id=c["id"], text=c["text"], category=c["category"]) for c in raw_criteria]
+            logger.info("[CLI] Reusing persisted evaluation criteria from previous turn")
+
     orchestrator = Orchestrator(
         agents=agents,
         config=orchestrator_config,
@@ -2933,6 +2962,7 @@ async def run_question_with_history(
         enable_nlip=orchestrator_enable_nlip,
         nlip_config=orchestrator_nlip_config,
         generated_personas=generated_personas,  # Only if persist_across_turns=True
+        generated_evaluation_criteria=generated_evaluation_criteria,
     )
 
     # Parse per-agent subtask assignments for decomposition mode
@@ -2959,113 +2989,7 @@ async def run_question_with_history(
         orchestrator_kwargs = kwargs.get("orchestrator", {})
         coordination_settings = orchestrator_kwargs.get("coordination", {})
         if coordination_settings:
-            from .agent_config import CoordinationConfig
-            from .persona_generator import PersonaGeneratorConfig
-            from .subagent.models import SubagentOrchestratorConfig
-
-            # Parse persona_generator config if present
-            persona_generator_config = PersonaGeneratorConfig()
-            if "persona_generator" in coordination_settings:
-                pg_cfg = coordination_settings["persona_generator"]
-                persona_generator_config = PersonaGeneratorConfig(
-                    enabled=pg_cfg.get("enabled", False),
-                    diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
-                    persona_guidelines=pg_cfg.get("persona_guidelines"),
-                    persist_across_turns=pg_cfg.get("persist_across_turns", False),
-                )
-
-            # Parse subagent_orchestrator config if present
-            subagent_orchestrator_config = None
-            if "subagent_orchestrator" in coordination_settings:
-                so_cfg = coordination_settings["subagent_orchestrator"]
-                subagent_orchestrator_config = SubagentOrchestratorConfig.from_dict(
-                    so_cfg,
-                )
-
-            orchestrator_config.coordination_config = CoordinationConfig(
-                enable_planning_mode=coordination_settings.get(
-                    "enable_planning_mode",
-                    False,
-                ),
-                planning_mode_instruction=coordination_settings.get(
-                    "planning_mode_instruction",
-                    """During coordination, describe what you would do. Only provide concrete implementation details and execute read-only actions.
-                    DO NOT execute any actions that have side effects (e.g., sending messages, modifying data)""",
-                ),
-                enable_agent_task_planning=coordination_settings.get(
-                    "enable_agent_task_planning",
-                    False,
-                ),
-                max_tasks_per_plan=coordination_settings.get("max_tasks_per_plan", 10),
-                broadcast=coordination_settings.get("broadcast", False),
-                broadcast_sensitivity=coordination_settings.get(
-                    "broadcast_sensitivity",
-                    "medium",
-                ),
-                response_depth=coordination_settings.get("response_depth", "medium"),
-                broadcast_timeout=coordination_settings.get("broadcast_timeout", 300),
-                broadcast_wait_by_default=coordination_settings.get(
-                    "broadcast_wait_by_default",
-                    True,
-                ),
-                max_broadcasts_per_agent=coordination_settings.get(
-                    "max_broadcasts_per_agent",
-                    10,
-                ),
-                task_planning_filesystem_mode=coordination_settings.get(
-                    "task_planning_filesystem_mode",
-                    False,
-                ),
-                enable_memory_filesystem_mode=coordination_settings.get(
-                    "enable_memory_filesystem_mode",
-                    False,
-                ),
-                compression_target_ratio=coordination_settings.get(
-                    "compression_target_ratio",
-                    0.20,
-                ),
-                use_skills=coordination_settings.get("use_skills", False),
-                massgen_skills=coordination_settings.get("massgen_skills", []),
-                skills_directory=coordination_settings.get(
-                    "skills_directory",
-                    ".agent/skills",
-                ),
-                load_previous_session_skills=coordination_settings.get(
-                    "load_previous_session_skills",
-                    False,
-                ),
-                persona_generator=persona_generator_config,
-                enable_subagents=coordination_settings.get("enable_subagents", False),
-                subagent_default_timeout=coordination_settings.get(
-                    "subagent_default_timeout",
-                    300,
-                ),
-                subagent_max_concurrent=coordination_settings.get(
-                    "subagent_max_concurrent",
-                    3,
-                ),
-                subagent_round_timeouts=coordination_settings.get(
-                    "subagent_round_timeouts",
-                ),
-                subagent_runtime_mode=coordination_settings.get(
-                    "subagent_runtime_mode",
-                    "isolated",
-                ),
-                subagent_runtime_fallback_mode=coordination_settings.get(
-                    "subagent_runtime_fallback_mode",
-                ),
-                subagent_host_launch_prefix=coordination_settings.get(
-                    "subagent_host_launch_prefix",
-                ),
-                subagent_orchestrator=subagent_orchestrator_config,
-                use_two_tier_workspace=coordination_settings.get(
-                    "use_two_tier_workspace",
-                    False,
-                ),
-                write_mode=coordination_settings.get("write_mode"),
-                drift_conflict_policy=coordination_settings.get("drift_conflict_policy", "skip"),
-                enable_changedoc=coordination_settings.get("enable_changedoc", True),
-            )
+            orchestrator_config.coordination_config = _parse_coordination_config(coordination_settings)
 
     print(f"\n🤖 {BRIGHT_CYAN}{mode_text}{RESET}", flush=True)
     print(f"Agents: {', '.join(agents.keys())}", flush=True)
@@ -3289,6 +3213,10 @@ async def run_question_with_history(
     if orchestrator.get_generated_personas():
         session_info["generated_personas"] = orchestrator.get_generated_personas()
 
+    # Store generated evaluation criteria in session_info for persistence across turns
+    if orchestrator.get_generated_evaluation_criteria():
+        session_info["generated_evaluation_criteria"] = [{"id": c.id, "text": c.text, "category": c.category} for c in orchestrator.get_generated_evaluation_criteria()]
+
     # Return normalized response so conversation history has correct paths
     return (
         normalized_response or response_content,
@@ -3427,113 +3355,7 @@ async def run_single_question(
         orchestrator_kwargs = kwargs.get("orchestrator", {})
         coordination_settings = orchestrator_kwargs.get("coordination", {})
         if coordination_settings:
-            from .agent_config import CoordinationConfig
-            from .persona_generator import PersonaGeneratorConfig
-            from .subagent.models import SubagentOrchestratorConfig
-
-            # Parse persona_generator config if present
-            persona_generator_config = PersonaGeneratorConfig()
-            if "persona_generator" in coordination_settings:
-                pg_cfg = coordination_settings["persona_generator"]
-                persona_generator_config = PersonaGeneratorConfig(
-                    enabled=pg_cfg.get("enabled", False),
-                    diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
-                    persona_guidelines=pg_cfg.get("persona_guidelines"),
-                    persist_across_turns=pg_cfg.get("persist_across_turns", False),
-                )
-
-            # Parse subagent_orchestrator config if present
-            subagent_orchestrator_config = None
-            if "subagent_orchestrator" in coordination_settings:
-                so_cfg = coordination_settings["subagent_orchestrator"]
-                subagent_orchestrator_config = SubagentOrchestratorConfig.from_dict(
-                    so_cfg,
-                )
-
-            orchestrator_config.coordination_config = CoordinationConfig(
-                enable_planning_mode=coordination_settings.get(
-                    "enable_planning_mode",
-                    False,
-                ),
-                planning_mode_instruction=coordination_settings.get(
-                    "planning_mode_instruction",
-                    """During coordination, describe what you would do. Only provide concrete implementation details and execute read-only actions.
-                    DO NOT execute any actions that have side effects (e.g., sending messages, modifying data)""",
-                ),
-                enable_agent_task_planning=coordination_settings.get(
-                    "enable_agent_task_planning",
-                    False,
-                ),
-                max_tasks_per_plan=coordination_settings.get("max_tasks_per_plan", 10),
-                broadcast=coordination_settings.get("broadcast", False),
-                broadcast_sensitivity=coordination_settings.get(
-                    "broadcast_sensitivity",
-                    "medium",
-                ),
-                response_depth=coordination_settings.get("response_depth", "medium"),
-                broadcast_timeout=coordination_settings.get("broadcast_timeout", 300),
-                broadcast_wait_by_default=coordination_settings.get(
-                    "broadcast_wait_by_default",
-                    True,
-                ),
-                max_broadcasts_per_agent=coordination_settings.get(
-                    "max_broadcasts_per_agent",
-                    10,
-                ),
-                task_planning_filesystem_mode=coordination_settings.get(
-                    "task_planning_filesystem_mode",
-                    False,
-                ),
-                enable_memory_filesystem_mode=coordination_settings.get(
-                    "enable_memory_filesystem_mode",
-                    False,
-                ),
-                compression_target_ratio=coordination_settings.get(
-                    "compression_target_ratio",
-                    0.20,
-                ),
-                use_skills=coordination_settings.get("use_skills", False),
-                massgen_skills=coordination_settings.get("massgen_skills", []),
-                skills_directory=coordination_settings.get(
-                    "skills_directory",
-                    ".agent/skills",
-                ),
-                load_previous_session_skills=coordination_settings.get(
-                    "load_previous_session_skills",
-                    False,
-                ),
-                persona_generator=persona_generator_config,
-                enable_subagents=coordination_settings.get("enable_subagents", False),
-                subagent_default_timeout=coordination_settings.get(
-                    "subagent_default_timeout",
-                    300,
-                ),
-                subagent_max_concurrent=coordination_settings.get(
-                    "subagent_max_concurrent",
-                    3,
-                ),
-                subagent_round_timeouts=coordination_settings.get(
-                    "subagent_round_timeouts",
-                ),
-                subagent_runtime_mode=coordination_settings.get(
-                    "subagent_runtime_mode",
-                    "isolated",
-                ),
-                subagent_runtime_fallback_mode=coordination_settings.get(
-                    "subagent_runtime_fallback_mode",
-                ),
-                subagent_host_launch_prefix=coordination_settings.get(
-                    "subagent_host_launch_prefix",
-                ),
-                subagent_orchestrator=subagent_orchestrator_config,
-                use_two_tier_workspace=coordination_settings.get(
-                    "use_two_tier_workspace",
-                    False,
-                ),
-                write_mode=coordination_settings.get("write_mode"),
-                drift_conflict_policy=coordination_settings.get("drift_conflict_policy", "skip"),
-                enable_changedoc=coordination_settings.get("enable_changedoc", True),
-            )
+            orchestrator_config.coordination_config = _parse_coordination_config(coordination_settings)
 
         # Get orchestrator parameters from config
         orchestrator_cfg = kwargs.get("orchestrator", {})
@@ -6372,6 +6194,22 @@ async def run_textual_interactive_mode(
                 if generated_personas:
                     logger.info("[Textual] Reusing persisted personas from previous turn")
 
+            # Get generated evaluation criteria from session info if persist_across_turns is enabled
+            generated_evaluation_criteria = None
+            if (
+                hasattr(orchestrator_config, "coordination_config")
+                and orchestrator_config.coordination_config
+                and hasattr(orchestrator_config.coordination_config, "evaluation_criteria_generator")
+                and orchestrator_config.coordination_config.evaluation_criteria_generator
+                and orchestrator_config.coordination_config.evaluation_criteria_generator.persist_across_turns
+            ):
+                raw_criteria = session_info.get("generated_evaluation_criteria")
+                if raw_criteria:
+                    from .evaluation_criteria_generator import GeneratedCriterion
+
+                    generated_evaluation_criteria = [GeneratedCriterion(id=c["id"], text=c["text"], category=c["category"]) for c in raw_criteria]
+                    logger.info("[Textual] Reusing persisted evaluation criteria from previous turn")
+
             # Create orchestrator with multi-turn state
             adapter.update_loading_status("🔧 Setting up workspace...")
 
@@ -6395,6 +6233,7 @@ async def run_textual_interactive_mode(
                 enable_nlip=orchestrator_enable_nlip,
                 nlip_config=orchestrator_nlip_config,
                 generated_personas=generated_personas,
+                generated_evaluation_criteria=generated_evaluation_criteria,
                 plan_session_id=plan_session_id,
             )
 
@@ -6579,6 +6418,12 @@ async def run_textual_interactive_mode(
                 )
             except Exception as persist_err:
                 logger.warning(f"[Textual] Failed to persist session: {persist_err}")
+
+            # Store generated personas and evaluation criteria for multi-turn persistence
+            if orchestrator.get_generated_personas():
+                session_info["generated_personas"] = orchestrator.get_generated_personas()
+            if orchestrator.get_generated_evaluation_criteria():
+                session_info["generated_evaluation_criteria"] = [{"id": c.id, "text": c.text, "category": c.category} for c in orchestrator.get_generated_evaluation_criteria()]
 
             # End turn
             display.end_turn(turn_num, answer=answer)

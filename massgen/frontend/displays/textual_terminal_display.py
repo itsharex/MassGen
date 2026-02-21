@@ -262,6 +262,30 @@ def _extract_spawned_subagents(result_text: Any) -> tuple[dict[str, Any] | None,
     return result_data, spawned
 
 
+# Pre-collab subagent IDs that get dedicated full-screen treatment
+# instead of appearing as inline cards in the agent timeline.
+_PRECOLLAB_SUBAGENT_IDS = frozenset(
+    {
+        "persona_generation",
+        "task_decomposition",
+        "criteria_generation",
+    },
+)
+
+
+class _PrecollabSubagentState:
+    """Mutable state for a single pre-collab subagent's TUI tracking."""
+
+    __slots__ = ("call_id", "agent_id", "data", "status_callback", "auto_opened")
+
+    def __init__(self) -> None:
+        self.call_id: str | None = None
+        self.agent_id: str | None = None
+        self.data: Any | None = None  # SubagentDisplayData
+        self.status_callback: Callable | None = None
+        self.auto_opened: bool = False
+
+
 def _subagent_card_dom_id(call_id: Any) -> str:
     """Build a safe, deterministic DOM id for subagent cards."""
     safe_call_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(call_id or "subagent"))
@@ -3482,11 +3506,7 @@ if TEXTUAL_AVAILABLE:
             self._runtime_decomposition_subtasks: dict[str, str] = {}
             self._runtime_parallel_personas: dict[str, str] = {}
             self._decomposition_completion_source: str = "subagent"
-            self._decomposition_runtime_subagent_call_id: str | None = None
-            self._decomposition_runtime_subagent_agent_id: str | None = None
-            self._decomposition_runtime_subagent_data: Any | None = None
-            self._decomposition_runtime_status_callback: Callable[[str], Any | None] | None = None
-            self._decomposition_runtime_auto_opened: bool = False
+            self._precollab_subagents: dict[str, _PrecollabSubagentState] = {}
             # Workspace browser open-guard to prevent duplicate modal pushes from
             # repeated click/key events while the UI is busy.
             self._workspace_browser_open_pending: bool = False
@@ -3494,11 +3514,6 @@ if TEXTUAL_AVAILABLE:
             # Performance guard: suppress expensive hover style updates while the
             # timeline is answer-locked (buttons remain clickable).
             self._hover_updates_suppressed: bool = False
-            self._persona_runtime_subagent_call_id: str | None = None
-            self._persona_runtime_subagent_agent_id: str | None = None
-            self._persona_runtime_subagent_data: Any | None = None
-            self._persona_runtime_status_callback: Callable[[str], Any | None] | None = None
-            self._persona_runtime_auto_opened: bool = False
 
             if not self._keyboard_interactive_mode:
                 self.BINDINGS = []
@@ -3564,16 +3579,7 @@ if TEXTUAL_AVAILABLE:
             self._runtime_decomposition_subtasks = {}
             self._runtime_parallel_personas = {}
             self._dismiss_decomposition_generation_modal()
-            self._decomposition_runtime_subagent_call_id = None
-            self._decomposition_runtime_subagent_agent_id = None
-            self._decomposition_runtime_subagent_data = None
-            self._decomposition_runtime_status_callback = None
-            self._decomposition_runtime_auto_opened = False
-            self._persona_runtime_subagent_call_id = None
-            self._persona_runtime_subagent_agent_id = None
-            self._persona_runtime_subagent_data = None
-            self._persona_runtime_status_callback = None
-            self._persona_runtime_auto_opened = False
+            self._precollab_subagents.clear()
 
             if self._tab_bar and self._mode_state.coordination_mode == "parallel":
                 if self._mode_state.parallel_personas_enabled:
@@ -5664,7 +5670,8 @@ Type your question and press Enter to ask the agents.
                 return
 
             if lower_status in ("decomposition ready", "decomposition fallback"):
-                if self._decomposition_runtime_subagent_call_id:
+                decomp_state = self._precollab_subagents.get("task_decomposition")
+                if decomp_state and decomp_state.call_id:
                     self._dismiss_decomposition_generation_modal()
                     return
                 self._decomposition_completion_source = "subagent" if "ready" in lower_status else "fallback"
@@ -5870,19 +5877,23 @@ Type your question and press Enter to ask the agents.
                         level="debug",
                     )
 
-        def _get_decomposition_runtime_subagent(
+        def _get_precollab_subagent(
             self,
-            subagent_id: str = "task_decomposition",
+            subagent_id: str,
         ) -> Any | None:
-            """Return latest decomposition runtime subagent data."""
-            current = self._decomposition_runtime_subagent_data
-            callback = self._decomposition_runtime_status_callback
+            """Return latest data for a pre-collab subagent, refreshing via callback."""
+            state = self._precollab_subagents.get(subagent_id)
+            if not state:
+                return None
+
+            current = state.data
+            callback = state.status_callback
 
             if callback:
                 try:
                     refreshed = callback(subagent_id)
                     if refreshed is not None:
-                        self._decomposition_runtime_subagent_data = refreshed
+                        state.data = refreshed
                         current = refreshed
                 except Exception:
                     pass
@@ -5891,37 +5902,38 @@ Type your question and press Enter to ask the agents.
                 return current
             return None
 
-        def _open_decomposition_runtime_subagent_screen(
+        def _open_precollab_screen(
             self,
+            subagent_id: str,
             auto_return_on_completion: bool = False,
         ) -> bool:
-            """Open the decomposition runtime subagent screen.
+            """Open the SubagentScreen for a pre-collab subagent.
 
             Returns:
                 True if a screen was opened, False otherwise.
             """
-            subagent = self._get_decomposition_runtime_subagent()
+            subagent = self._get_precollab_subagent(subagent_id)
             if not subagent:
                 return False
 
             screen = SubagentScreen(
                 subagent=subagent,
                 all_subagents=[subagent],
-                status_callback=self._get_decomposition_runtime_subagent,
+                status_callback=lambda sid=subagent_id: self._get_precollab_subagent(sid),
                 auto_return_on_completion=auto_return_on_completion,
                 send_message_callback=self._subagent_message_callback,
             )
             self.push_screen(screen)
             return True
 
-        def _decomposition_subagent_events_ready(self) -> bool:
-            """Return True when decomposition subagent has enough data for full subagent view.
+        def _precollab_events_ready(self, subagent_id: str) -> bool:
+            """Return True when a pre-collab subagent has enough event data for display.
 
             Readiness requires:
             - a readable events stream, and
             - detectable inner-agent identity data (metadata or event agent IDs/sources).
             """
-            subagent = self._get_decomposition_runtime_subagent()
+            subagent = self._get_precollab_subagent(subagent_id)
             if not subagent:
                 return False
 
@@ -5978,13 +5990,16 @@ Type your question and press Enter to ask the agents.
                         continue
 
                 # Fallback: scan recent event lines for inner-agent sources.
+                # Exclude the subagent's own ID from the "seen agents" set.
+                excluded_sources = {"mcp_setup", "mcp_session", "orchestrator", "system", subagent_id}
+
                 def _is_agent_source(source: str | None) -> bool:
                     if not source:
                         return False
                     lowered = source.lower()
                     if lowered.startswith("mcp_") or lowered.startswith("mcp__") or "mcp__" in lowered:
                         return False
-                    if lowered in ("mcp_setup", "mcp_session", "orchestrator", "system", "task_decomposition"):
+                    if lowered in excluded_sources:
                         return False
                     return True
 
@@ -6023,10 +6038,10 @@ Type your question and press Enter to ask the agents.
             except Exception:
                 return False
 
-        def _auto_open_decomposition_runtime_subagent_screen(self, attempt: int = 0) -> None:
-            """Auto-open decomposition subagent screen once event data is available."""
-            if self._decomposition_subagent_events_ready():
-                self._open_decomposition_runtime_subagent_screen(auto_return_on_completion=True)
+        def _auto_open_precollab_screen(self, subagent_id: str, attempt: int = 0) -> None:
+            """Auto-open a pre-collab subagent screen once event data is available."""
+            if self._precollab_events_ready(subagent_id):
+                self._open_precollab_screen(subagent_id, auto_return_on_completion=True)
                 return
 
             # Retry for a short window; avoid forcing an early empty screen.
@@ -6035,164 +6050,7 @@ Type your question and press Enter to ask the agents.
 
             self.set_timer(
                 0.1,
-                lambda: self._auto_open_decomposition_runtime_subagent_screen(attempt + 1),
-            )
-
-        def _get_persona_runtime_subagent(
-            self,
-            subagent_id: str = "persona_generation",
-        ) -> Any | None:
-            """Return latest runtime persona-generation subagent data."""
-            current = self._persona_runtime_subagent_data
-            callback = self._persona_runtime_status_callback
-
-            if callback:
-                try:
-                    refreshed = callback(subagent_id)
-                    if refreshed is not None:
-                        self._persona_runtime_subagent_data = refreshed
-                        current = refreshed
-                except Exception:
-                    pass
-
-            if current is not None and getattr(current, "id", None) == subagent_id:
-                return current
-            return None
-
-        def _open_persona_runtime_subagent_screen(
-            self,
-            auto_return_on_completion: bool = False,
-        ) -> bool:
-            """Open the runtime persona-generation subagent screen."""
-            subagent = self._get_persona_runtime_subagent()
-            if not subagent:
-                return False
-
-            screen = SubagentScreen(
-                subagent=subagent,
-                all_subagents=[subagent],
-                status_callback=self._get_persona_runtime_subagent,
-                auto_return_on_completion=auto_return_on_completion,
-                send_message_callback=self._subagent_message_callback,
-            )
-            self.push_screen(screen)
-            return True
-
-        def _persona_subagent_events_ready(self) -> bool:
-            """Return True when persona-generation subagent has enough event data."""
-            subagent = self._get_persona_runtime_subagent()
-            if not subagent:
-                return False
-
-            log_path_raw = getattr(subagent, "log_path", None)
-            if not log_path_raw:
-                return False
-
-            try:
-                from massgen.subagent.models import SubagentResult
-
-                log_path = Path(log_path_raw)
-                if not log_path.is_absolute():
-                    log_path = (Path.cwd() / log_path).resolve()
-
-                events_path: Path | None = None
-                if log_path.is_file():
-                    events_path = log_path
-                elif log_path.is_dir():
-                    resolved = SubagentResult.resolve_events_path(log_path)
-                    if resolved:
-                        events_path = Path(resolved)
-
-                if not events_path or not events_path.exists():
-                    return False
-                if events_path.stat().st_size <= 0:
-                    return False
-
-                metadata_candidates = [events_path.parent / "execution_metadata.yaml"]
-                if log_path.is_dir():
-                    metadata_candidates.extend(
-                        [
-                            log_path / "full_logs" / "execution_metadata.yaml",
-                            log_path / "execution_metadata.yaml",
-                        ],
-                    )
-                else:
-                    metadata_candidates.append(log_path.parent / "execution_metadata.yaml")
-
-                for candidate in metadata_candidates:
-                    if not candidate.exists():
-                        continue
-                    try:
-                        import yaml
-
-                        with open(candidate, encoding="utf-8") as f:
-                            metadata = yaml.safe_load(f) or {}
-                        agents_cfg = (metadata.get("config") or {}).get("agents") or []
-                        if isinstance(agents_cfg, list):
-                            agent_ids = [a.get("id") for a in agents_cfg if isinstance(a, dict) and isinstance(a.get("id"), str) and a.get("id")]
-                            if agent_ids:
-                                return True
-                    except Exception:
-                        continue
-
-                # Fallback: scan recent event lines for inner-agent sources.
-                def _is_agent_source(source: str | None) -> bool:
-                    if not source:
-                        return False
-                    lowered = source.lower()
-                    if lowered.startswith("mcp_") or lowered.startswith("mcp__") or "mcp__" in lowered:
-                        return False
-                    if lowered in ("mcp_setup", "mcp_session", "orchestrator", "system", "persona_generation"):
-                        return False
-                    return True
-
-                try:
-                    import json
-
-                    tail_lines = events_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-400:]
-                    seen_agents: set[str] = set()
-                    for raw in tail_lines:
-                        if not raw.strip():
-                            continue
-                        try:
-                            event = json.loads(raw)
-                        except Exception:
-                            continue
-
-                        agent_id = event.get("agent_id")
-                        if isinstance(agent_id, str) and _is_agent_source(agent_id):
-                            seen_agents.add(agent_id)
-
-                        data = event.get("data") if isinstance(event.get("data"), dict) else {}
-                        source = data.get("source") if isinstance(data, dict) else None
-                        if not source and isinstance(data, dict):
-                            chunk = data.get("chunk")
-                            if isinstance(chunk, dict):
-                                source = chunk.get("source")
-                        if isinstance(source, str) and _is_agent_source(source):
-                            seen_agents.add(source)
-
-                    if seen_agents:
-                        return True
-                except Exception:
-                    return False
-
-                return False
-            except Exception:
-                return False
-
-        def _auto_open_persona_runtime_subagent_screen(self, attempt: int = 0) -> None:
-            """Auto-open persona-generation subagent screen once event data is available."""
-            if self._persona_subagent_events_ready():
-                self._open_persona_runtime_subagent_screen(auto_return_on_completion=True)
-                return
-
-            if attempt >= 120:
-                return
-
-            self.set_timer(
-                0.1,
-                lambda: self._auto_open_persona_runtime_subagent_screen(attempt + 1),
+                lambda sid=subagent_id, a=attempt: self._auto_open_precollab_screen(sid, a + 1),
             )
 
         def show_runtime_subagent_card(
@@ -6209,9 +6067,9 @@ Type your question and press Enter to ask the agents.
             """Render a subagent card for orchestrator-owned runtime subagents."""
             from massgen.subagent.models import SubagentDisplayData
 
-            # Decomposition pre-run generation should not appear in the main timeline,
-            # but should be visible immediately in the dedicated subagent screen.
-            if subagent_id == "task_decomposition":
+            # Pre-collab subagents (persona, decomposition, criteria) should not
+            # appear in the main timeline — they open directly in a full-screen view.
+            if subagent_id in _PRECOLLAB_SUBAGENT_IDS:
                 trimmed_task = (task or "").strip()
                 if len(trimmed_task) > 300:
                     trimmed_task = trimmed_task[:297] + "..."
@@ -6225,10 +6083,15 @@ Type your question and press Enter to ask the agents.
                     except Exception:
                         resolved_log_path = None
 
-                self._decomposition_runtime_subagent_call_id = call_id
-                self._decomposition_runtime_subagent_agent_id = agent_id
-                self._decomposition_runtime_status_callback = status_callback
-                self._decomposition_runtime_subagent_data = SubagentDisplayData(
+                state = self._precollab_subagents.get(subagent_id)
+                if not state:
+                    state = _PrecollabSubagentState()
+                    self._precollab_subagents[subagent_id] = state
+
+                state.call_id = call_id
+                state.agent_id = agent_id
+                state.status_callback = status_callback
+                state.data = SubagentDisplayData(
                     id=subagent_id,
                     task=trimmed_task,
                     status="running",
@@ -6243,49 +6106,12 @@ Type your question and press Enter to ask the agents.
                     log_path=resolved_log_path,
                 )
 
-                self._dismiss_decomposition_generation_modal()
-                if not self._decomposition_runtime_auto_opened:
-                    self._decomposition_runtime_auto_opened = True
-                    self.set_timer(0.05, self._auto_open_decomposition_runtime_subagent_screen)
-                return
+                if subagent_id == "task_decomposition":
+                    self._dismiss_decomposition_generation_modal()
 
-            # Persona generation prep should also stay out of the main timeline and
-            # open directly in the dedicated subagent screen.
-            if subagent_id == "persona_generation":
-                trimmed_task = (task or "").strip()
-                if len(trimmed_task) > 300:
-                    trimmed_task = trimmed_task[:297] + "..."
-
-                resolved_log_path = log_path
-                if not resolved_log_path:
-                    try:
-                        log_dir = get_log_session_dir()
-                        if log_dir:
-                            resolved_log_path = str(log_dir / "subagents" / subagent_id)
-                    except Exception:
-                        resolved_log_path = None
-
-                self._persona_runtime_subagent_call_id = call_id
-                self._persona_runtime_subagent_agent_id = agent_id
-                self._persona_runtime_status_callback = status_callback
-                self._persona_runtime_subagent_data = SubagentDisplayData(
-                    id=subagent_id,
-                    task=trimmed_task,
-                    status="running",
-                    progress_percent=0,
-                    elapsed_seconds=0.0,
-                    timeout_seconds=float(timeout_seconds or 300),
-                    workspace_path="",
-                    workspace_file_count=0,
-                    last_log_line="Starting...",
-                    error=None,
-                    answer_preview=None,
-                    log_path=resolved_log_path,
-                )
-
-                if not self._persona_runtime_auto_opened:
-                    self._persona_runtime_auto_opened = True
-                    self.set_timer(0.05, self._auto_open_persona_runtime_subagent_screen)
+                if not state.auto_opened:
+                    state.auto_opened = True
+                    self.set_timer(0.05, lambda sid=subagent_id: self._auto_open_precollab_screen(sid))
                 return
 
             target_agent = agent_id if agent_id in self.agent_widgets else None
@@ -6421,78 +6247,6 @@ Type your question and press Enter to ask the agents.
             """Update status/result info for an orchestrator-owned runtime subagent."""
             from massgen.subagent.models import SubagentDisplayData
 
-            # Decomposition pre-run generation is intentionally not rendered in timeline.
-            # Keep status in memory so Ctrl+U and the dedicated subagent screen still work.
-            if subagent_id == "task_decomposition":
-                existing = self._get_decomposition_runtime_subagent(subagent_id) or self._decomposition_runtime_subagent_data
-
-                status_map = {
-                    "running": "running",
-                    "pending": "pending",
-                    "completed": "completed",
-                    "timeout": "timeout",
-                    "failed": "failed",
-                    "error": "error",
-                }
-                normalized_status = status_map.get((status or "").lower(), "failed")
-
-                if existing is not None:
-                    self._decomposition_runtime_subagent_data = SubagentDisplayData(
-                        id=existing.id,
-                        task=existing.task,
-                        status=normalized_status,
-                        progress_percent=100 if normalized_status in ("completed", "timeout", "failed", "error") else existing.progress_percent,
-                        elapsed_seconds=existing.elapsed_seconds,
-                        timeout_seconds=existing.timeout_seconds,
-                        workspace_path=existing.workspace_path,
-                        workspace_file_count=existing.workspace_file_count,
-                        last_log_line=existing.last_log_line,
-                        error=error or existing.error,
-                        answer_preview=answer_preview or existing.answer_preview,
-                        log_path=existing.log_path,
-                        context_paths=list(getattr(existing, "context_paths", []) or []),
-                    )
-
-                if call_id == self._decomposition_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                    self._decomposition_runtime_subagent_call_id = None
-                    self._decomposition_runtime_subagent_agent_id = None
-                return
-
-            if subagent_id == "persona_generation":
-                existing = self._get_persona_runtime_subagent(subagent_id) or self._persona_runtime_subagent_data
-
-                status_map = {
-                    "running": "running",
-                    "pending": "pending",
-                    "completed": "completed",
-                    "timeout": "timeout",
-                    "failed": "failed",
-                    "error": "error",
-                }
-                normalized_status = status_map.get((status or "").lower(), "failed")
-
-                if existing is not None:
-                    self._persona_runtime_subagent_data = SubagentDisplayData(
-                        id=existing.id,
-                        task=existing.task,
-                        status=normalized_status,
-                        progress_percent=100 if normalized_status in ("completed", "timeout", "failed", "error") else existing.progress_percent,
-                        elapsed_seconds=existing.elapsed_seconds,
-                        timeout_seconds=existing.timeout_seconds,
-                        workspace_path=existing.workspace_path,
-                        workspace_file_count=existing.workspace_file_count,
-                        last_log_line=existing.last_log_line,
-                        error=error or existing.error,
-                        answer_preview=answer_preview or existing.answer_preview,
-                        log_path=existing.log_path,
-                        context_paths=list(getattr(existing, "context_paths", []) or []),
-                    )
-
-                if call_id == self._persona_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                    self._persona_runtime_subagent_call_id = None
-                    self._persona_runtime_subagent_agent_id = None
-                return
-
             status_map = {
                 "running": "running",
                 "pending": "pending",
@@ -6503,11 +6257,42 @@ Type your question and press Enter to ask the agents.
             }
             normalized_status = status_map.get((status or "").lower(), "failed")
 
+            # Pre-collab subagents are not rendered in the timeline — keep status
+            # in memory so Ctrl+U and the dedicated subagent screen still work.
+            if subagent_id in _PRECOLLAB_SUBAGENT_IDS:
+                pc_state = self._precollab_subagents.get(subagent_id)
+                if not pc_state:
+                    return
+
+                existing = self._get_precollab_subagent(subagent_id) or pc_state.data
+                if existing is not None:
+                    pc_state.data = SubagentDisplayData(
+                        id=existing.id,
+                        task=existing.task,
+                        status=normalized_status,
+                        progress_percent=100 if normalized_status in ("completed", "timeout", "failed", "error") else existing.progress_percent,
+                        elapsed_seconds=existing.elapsed_seconds,
+                        timeout_seconds=existing.timeout_seconds,
+                        workspace_path=existing.workspace_path,
+                        workspace_file_count=existing.workspace_file_count,
+                        last_log_line=existing.last_log_line,
+                        error=error or existing.error,
+                        answer_preview=answer_preview or existing.answer_preview,
+                        log_path=existing.log_path,
+                        context_paths=list(getattr(existing, "context_paths", []) or []),
+                    )
+
+                if call_id == pc_state.call_id and normalized_status in ("completed", "timeout", "failed", "error"):
+                    pc_state.call_id = None
+                    pc_state.agent_id = None
+                return
+
+            # Resolve target agent — check pre-collab states for call_id ownership.
             target_agent = agent_id
-            if call_id == self._decomposition_runtime_subagent_call_id and self._decomposition_runtime_subagent_agent_id:
-                target_agent = self._decomposition_runtime_subagent_agent_id
-            elif call_id == self._persona_runtime_subagent_call_id and self._persona_runtime_subagent_agent_id:
-                target_agent = self._persona_runtime_subagent_agent_id
+            for pc_state in self._precollab_subagents.values():
+                if call_id == pc_state.call_id and pc_state.agent_id:
+                    target_agent = pc_state.agent_id
+                    break
 
             panel = self.agent_widgets.get(target_agent)
             if not panel:
@@ -6551,12 +6336,13 @@ Type your question and press Enter to ask the agents.
             )
             card.update_subagent(subagent_id, updated)
 
-            if call_id == self._decomposition_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                self._decomposition_runtime_subagent_call_id = None
-                self._decomposition_runtime_subagent_agent_id = None
-            elif call_id == self._persona_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                self._persona_runtime_subagent_call_id = None
-                self._persona_runtime_subagent_agent_id = None
+            # Clear call ownership on terminal status for any pre-collab state.
+            if normalized_status in ("completed", "timeout", "failed", "error"):
+                for pc_state in self._precollab_subagents.values():
+                    if call_id == pc_state.call_id:
+                        pc_state.call_id = None
+                        pc_state.agent_id = None
+                        break
 
         def show_subagent_card_from_spawn(
             self,
@@ -7822,10 +7608,9 @@ Type your question and press Enter to ask the agents.
                     continue
 
             # Fallback: runtime preparation subagents (hidden from timeline by design)
-            if self._open_decomposition_runtime_subagent_screen():
-                return
-            if self._open_persona_runtime_subagent_screen():
-                return
+            for precollab_id in _PRECOLLAB_SUBAGENT_IDS:
+                if self._open_precollab_screen(precollab_id):
+                    return
 
             self.notify("No active subagents", severity="information", timeout=2)
 

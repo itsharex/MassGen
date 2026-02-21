@@ -1,0 +1,707 @@
+"""GEPA-inspired evaluation criteria generation for MassGen.
+
+This module generates task-specific evaluation criteria via a pre-collaboration
+consensus run, replacing fixed T1-T4 items with dynamic E1-EN criteria tailored
+to the actual task. When generation is disabled or fails, concrete static defaults
+are used instead.
+
+Each criterion is tagged as "core" (must-pass for quality) or "stretch"
+(aspirational excellence). The convergence off-ramp fires when only stretch
+items fail and core items all pass.
+"""
+
+import json
+import os
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from loguru import logger
+
+
+@dataclass
+class EvaluationCriteriaGeneratorConfig:
+    """Configuration for evaluation criteria generation.
+
+    Attributes:
+        enabled: Whether criteria generation is enabled
+        persist_across_turns: If True, reuse criteria across interactive turns
+        min_criteria: Minimum number of criteria to generate
+        max_criteria: Maximum number of criteria to generate
+    """
+
+    enabled: bool = False
+    persist_across_turns: bool = False
+    min_criteria: int = 4
+    max_criteria: int = 10
+
+
+@dataclass
+class GeneratedCriterion:
+    """A single evaluation criterion.
+
+    Attributes:
+        id: Criterion identifier (e.g., "E1", "E2")
+        text: The criterion description text
+        category: "core" or "stretch"
+    """
+
+    id: str
+    text: str
+    category: str  # "core" or "stretch"
+
+
+# Static defaults inspired by GEPA's diagnostic structure.
+# These replace the legacy abstract T1-T4 items with concrete defaults
+# that work for any task type.
+_DEFAULT_CRITERIA_TEXTS = [
+    ("The output directly achieves what was asked for — requirements are met," " not just approximated. Missing or partially implemented requirements" " count as failures."),
+    ("No broken functionality, errors, or obvious defects. Everything that's" " present works correctly. A working output with fewer features beats a" " broken one with more."),
+    ("The output is thorough — no significant gaps, thin sections, or" " placeholder content. Each component has enough depth to be genuinely" " useful, not just present."),
+    ("The output shows care beyond correctness — thoughtful choices," " consistent style, attention to edge cases, or creative elements that" " distinguish it from adequate work."),
+]
+
+_DEFAULT_CATEGORIES = ["core", "core", "core", "stretch"]
+
+# ---------------------------------------------------------------------------
+# Domain-specific criteria presets
+# ---------------------------------------------------------------------------
+# Each preset maps to a list of (text, category) tuples.  The criteria are
+# sourced from docs/modules/composition.md and cover the well-defined quality
+# characteristics of each special primitive.
+
+_CRITERIA_PRESETS: dict[str, list[tuple[str, str]]] = {
+    "persona": [
+        (
+            "Each persona articulates a clear, specific perspective that would lead to"
+            " meaningfully different outputs — not just surface variation in tone or"
+            " vocabulary. Two personas that would produce essentially the same answer"
+            " are a failure.",
+            "core",
+        ),
+        (
+            "Personas are grounded in the actual task. Each perspective is relevant to" " the problem domain and brings a genuinely useful lens, not an arbitrary" " or forced viewpoint.",
+            "core",
+        ),
+        (
+            "Personas are actionable instructions, not character descriptions. An agent"
+            " receiving this persona knows exactly how it changes their approach,"
+            " priorities, and decision-making — not just who they are pretending to be.",
+            "core",
+        ),
+        (
+            "The persona set collectively provides coverage — the major reasonable"
+            " approaches, value trade-offs, or methodological choices for this task are"
+            " represented. No critical perspective is missing.",
+            "core",
+        ),
+        (
+            "Personas are vivid enough to resist homogenization under peer pressure."
+            " The perspective is strongly stated so that even after seeing other agents'"
+            " answers, the core viewpoint remains distinguishable.",
+            "stretch",
+        ),
+    ],
+    "decomposition": [
+        (
+            "Subtasks are collectively exhaustive — completing all subtasks fully"
+            " produces the complete output. No significant aspect of the original task"
+            " falls through the cracks between subtasks.",
+            "core",
+        ),
+        (
+            "Subtasks have minimal coupling — each can be executed independently"
+            " without requiring intermediate results from other subtasks. Where"
+            " dependencies exist, they are explicit and the dependency order is"
+            " specified.",
+            "core",
+        ),
+        (
+            "Subtask scoping is balanced — no single subtask is trivial while another"
+            " carries the bulk of the complexity. Work is distributed so each agent has"
+            " a meaningful, roughly comparable contribution.",
+            "core",
+        ),
+        (
+            "Each subtask description is self-contained and specific enough that an" " agent can execute it without needing to infer intent from other subtasks" " or the original prompt.",
+            "core",
+        ),
+        (
+            "The decomposition strategy is appropriate for the task type — creative"
+            " tasks split along conceptual boundaries, technical tasks along component"
+            " boundaries, analytical tasks along dimension boundaries.",
+            "stretch",
+        ),
+    ],
+    "evaluation": [
+        (
+            "Each criterion is specific to the actual task — not generic advice that" " applies to any output. A criterion that could be copy-pasted to an" " unrelated task is too vague.",
+            "core",
+        ),
+        (
+            "Criteria are evaluable — an agent can determine pass/fail by examining the"
+            ' output, not by making subjective judgments about intent. "Addresses edge'
+            ' cases" is vague; "handles empty input, null values, and boundary'
+            ' conditions" is evaluable.',
+            "core",
+        ),
+        (
+            "The criteria set distinguishes excellent work from adequate work. If every"
+            " competent first draft would pass all criteria, the bar is too low. At"
+            " least one criterion should require genuine effort to satisfy.",
+            "core",
+        ),
+        (
+            "Core vs. stretch categorization is correct. Core criteria represent"
+            " non-negotiable requirements; stretch criteria represent quality"
+            " differentiators. A misclassified core criterion blocks good work; a"
+            " misclassified stretch criterion lets mediocre work pass.",
+            "core",
+        ),
+        (
+            "Criteria do not conflict with each other or create impossible trade-offs."
+            " Meeting one criterion should not require violating another. Where genuine"
+            " tensions exist, the criteria acknowledge the trade-off explicitly.",
+            "stretch",
+        ),
+    ],
+    "prompt": [
+        (
+            "The prompt achieves its functional goal — an agent receiving this prompt"
+            " would produce the intended type of output without additional"
+            " clarification. Test: could you hand this to a capable model cold and get"
+            " back what you need?",
+            "core",
+        ),
+        (
+            "The prompt is appropriately scoped — it constrains enough to prevent" " unhelpful outputs but does not over-constrain in ways that eliminate" " valid approaches.",
+            "core",
+        ),
+        (
+            "Important requirements are explicit, not implied. The prompt does not" ' depend on shared context, cultural assumptions, or "obvious" intentions' " that a model might miss.",
+            "core",
+        ),
+        (
+            "The prompt is structured for parseability — key instructions are" " prominent, not buried in paragraphs. An agent skimming the prompt would" " still catch the critical constraints.",
+            "stretch",
+        ),
+        (
+            "The prompt anticipates likely failure modes for its task type and includes"
+            ' guardrails against them (e.g., "do not summarize when asked to analyze"'
+            ' or "include concrete examples, not abstract principles").',
+            "stretch",
+        ),
+    ],
+    "analysis": [
+        (
+            "The analysis identifies concrete, specific findings — not vague" " observations. Each finding points to a specific location, pattern, or" " data point in the source material.",
+            "core",
+        ),
+        (
+            "Findings are supported by evidence from the actual data, not inferred from"
+            ' assumptions about what "usually" happens. Claims include references to'
+            " specific log entries, metrics, or examples.",
+            "core",
+        ),
+        (
+            "The analysis distinguishes symptoms from root causes. Surface-level"
+            ' observations (e.g., "agent 2 was slow") are traced to underlying'
+            ' explanations (e.g., "agent 2 hit rate limits due to tool call volume").',
+            "core",
+        ),
+        (
+            "Actionable recommendations follow from findings. Each significant finding" " includes a concrete suggestion for what to change, not just a description" " of what went wrong.",
+            "core",
+        ),
+        (
+            "The analysis identifies patterns across the dataset, not just individual"
+            " anomalies. Recurring behaviors, systematic biases, or structural issues"
+            " are surfaced alongside one-off events.",
+            "stretch",
+        ),
+    ],
+}
+
+# Public constant for validation (used by config_validator and tests)
+VALID_CRITERIA_PRESETS: frozenset[str] = frozenset(_CRITERIA_PRESETS.keys())
+
+
+def get_criteria_for_preset(preset: str) -> list[GeneratedCriterion]:
+    """Return domain-specific criteria for a named preset.
+
+    Args:
+        preset: One of the known preset names (persona, decomposition,
+                evaluation, prompt, analysis).
+
+    Returns:
+        List of GeneratedCriterion with E1..E5 IDs.
+
+    Raises:
+        ValueError: If preset name is not recognized.
+    """
+    if preset not in _CRITERIA_PRESETS:
+        valid = ", ".join(sorted(_CRITERIA_PRESETS.keys()))
+        raise ValueError(
+            f"Unknown criteria preset: '{preset}'. Valid presets: {valid}",
+        )
+
+    return [GeneratedCriterion(id=f"E{i + 1}", text=text, category=category) for i, (text, category) in enumerate(_CRITERIA_PRESETS[preset])]
+
+
+# Changedoc traceability criterion — appended when changedoc is enabled
+_CHANGEDOC_TRACEABILITY_TEXT = (
+    "Changedoc is honest, complete, and traceable. Every significant"
+    " decision is documented with genuine rationale. Implementation"
+    " references point to code that actually exists. No fabricated claims."
+)
+
+
+def get_default_criteria(has_changedoc: bool = False) -> list[GeneratedCriterion]:
+    """Return static default evaluation criteria.
+
+    These are used when generation is disabled or fails. They are concrete,
+    GEPA-inspired defaults that work for any task type.
+
+    Args:
+        has_changedoc: If True, append changedoc traceability as a 5th core criterion.
+
+    Returns:
+        List of GeneratedCriterion with E-prefix IDs.
+    """
+    criteria = [
+        GeneratedCriterion(
+            id=f"E{i + 1}",
+            text=text,
+            category=category,
+        )
+        for i, (text, category) in enumerate(
+            zip(_DEFAULT_CRITERIA_TEXTS, _DEFAULT_CATEGORIES),
+        )
+    ]
+
+    if has_changedoc:
+        criteria.append(
+            GeneratedCriterion(
+                id=f"E{len(criteria) + 1}",
+                text=_CHANGEDOC_TRACEABILITY_TEXT,
+                category="core",
+            ),
+        )
+
+    return criteria
+
+
+def _parse_criteria_response(
+    response: str,
+    min_criteria: int = 4,
+    max_criteria: int = 10,
+) -> list[GeneratedCriterion] | None:
+    """Parse LLM response into GeneratedCriterion objects.
+
+    Tries to extract JSON from the response using multiple strategies:
+    1. Direct JSON parse
+    2. Extract from markdown code blocks
+    3. Find JSON object by braces
+
+    Returns None if parsing fails or validation doesn't pass (triggering fallback).
+    """
+    json_str = response.strip()
+
+    data = _try_parse_json(json_str)
+
+    # Strategy 2: Extract from markdown code blocks
+    if data is None and "```" in json_str:
+        if "```json" in json_str:
+            start = json_str.find("```json") + 7
+            end = json_str.find("```", start)
+            if end > start:
+                data = _try_parse_json(json_str[start:end].strip())
+        if data is None:
+            start = json_str.find("```") + 3
+            end = json_str.find("```", start)
+            if end > start:
+                data = _try_parse_json(json_str[start:end].strip())
+
+    # Strategy 3: Find JSON by braces
+    if data is None:
+        criteria_start = json_str.find('{"criteria"')
+        if criteria_start >= 0:
+            brace_count = 0
+            json_end = -1
+            for i, char in enumerate(json_str[criteria_start:]):
+                if char == "{":
+                    brace_count += 1
+                elif char == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = criteria_start + i + 1
+                        break
+            if json_end > criteria_start:
+                data = _try_parse_json(json_str[criteria_start:json_end])
+
+    if data is None or "criteria" not in data:
+        logger.warning("Failed to parse criteria response")
+        return None
+
+    try:
+        raw_criteria = data["criteria"]
+        if not isinstance(raw_criteria, list):
+            logger.warning("criteria field is not a list")
+            return None
+
+        # Validate count
+        if len(raw_criteria) < min_criteria:
+            logger.warning(
+                f"Too few criteria: {len(raw_criteria)} < {min_criteria}",
+            )
+            return None
+        if len(raw_criteria) > max_criteria:
+            logger.warning(
+                f"Too many criteria: {len(raw_criteria)} > {max_criteria}",
+            )
+            return None
+
+        # Parse into GeneratedCriterion objects
+        criteria = []
+        for i, item in enumerate(raw_criteria):
+            text = item.get("text", "")
+            category = item.get("category", "core")
+            if category not in ("core", "stretch"):
+                category = "core"
+            criteria.append(
+                GeneratedCriterion(
+                    id=f"E{i + 1}",
+                    text=text,
+                    category=category,
+                ),
+            )
+
+        # Validate: at least min_criteria - 1 core items
+        core_count = sum(1 for c in criteria if c.category == "core")
+        if core_count < min_criteria - 1:
+            logger.warning(
+                f"Not enough core criteria: {core_count} < {min_criteria - 1}",
+            )
+            return None
+
+        return criteria
+
+    except (KeyError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to extract criteria from parsed data: {e}")
+        return None
+
+
+def _try_parse_json(text: str) -> dict[str, Any] | None:
+    """Attempt to parse JSON, returning None on failure."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+class EvaluationCriteriaGenerator:
+    """Generates task-specific evaluation criteria via subagent coordination.
+
+    When enabled, spawns a pre-collaboration subagent run to generate criteria
+    specific to the task. Falls back to static defaults on failure.
+    """
+
+    def __init__(self):
+        self.last_generation_source = "unknown"
+
+    def _build_generation_prompt(
+        self,
+        task: str,
+        has_changedoc: bool,
+        min_criteria: int = 4,
+        max_criteria: int = 10,
+    ) -> str:
+        """Build the prompt for criteria generation.
+
+        Args:
+            task: The user's task description
+            has_changedoc: Whether changedoc mode is active
+            min_criteria: Minimum number of criteria
+            max_criteria: Maximum number of criteria
+
+        Returns:
+            The formatted prompt string
+        """
+        changedoc_instruction = ""
+        if has_changedoc:
+            changedoc_instruction = """
+- **One criterion MUST assess changedoc traceability**: whether decisions are
+  documented with genuine rationale and implementation references are accurate.
+  Tag this criterion as "core".
+"""
+
+        return f"""You are generating evaluation dimensions for a multi-agent AI system.
+
+## Task Being Evaluated
+{task}
+
+## Your Goal
+Generate {min_criteria}-{max_criteria} evaluation dimensions specific to THIS task.
+Each dimension names an aspect of quality that an evaluator scores on a 1-10 scale.
+
+Dimensions are NOT requirements or acceptance tests. They are the axes along which
+output quality varies. Think: "what are the independent aspects of quality for this
+specific task that an evaluator should score?"
+
+## Requirements
+1. Generate between {min_criteria} and {max_criteria} dimensions
+2. Tag each as "core" (primary quality axis) or "stretch" (differentiator axis)
+3. At least {min_criteria - 1} dimensions must be "core"
+4. 1-3 dimensions may be "stretch" (what separates good from exceptional)
+5. Each dimension must be specific to THIS task, not generic
+6. Each dimension should be scoreable — an evaluator rates it, not checks TRUE/FALSE
+{changedoc_instruction}
+## Examples
+
+For a task "Create an SVG of a pelican riding a bicycle":
+- "Rate pelican accuracy: beak shape, throat pouch, plumage detail. SCORE: X/10"
+- "Rate bicycle accuracy: wheels, frame, handlebars, pedals. SCORE: X/10"
+- "Rate how convincingly the pelican rides the bicycle. SCORE: X/10"
+- "Rate visual appeal, scenery, and color usage. SCORE: X/10"
+
+For a task "Write an API client library":
+- "Rate API coverage: proportion of endpoints with correct method signatures. SCORE: X/10"
+- "Rate error handling: resilience to network failures, rate limits, malformed responses. SCORE: X/10"
+- "Rate developer ergonomics: naming clarity, discoverability, documentation. SCORE: X/10"
+
+Notice: these are short, dimension-focused, and end with SCORE: X/10. They name the
+quality axis and list what to look for — they do NOT prescribe specific quantities,
+thresholds, or implementation choices.
+
+BAD (prescriptive requirement): "The website contains at least 4 distinct pages covering history, discography, members, and legacy"
+GOOD (evaluation dimension): "Rate breadth and depth of topic coverage across the site. SCORE: X/10"
+
+BAD (implementation plan): "Each of the four Beatles is individually featured with accurate biographical details including birth year, role, and contributions"
+GOOD (evaluation dimension): "Rate individual member coverage: biographical accuracy, distinct contributions, completeness. SCORE: X/10"
+
+## Output Format
+Return JSON with this structure:
+{{
+    "criteria": [
+        {{"text": "Rate [aspect]: [what to look for]. SCORE: X/10", "category": "core"}},
+        {{"text": "Rate [aspect]: [what to look for]. SCORE: X/10", "category": "core"}},
+        {{"text": "Rate [aspect]: [what to look for]. SCORE: X/10", "category": "stretch"}}
+    ]
+}}
+
+Write the JSON to a file called `criteria.json` in your workspace.
+Generate evaluation dimensions now for the task above."""
+
+    async def generate_criteria_via_subagent(
+        self,
+        task: str,
+        agent_configs: list[dict[str, Any]],
+        has_changedoc: bool,
+        parent_workspace: str,
+        log_directory: str | None,
+        orchestrator_id: str,
+        min_criteria: int = 4,
+        max_criteria: int = 10,
+        on_subagent_started: Callable | None = None,
+    ) -> list[GeneratedCriterion]:
+        """Generate criteria via a subagent run.
+
+        Args:
+            task: The user's task
+            agent_configs: Parent agent configs to inherit models from
+            has_changedoc: Whether changedoc mode is active
+            parent_workspace: Path to parent workspace
+            log_directory: Path to log directory
+            orchestrator_id: Parent orchestrator ID
+            min_criteria: Minimum criteria count
+            max_criteria: Maximum criteria count
+            on_subagent_started: Callback when subagent starts
+
+        Returns:
+            List of GeneratedCriterion objects
+        """
+        logger.info("Generating evaluation criteria via subagent")
+
+        # Build workspace
+        criteria_workspace = os.path.join(parent_workspace, ".criteria_generation")
+        try:
+            os.makedirs(criteria_workspace, exist_ok=True)
+            context_md = os.path.join(criteria_workspace, "CONTEXT.md")
+            with open(context_md, "w", encoding="utf-8") as f:
+                f.write(
+                    "# Evaluation Criteria Generation\n\n" f"Task:\n{task}\n\n" "Goal: Generate task-specific evaluation criteria in criteria.json.\n",
+                )
+        except Exception as e:
+            logger.warning(f"Failed to prepare criteria workspace: {e}")
+            criteria_workspace = parent_workspace
+
+        try:
+            from massgen.subagent.manager import SubagentManager
+            from massgen.subagent.models import SubagentOrchestratorConfig
+
+            # Simplified agent configs (no tools, pure LLM reasoning)
+            simplified = []
+            for i, config in enumerate(agent_configs):
+                backend = config.get("backend", {})
+                simplified.append(
+                    {
+                        "id": config.get("id", f"criteria_agent_{i}"),
+                        "backend": {
+                            "type": backend.get("type", "openai"),
+                            "model": backend.get("model"),
+                            "base_url": backend.get("base_url"),
+                            "enable_mcp_command_line": False,
+                            "enable_code_based_tools": False,
+                            "exclude_file_operation_mcps": True,
+                        },
+                    },
+                )
+
+            subagent_config = SubagentOrchestratorConfig(
+                enabled=True,
+                agents=simplified,
+                coordination={
+                    "enable_subagents": False,
+                    "broadcast": False,
+                    "checklist_criteria_preset": "evaluation",
+                },
+            )
+
+            manager = SubagentManager(
+                parent_workspace=criteria_workspace,
+                parent_agent_id="criteria_generator",
+                orchestrator_id=orchestrator_id,
+                parent_agent_configs=simplified,
+                max_concurrent=1,
+                default_timeout=300,
+                subagent_orchestrator_config=subagent_config,
+                log_directory=log_directory,
+            )
+
+            prompt = self._build_generation_prompt(
+                task,
+                has_changedoc,
+                min_criteria,
+                max_criteria,
+            )
+
+            def _status_callback(subagent_id: str) -> Any | None:
+                try:
+                    return manager.get_subagent_display_data(subagent_id)
+                except Exception:
+                    return None
+
+            if on_subagent_started:
+                try:
+                    subagent_log_path = None
+                    if log_directory:
+                        subagent_log_path = str(
+                            Path(log_directory) / "subagents" / "criteria_generation",
+                        )
+                    on_subagent_started(
+                        "criteria_generation",
+                        prompt,
+                        300,
+                        _status_callback,
+                        subagent_log_path,
+                    )
+                except Exception:
+                    pass
+
+            result = await manager.spawn_subagent(
+                task=prompt,
+                subagent_id="criteria_generation",
+                timeout_seconds=300,
+            )
+
+            # Try to find criteria.json in output
+            if log_directory:
+                criteria = self._find_criteria_json(
+                    log_directory,
+                    min_criteria,
+                    max_criteria,
+                )
+                if criteria:
+                    self.last_generation_source = "subagent"
+                    logger.info(
+                        f"Loaded {len(criteria)} criteria from criteria.json",
+                    )
+                    return criteria
+
+            # Try parsing from answer text
+            if result.answer:
+                criteria = _parse_criteria_response(
+                    result.answer,
+                    min_criteria,
+                    max_criteria,
+                )
+                if criteria:
+                    self.last_generation_source = "subagent"
+                    logger.info(
+                        f"Parsed {len(criteria)} criteria from answer",
+                    )
+                    return criteria
+
+            logger.warning("No valid criteria output found, using defaults")
+            self.last_generation_source = "fallback"
+            return get_default_criteria(has_changedoc=has_changedoc)
+
+        except Exception as e:
+            logger.error(f"Failed to generate criteria via subagent: {e}")
+            self.last_generation_source = "fallback"
+            return get_default_criteria(has_changedoc=has_changedoc)
+
+    def _find_criteria_json(
+        self,
+        log_directory: str,
+        min_criteria: int,
+        max_criteria: int,
+    ) -> list[GeneratedCriterion] | None:
+        """Search for criteria.json in subagent logs."""
+        log_dir = Path(log_directory)
+        criteria_gen_dir = log_dir / "subagents" / "criteria_generation"
+
+        if not criteria_gen_dir.exists():
+            return None
+
+        search_patterns = [
+            "full_logs/final/agent_*/workspace/criteria.json",
+            "full_logs/agent_*/*/*/criteria.json",
+            "workspace/snapshots/agent_*/criteria.json",
+            "workspace/agent_*/criteria.json",
+            "workspace/temp/agent_*/agent*/criteria.json",
+        ]
+
+        found_files: list[Path] = []
+        for pattern in search_patterns:
+            found_files.extend(criteria_gen_dir.glob(pattern))
+
+        if not found_files:
+            return None
+
+        def _safe_mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except (FileNotFoundError, OSError):
+                return 0
+
+        found_files = sorted(found_files, key=_safe_mtime, reverse=True)
+
+        for criteria_file in found_files:
+            if not criteria_file.exists():
+                continue
+            try:
+                content = criteria_file.read_text()
+                criteria = _parse_criteria_response(
+                    content,
+                    min_criteria,
+                    max_criteria,
+                )
+                if criteria:
+                    return criteria
+            except Exception as e:
+                logger.debug(f"Failed to parse {criteria_file}: {e}")
+                continue
+
+        return None

@@ -241,50 +241,87 @@ def _resolve_report_file(report_path: str, state: dict[str, Any]) -> tuple[Path 
     return candidate, None
 
 
-def _evaluate_gap_report(report_path: str, state: dict[str, Any]) -> dict[str, Any]:
-    """Check gap report file existence for diagnostics (no gate logic).
+_DIAGNOSTIC_REPORT_MIN_LENGTH = 100
 
-    The gap report is informational only — it never overrides the checklist verdict.
-    Basic file existence and non-empty checks are retained for transparency in the
-    explanation, but no heuristic scoring or keyword matching is performed.
+
+def _evaluate_gap_report(report_path: str, state: dict[str, Any]) -> dict[str, Any]:
+    """Check diagnostic report file existence, substance, and capture content.
+
+    When ``require_diagnostic_report`` is True in state, the report is gated:
+    missing, empty, or trivially short reports cause ``passed=False``, which
+    the caller uses to override the verdict to iterate. No keyword or
+    heuristic matching is performed — the system prompt tells agents what
+    sections to write, and we trust that (matching GEPA's approach).
+
+    Report content is captured in ``result["content"]`` for logging and
+    potential forwarding to future rounds.
     """
+    require_report = bool(state.get("require_diagnostic_report", False))
     result: dict[str, Any] = {
         "provided": bool((report_path or "").strip()),
         "path": (report_path or "").strip(),
-        "passed": True,  # Always passes — no gate
+        "passed": True,  # default: pass (backward compat when gate inactive)
+        "gate_active": require_report,
+        "content": None,
         "issues": [],
     }
 
     if not result["provided"]:
+        if require_report:
+            result["passed"] = False
+            result["issues"].append(
+                "Diagnostic report is required before submitting scores. "
+                "Write a markdown diagnostic report covering Failure Patterns, "
+                "Root Causes, and Goal Alignment, then provide its path via report_path.",
+            )
         return result
 
     resolved, error = _resolve_report_file(report_path, state)
     if error:
         result["issues"].append(error)
+        if require_report:
+            result["passed"] = False
         return result
     if resolved is None:
+        if require_report:
+            result["passed"] = False
         return result
 
     result["resolved_path"] = str(resolved)
     if not resolved.exists():
         result["issues"].append(f"Report file not found: {resolved}")
+        if require_report:
+            result["passed"] = False
         return result
     if not resolved.is_file():
         result["issues"].append(f"Report path is not a file: {resolved}")
+        if require_report:
+            result["passed"] = False
         return result
 
     try:
         report_text = resolved.read_text(encoding="utf-8")
     except Exception as exc:
         result["issues"].append(f"Unable to read report file: {exc}")
+        if require_report:
+            result["passed"] = False
         return result
 
     if not report_text.strip():
         result["issues"].append("Report file is empty.")
+        if require_report:
+            result["passed"] = False
         return result
 
-    # Report exists and is non-empty — note it for transparency
     result["file_exists"] = True
+    result["content"] = report_text
+
+    if require_report and len(report_text.strip()) < _DIAGNOSTIC_REPORT_MIN_LENGTH:
+        result["passed"] = False
+        result["issues"].append(
+            "Report is too short to contain meaningful diagnostic analysis. " "Include Failure Patterns, Root Causes, and Goal Alignment sections.",
+        )
+
     return result
 
 
@@ -306,11 +343,49 @@ def evaluate_checklist_submission(
     required = state.get("required", len(items))
     cutoff = state.get("cutoff", 70)
 
+    # Determine item prefix: use E-prefix (new default), but accept T-prefix
+    # submissions for backwards compatibility
+    item_prefix = state.get("item_prefix", "E")
+
+    # Reject incomplete submissions — agent must score ALL criteria
+    expected_keys = {f"{item_prefix}{i+1}" for i in range(len(items))}
+    submitted_keys = set(scores.keys())
+    # Accept both E-prefix and T-prefix
+    submitted_normalized = set()
+    for k in submitted_keys:
+        if k.startswith("T"):
+            submitted_normalized.add(k.replace("T", item_prefix, 1))
+        elif k.startswith("E"):
+            submitted_normalized.add(k)
+        else:
+            submitted_normalized.add(k)
+    missing_keys = sorted(expected_keys - submitted_normalized)
+
+    if missing_keys and has_existing_answers:
+        report_eval = _evaluate_gap_report(report_path, state)
+        return {
+            "verdict": iterate_action,
+            "explanation": (
+                f"Incomplete submission: missing scores for {', '.join(missing_keys)}. "
+                f"You must score ALL {len(items)} criteria ({item_prefix}1-{item_prefix}{len(items)}). "
+                f"Resubmit with scores for every criterion."
+            ),
+            "incomplete_scores": True,
+            "true_count": 0,
+            "required": required,
+            "items": [],
+            "report": report_eval,
+            "report_gate_triggered": False,
+            "substantiveness_gate_triggered": False,
+            "convergence_offramp_triggered": False,
+        }
+
     items_detail = []
     true_count = 0
     for i, _item_text in enumerate(items):
-        key = f"T{i+1}"
-        entry = scores.get(key, 0)
+        key = f"{item_prefix}{i+1}"
+        # Accept both E-prefix and T-prefix submissions for backwards compat
+        entry = scores.get(key, scores.get(f"T{i+1}", scores.get(f"E{i+1}", 0)))
         score = _extract_score(entry)
         passed = score >= cutoff
         if passed:
@@ -346,13 +421,16 @@ def evaluate_checklist_submission(
         failed_set = set(failed_ids)
         passed_map = {d["id"]: d["passed"] for d in items_detail}
 
-        changedoc_mode = bool(state.get("changedoc_mode", False))
-        if changedoc_mode:
-            core_item_candidates = ("T1", "T2", "T3")
-            tail_failure_ids = {"T4"}
+        # Dynamic core/tail from item_categories in state, with fallback
+        stored_categories = state.get("item_categories")
+        if stored_categories:
+            core_item_candidates = tuple(k for k, v in stored_categories.items() if v == "core")
+            tail_failure_ids = {k for k, v in stored_categories.items() if v == "stretch"}
         else:
-            core_item_candidates = ("T1", "T2", "T3")
-            tail_failure_ids = {"T4"}
+            # Legacy fallback: all items except last are core
+            all_ids = [f"{item_prefix}{i+1}" for i in range(len(items))]
+            core_item_candidates = tuple(all_ids[:-1])
+            tail_failure_ids = {all_ids[-1]} if all_ids else set()
 
         core_quality_ids = [item_id for item_id in core_item_candidates if item_id in passed_map]
         core_quality_strong = all(passed_map[item_id] for item_id in core_quality_ids)
@@ -408,15 +486,16 @@ def evaluate_checklist_submission(
                     "easier work — deliver exactly what you committed to. "
                 )
 
-            # T4-specific ambition/craft guidance: when ambition fails, give the agent
-            # concrete direction instead of just listing T4 as a failed item.
-            t4_failed = "T4" in failed_set
-            if t4_failed and substantiveness_eval.get("valid", False):
+            # Stretch-item guidance: when stretch criteria fail, give concrete direction
+            stretch_failures = failed_set & tail_failure_ids
+            if stretch_failures and substantiveness_eval.get("valid", False):
+                # Build a human-readable label for the stretch items that failed
+                stretch_labels = ", ".join(sorted(stretch_failures))
                 if substantiveness_eval.get("decision_space_exhausted", False) or substantiveness_eval.get("incremental_only", False):
                     explanation += (
-                        "T4 (ambition/craft) failed and you reported no structural/transformative "
-                        "work remaining. Incremental polish will not fix an ambition deficit. "
-                        "To pass T4 you must go beyond the safe, obvious approach — make an "
+                        f"{stretch_labels} (stretch criteria) failed and you reported no structural/transformative "
+                        "work remaining. Incremental polish will not fix a stretch-quality deficit. "
+                        f"To pass {stretch_labels} you must go beyond the safe, obvious approach — make an "
                         "existing element significantly richer, find an elegant solution to a "
                         "known hard problem, or introduce a distinctive design choice. Depth "
                         "counts: improving what exists can satisfy this. If no such move exists, "
@@ -424,8 +503,8 @@ def evaluate_checklist_submission(
                     )
                 else:
                     explanation += (
-                        "T4 (ambition/craft) failed. Your next answer needs at least one "
-                        "element showing creative ambition or meaningful craft — not just "
+                        f"{stretch_labels} (stretch criteria) failed. Your next answer needs at least one "
+                        "element showing care beyond correctness — not just "
                         "mechanical execution. This can be a novel feature, an existing "
                         "element made significantly richer, or thoughtful synthesis that "
                         "combines the best of multiple approaches and improves on them. "
@@ -443,9 +522,17 @@ def evaluate_checklist_submission(
             if convergence_offramp_triggered:
                 explanation += " Convergence off-ramp activated: core quality is strong and no " "substantive novelty plan remains, so additional rounds would likely " "be incremental-only."
 
-    # Include report diagnostics for transparency (informational only)
+    # Apply diagnostic report gate (skip on first answer — nothing to diagnose yet)
+    report_gate_triggered = False
+    if has_existing_answers and not report_eval.get("passed", True):
+        verdict = iterate_action
+        report_gate_triggered = True
+        report_issues = "; ".join(report_eval.get("issues", []))
+        explanation += f" REPORT GATE: {report_issues}"
+
+    # Include report diagnostics for transparency
     if report_eval.get("provided"):
-        report_summary = " Gap report provided."
+        report_summary = " Diagnostic report provided."
         if report_eval.get("issues"):
             report_summary += f" Report notes: {'; '.join(report_eval['issues'])}."
         explanation += report_summary
@@ -470,7 +557,7 @@ def evaluate_checklist_submission(
         "items": items_detail,
         "report": report_eval,
         "substantiveness": substantiveness_eval,
-        "report_gate_triggered": False,
+        "report_gate_triggered": report_gate_triggered,
         "substantiveness_gate_triggered": substantiveness_gate_triggered,
         "convergence_offramp_triggered": convergence_offramp_triggered,
     }
@@ -523,7 +610,7 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path) -> None:
 
     submit_checklist.__doc__ = (
         "Submit your checklist evaluation. Each score in 'scores' must be an "
-        "object with 'score' (0-100) and 'reasoning' (why you gave that score). "
+        "object with 'score' (0-10) and 'reasoning' (why you gave that score). "
         "The 'improvements' field should describe features or content that an "
         "ideal answer would have but no existing answer has attempted. "
         "Use the 'substantiveness' object to report planned change counts "

@@ -842,9 +842,23 @@ class SubagentView(Container):
         self._queued_runtime_pending_by_agent: dict[str, int] = {}
         self._next_runtime_message_id: int = 1
 
+    def _build_unique_tab_ids(self) -> list[str]:
+        """Build unique tab IDs from subagent list, disambiguating duplicates."""
+        seen: dict[str, int] = {}
+        tab_ids: list[str] = []
+        self._tab_id_to_index: dict[str, int] = {}
+        for idx, sa in enumerate(self._all_subagents):
+            count = seen.get(sa.id, 0)
+            seen[sa.id] = count + 1
+            tab_id = f"{sa.id}_{count}" if count > 0 else sa.id
+            tab_ids.append(tab_id)
+            self._tab_id_to_index[tab_id] = idx
+        return tab_ids
+
     def compose(self) -> ComposeResult:
-        # Build agent IDs and models for tab bar
-        agent_ids = [sa.id for sa in self._all_subagents]
+        # Build agent IDs and models for tab bar.
+        # Disambiguate duplicate subagent IDs to avoid widget ID collisions.
+        agent_ids = self._build_unique_tab_ids()
         agent_models: dict[str, str] = {}  # Would come from config
 
         # Header with back button
@@ -940,7 +954,10 @@ class SubagentView(Container):
         try:
             self._tab_bar = self.query_one("#subagent-tab-bar", AgentTabBar)
             if self._tab_bar:
-                self._tab_bar.set_active(self._subagent.id)
+                # Use disambiguated tab ID for correct activation
+                index_to_tab = {v: k for k, v in self._tab_id_to_index.items()} if hasattr(self, "_tab_id_to_index") else {}
+                active_tab_id = index_to_tab.get(self._current_index, self._subagent.id)
+                self._tab_bar.set_active(active_tab_id)
         except Exception as e:
             tui_log(f"[SubagentScreen] {e}")
 
@@ -1397,9 +1414,11 @@ class SubagentView(Container):
         if self._ribbon:
             self._ribbon.set_round(self._subagent.id, current_round, False)
 
-        # Update tab bar status
+        # Update tab bar status (use disambiguated tab ID)
         if self._tab_bar:
-            self._tab_bar.update_agent_status(self._subagent.id, self._subagent.status)
+            index_to_tab = {v: k for k, v in self._tab_id_to_index.items()} if hasattr(self, "_tab_id_to_index") else {}
+            tab_id = index_to_tab.get(self._current_index, self._subagent.id)
+            self._tab_bar.update_agent_status(tab_id, self._subagent.status)
 
     def _update_activity_dots(self, events: list[MassGenEvent]) -> None:
         """Update agent activity dots based on new events."""
@@ -1464,6 +1483,16 @@ class SubagentView(Container):
             if self._status_line and self._inner_agents:
                 self._status_line.set_agents(self._inner_agents)
 
+            # Update message input bar targets for the new subagent's agents
+            if self._send_message_callback and self._inner_agents:
+                try:
+                    from .message_input_bar import MessageInputBar
+
+                    input_bar = self.query_one("#subagent-input-bar", MessageInputBar)
+                    input_bar.set_targets(self._inner_agents)
+                except Exception:
+                    pass
+
             # Mount new timelines and load first agent
             if self._panel:
                 self._panel.mount_agent_timelines(self._inner_agents)
@@ -1477,10 +1506,14 @@ class SubagentView(Container):
 
             # Update tab bar and sync completed subagent statuses
             if self._tab_bar:
-                self._tab_bar.set_active(self._subagent.id)
-                for sa in self._all_subagents:
+                # Use index-to-tab-id mapping for correct activation
+                index_to_tab = {v: k for k, v in self._tab_id_to_index.items()} if hasattr(self, "_tab_id_to_index") else {}
+                active_tab_id = index_to_tab.get(self._current_index, self._subagent.id)
+                self._tab_bar.set_active(active_tab_id)
+                for idx, sa in enumerate(self._all_subagents):
                     if sa.status not in ("running", "pending"):
-                        self._tab_bar.update_agent_status(sa.id, "completed")
+                        tab_id = index_to_tab.get(idx, sa.id)
+                        self._tab_bar.update_agent_status(tab_id, "completed")
 
             # Update ribbon agent
             if self._ribbon:
@@ -1968,23 +2001,32 @@ class SubagentView(Container):
         control_id = event.control.id if event.control else None
 
         if control_id == "subagent-tab-bar":
-            # Top-level subagent selector - switch to different subagent
-            for i, sa in enumerate(self._all_subagents):
-                if sa.id == event.agent_id:
-                    self._switch_subagent(i)
-                    break
+            # Top-level subagent selector - use tab_id_to_index for safe lookup
+            # (handles duplicate subagent IDs correctly)
+            idx = getattr(self, "_tab_id_to_index", {}).get(event.agent_id)
+            if idx is not None:
+                self._switch_subagent(idx)
+            else:
+                # Fallback: linear scan by sa.id
+                for i, sa in enumerate(self._all_subagents):
+                    if sa.id == event.agent_id:
+                        self._switch_subagent(i)
+                        break
         elif control_id == "inner-agent-tabs":
             # Inner agent tabs - switch to different inner agent within same subagent
             self._switch_inner_agent(event.agent_id)
         else:
-            # Fallback: try to determine by checking if agent_id matches a subagent
-            for i, sa in enumerate(self._all_subagents):
-                if sa.id == event.agent_id:
-                    self._switch_subagent(i)
-                    return
-            # Otherwise assume it's an inner agent
-            if event.agent_id in self._inner_agents:
+            # Fallback: check tab_id_to_index first, then linear scan
+            idx = getattr(self, "_tab_id_to_index", {}).get(event.agent_id)
+            if idx is not None:
+                self._switch_subagent(idx)
+            elif event.agent_id in self._inner_agents:
                 self._switch_inner_agent(event.agent_id)
+            else:
+                for i, sa in enumerate(self._all_subagents):
+                    if sa.id == event.agent_id:
+                        self._switch_subagent(i)
+                        return
 
     def action_close(self) -> None:
         """Close the screen and return to main view."""
