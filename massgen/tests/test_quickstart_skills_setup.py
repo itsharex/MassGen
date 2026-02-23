@@ -14,6 +14,7 @@ def _package_status(
     openai_installed: bool,
     vercel_installed: bool,
     agent_browser_installed: bool,
+    remotion_installed: bool,
     crawl4ai_installed: bool,
 ) -> dict:
     """Build package status payload matching check_skill_packages_installed()."""
@@ -39,6 +40,11 @@ def _package_status(
             "description": "Agent browser skill",
             "installed": agent_browser_installed,
         },
+        "remotion": {
+            "name": "Remotion Skill",
+            "description": "Video generation and editing skill powered by Remotion",
+            "installed": remotion_installed,
+        },
         "crawl4ai": {
             "name": "Crawl4AI",
             "description": "Crawl4AI skill",
@@ -59,6 +65,7 @@ def test_install_quickstart_skills_skips_when_packages_already_installed(monkeyp
             openai_installed=True,
             vercel_installed=True,
             agent_browser_installed=True,
+            remotion_installed=True,
             crawl4ai_installed=True,
         ),
     )
@@ -94,6 +101,11 @@ def test_install_quickstart_skills_skips_when_packages_already_installed(monkeyp
     )
     monkeypatch.setattr(
         skills_installer,
+        "install_remotion_skill",
+        lambda: calls.append("remotion") or True,
+    )
+    monkeypatch.setattr(
+        skills_installer,
         "install_crawl4ai_skill",
         lambda: calls.append("crawl4ai") or True,
     )
@@ -114,6 +126,7 @@ def test_install_quickstart_skills_installs_only_missing_packages(monkeypatch):
             openai_installed=False,
             vercel_installed=False,
             agent_browser_installed=False,
+            remotion_installed=False,
             crawl4ai_installed=False,
         ),
     )
@@ -149,12 +162,17 @@ def test_install_quickstart_skills_installs_only_missing_packages(monkeypatch):
     )
     monkeypatch.setattr(
         skills_installer,
+        "install_remotion_skill",
+        lambda: calls.append("remotion") or True,
+    )
+    monkeypatch.setattr(
+        skills_installer,
         "install_crawl4ai_skill",
         lambda: calls.append("crawl4ai") or True,
     )
 
     assert skills_installer.install_quickstart_skills() is True
-    assert calls == ["openskills", "anthropic", "openai", "vercel", "agent_browser", "crawl4ai"]
+    assert calls == ["openskills", "anthropic", "openai", "vercel", "agent_browser", "remotion", "crawl4ai"]
 
 
 def test_install_quickstart_skills_handles_partial_failures(monkeypatch):
@@ -169,6 +187,7 @@ def test_install_quickstart_skills_handles_partial_failures(monkeypatch):
             openai_installed=False,
             vercel_installed=False,
             agent_browser_installed=False,
+            remotion_installed=False,
             crawl4ai_installed=False,
         ),
     )
@@ -204,6 +223,11 @@ def test_install_quickstart_skills_handles_partial_failures(monkeypatch):
     )
     monkeypatch.setattr(
         skills_installer,
+        "install_remotion_skill",
+        lambda: calls.append("remotion") or True,
+    )
+    monkeypatch.setattr(
+        skills_installer,
         "install_crawl4ai_skill",
         lambda: calls.append("crawl4ai") or True,
     )
@@ -224,6 +248,7 @@ def test_install_quickstart_skills_installs_openskills_when_missing(monkeypatch)
             openai_installed=True,
             vercel_installed=True,
             agent_browser_installed=True,
+            remotion_installed=True,
             crawl4ai_installed=True,
         ),
     )
@@ -256,6 +281,11 @@ def test_install_quickstart_skills_installs_openskills_when_missing(monkeypatch)
         skills_installer,
         "install_agent_browser_skill",
         lambda: calls.append("agent_browser") or True,
+    )
+    monkeypatch.setattr(
+        skills_installer,
+        "install_remotion_skill",
+        lambda: calls.append("remotion") or True,
     )
     monkeypatch.setattr(
         skills_installer,
@@ -426,6 +456,23 @@ def test_openai_detected_from_marker_skills(monkeypatch, tmp_path):
     assert result["openai"]["installed"] is True
 
 
+def test_remotion_detected_from_marker_skills(monkeypatch, tmp_path):
+    """Remotion should be detected when marker skills exist on disk."""
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({}))
+    monkeypatch.setattr(skills_installer, "_get_package_manifest_path", lambda: manifest_path)
+
+    monkeypatch.setattr(
+        skills_installer,
+        "list_available_skills",
+        lambda: _fake_available_skills(project_skills=["remotion"]),
+    )
+
+    result = skills_installer.check_skill_packages_installed()
+
+    assert result["remotion"]["installed"] is True
+
+
 def test_anthropic_detected_from_marker_skills_not_manifest(monkeypatch, tmp_path):
     """Anthropic detection should rely on marker skills, not the manifest."""
     manifest_path = tmp_path / "manifest.json"
@@ -444,3 +491,91 @@ def test_anthropic_detected_from_marker_skills_not_manifest(monkeypatch, tmp_pat
     result = skills_installer.check_skill_packages_installed()
 
     assert result["anthropic"]["installed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Remotion install/setup section injection
+# ---------------------------------------------------------------------------
+
+
+def test_apply_remotion_install_setup_section_inserts_after_frontmatter():
+    """Remotion setup section should be inserted after SKILL.md frontmatter."""
+    original = """---
+name: remotion-best-practices
+description: Best practices for Remotion - Video creation in React
+metadata:
+  tags: remotion, video, react, animation, composition
+---
+
+## When to use
+
+Use this skills whenever you are dealing with Remotion code to obtain the domain-specific knowledge.
+"""
+
+    updated = skills_installer._apply_remotion_install_setup_section(original)
+
+    assert "## Install and Setup" in updated
+    assert "bun create video" in updated
+    assert "npx create-video@latest" in updated
+    assert updated.index("## Install and Setup") < updated.index("## When to use")
+
+
+def test_apply_remotion_install_setup_section_is_idempotent():
+    """Remotion setup section injection should be a no-op when already present."""
+    original = """---
+name: remotion-best-practices
+description: Best practices for Remotion - Video creation in React
+metadata:
+  tags: remotion, video, react, animation, composition
+---
+
+## Install and Setup
+
+If no existing Remotion project is found in the current workspace, initialize one first.
+
+## When to use
+
+Use this skills whenever you are dealing with Remotion code to obtain the domain-specific knowledge.
+"""
+
+    updated = skills_installer._apply_remotion_install_setup_section(original)
+
+    assert updated == original
+
+
+def test_install_remotion_skill_runs_post_install_setup_patch(monkeypatch):
+    """Successful remotion install should patch SKILL.md with setup guidance."""
+    calls = []
+
+    monkeypatch.setattr(
+        skills_installer,
+        "_install_openskills_skill_package",
+        lambda package_id: calls.append(("install", package_id)) or True,
+    )
+    monkeypatch.setattr(
+        skills_installer,
+        "_ensure_remotion_install_setup_section",
+        lambda: calls.append(("patch", None)) or True,
+    )
+
+    assert skills_installer.install_remotion_skill() is True
+    assert calls == [("install", "remotion"), ("patch", None)]
+
+
+def test_install_remotion_skill_skips_patch_when_install_fails(monkeypatch):
+    """Failed remotion install should not attempt SKILL.md patching."""
+    calls = []
+
+    monkeypatch.setattr(
+        skills_installer,
+        "_install_openskills_skill_package",
+        lambda package_id: calls.append(("install", package_id)) or False,
+    )
+    monkeypatch.setattr(
+        skills_installer,
+        "_ensure_remotion_install_setup_section",
+        lambda: calls.append(("patch", None)) or True,
+    )
+
+    assert skills_installer.install_remotion_skill() is False
+    assert calls == [("install", "remotion")]

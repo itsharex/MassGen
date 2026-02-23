@@ -270,6 +270,97 @@ def test_scanner_excludes_template_directory_from_discovery(tmp_path):
     assert types == []
 
 
+# ── Scanner: allowed_types filtering ──
+
+
+def test_scanner_filter_excludes_novelty():
+    """When allowed_types excludes novelty, novelty is not returned."""
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    types = scan_subagent_types(
+        builtin_dir=builtin_dir,
+        project_dir=Path("/nonexistent"),
+        allowed_types=["evaluator", "explorer", "researcher"],
+    )
+    names = {t.name for t in types}
+    assert "novelty" not in names
+    assert "evaluator" in names
+
+
+def test_scanner_filter_includes_novelty_when_requested():
+    """When allowed_types includes novelty, novelty is returned."""
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    types = scan_subagent_types(
+        builtin_dir=builtin_dir,
+        project_dir=Path("/nonexistent"),
+        allowed_types=["evaluator", "novelty"],
+    )
+    names = {t.name for t in types}
+    assert "novelty" in names
+    assert "evaluator" in names
+    assert "researcher" not in names
+
+
+def test_scanner_filter_none_returns_all():
+    """When allowed_types is None, all types returned (backward compat)."""
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    types = scan_subagent_types(
+        builtin_dir=builtin_dir,
+        project_dir=Path("/nonexistent"),
+        allowed_types=None,
+    )
+    names = {t.name for t in types}
+    assert "evaluator" in names
+    assert "novelty" in names
+
+
+def test_scanner_filter_unknown_type_warns(caplog):
+    """Unknown type names in allowed_types produce warnings."""
+    import logging
+
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    with caplog.at_level(logging.WARNING):
+        types = scan_subagent_types(
+            builtin_dir=builtin_dir,
+            project_dir=Path("/nonexistent"),
+            allowed_types=["evaluator", "nonexistent_type"],
+        )
+    names = {t.name for t in types}
+    assert "evaluator" in names
+    assert "nonexistent_type" not in names
+    assert "nonexistent_type" in caplog.text
+
+
+def test_scanner_filter_empty_list_returns_nothing():
+    """Empty allowed_types list means no types exposed."""
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    types = scan_subagent_types(
+        builtin_dir=builtin_dir,
+        project_dir=Path("/nonexistent"),
+        allowed_types=[],
+    )
+    assert types == []
+
+
+def test_default_subagent_types_constant():
+    """DEFAULT_SUBAGENT_TYPES exists and excludes novelty."""
+    from massgen.subagent.type_scanner import DEFAULT_SUBAGENT_TYPES
+
+    assert "evaluator" in DEFAULT_SUBAGENT_TYPES
+    assert "explorer" in DEFAULT_SUBAGENT_TYPES
+    assert "researcher" in DEFAULT_SUBAGENT_TYPES
+    assert "novelty" not in DEFAULT_SUBAGENT_TYPES
+
+
 # ── Test 9-12: SubagentSection with specialized types ──
 
 

@@ -278,6 +278,11 @@ class TimelineEventAdapter:
         is_subagent_tool = False
         if hasattr(self._panel, "_is_subagent_tool"):
             try:
+                is_subagent_tool = self._panel._is_subagent_tool(
+                    tool_data.tool_name,
+                    getattr(tool_data, "args_full", None),
+                )
+            except TypeError:
                 is_subagent_tool = self._panel._is_subagent_tool(tool_data.tool_name)
             except Exception:
                 is_subagent_tool = False

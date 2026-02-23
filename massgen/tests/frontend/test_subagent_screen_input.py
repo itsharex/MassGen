@@ -83,6 +83,7 @@ class TestSubagentViewMessageCallback:
         screen._status_callback = None
         screen._auto_return_on_completion = False
         screen._send_message_callback = callback
+        screen._continue_subagent_callback = None
 
         list(screen.compose())
 
@@ -106,10 +107,48 @@ class TestSubagentViewMessageCallback:
         screen._status_callback = None
         screen._auto_return_on_completion = False
         screen._send_message_callback = None
+        screen._continue_subagent_callback = None
 
         list(screen.compose())
 
         assert captured.get("send_message_callback") is None
+
+    def test_subagent_view_accepts_continue_subagent_callback(self):
+        """SubagentView stores the continue callback when passed."""
+        from massgen.frontend.displays.textual_widgets.subagent_screen import (
+            SubagentView,
+        )
+
+        callback = MagicMock(return_value=True)
+        view = SubagentView.__new__(SubagentView)
+        subagent = _make_subagent(status="completed")
+        view.__init__(subagent=subagent, continue_subagent_callback=callback)
+        assert view._continue_subagent_callback is callback
+
+    def test_subagent_screen_passes_continue_callback_to_view(self, monkeypatch):
+        """SubagentScreen forwards continue_subagent_callback to SubagentView."""
+        from massgen.frontend.displays.textual_widgets import subagent_screen as mod
+
+        captured = {}
+
+        class _FakeView:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(mod, "SubagentView", _FakeView)
+
+        callback = MagicMock(return_value=True)
+        screen = mod.SubagentScreen.__new__(mod.SubagentScreen)
+        screen._subagent = _make_subagent(status="completed")
+        screen._all_subagents = [screen._subagent]
+        screen._status_callback = None
+        screen._auto_return_on_completion = False
+        screen._send_message_callback = None
+        screen._continue_subagent_callback = callback
+
+        list(screen.compose())
+
+        assert captured.get("continue_subagent_callback") is callback
 
 
 # =============================================================================
@@ -153,6 +192,7 @@ class TestDisplayCallbackWiring:
         app.agent_widgets = {}
         app.notify = lambda *args, **kwargs: None
         app._subagent_message_callback = MagicMock(return_value=True)
+        app._subagent_continue_callback = MagicMock(return_value=True)
 
         captured = {}
 
@@ -175,6 +215,30 @@ class TestDisplayCallbackWiring:
         app.on_subagent_card_open_modal(event)
 
         assert captured.get("send_message_callback") is app._subagent_message_callback
+        assert captured.get("continue_subagent_callback") is app._subagent_continue_callback
+
+    def test_textual_app_stores_subagent_continue_callback(self):
+        """TextualApp.set_subagent_continue_callback stores the callback."""
+        from massgen.frontend.displays import textual_terminal_display as mod
+
+        app_cls = mod.TextualApp
+        app = app_cls.__new__(app_cls)
+        callback = MagicMock(return_value=True)
+        app.set_subagent_continue_callback(callback)
+        assert app._subagent_continue_callback is callback
+
+    def test_textual_terminal_display_forwards_continue_callback(self):
+        """TextualTerminalDisplay.set_subagent_continue_callback forwards to app."""
+        from massgen.frontend.displays import textual_terminal_display as mod
+
+        display = mod.TextualTerminalDisplay.__new__(mod.TextualTerminalDisplay)
+        mock_app = MagicMock()
+        mock_app.set_subagent_continue_callback = MagicMock()
+        display._app = mock_app
+
+        callback = MagicMock(return_value=True)
+        display.set_subagent_continue_callback(callback)
+        mock_app.set_subagent_continue_callback.assert_called_once_with(callback)
 
 
 # =============================================================================
@@ -317,6 +381,7 @@ class TestSubagentRuntimeQueueBanner:
         assert len(view._queued_runtime_messages) == 1
         assert view._queued_runtime_messages[0]["target_label"] == "all agents"
         assert view._queued_runtime_messages[0]["pending_agents"] == ["agent_a", "agent_b"]
+        assert view._queued_runtime_messages[0]["source_label"] == "parent"
         assert banner.pending_counts == {"agent_a": 1, "agent_b": 1}
         assert visibility and visibility[-1] is True
         assert any("Message sent to all agents" in msg for msg in notifications)
@@ -401,6 +466,289 @@ class TestSubagentRuntimeQueueBanner:
         assert first["pending_agents"] == ["agent_b"]
         assert second["pending_agents"] == ["agent_a", "agent_b"]
         assert banner.pending_counts == {"agent_a": 1, "agent_b": 2}
+
+    def test_subagent_runtime_injection_received_event_reduces_pending_queue(self):
+        view, _ = self._init_view()
+
+        class _BannerStub:
+            def __init__(self):
+                self.messages = []
+                self.pending_counts = {}
+
+            def set_messages(self, messages):
+                self.messages = messages
+
+            def set_pending_counts(self, counts):
+                self.pending_counts = counts
+
+        banner = _BannerStub()
+        visibility: list[bool] = []
+        view._queued_runtime_banner = banner
+        view._set_runtime_queue_region_visible = lambda visible: visibility.append(visible)
+
+        view._queue_runtime_message(
+            "Please include the British Invasion links.",
+            target="all",
+        )
+        assert banner.pending_counts == {"agent_a": 1, "agent_b": 1}
+
+        delivery_event = MassGenEvent.create(
+            "injection_received",
+            agent_id="agent_a",
+            source_agents=["parent"],
+            injection_type="runtime_inbox_input",
+        )
+        view._update_runtime_queue_from_events([delivery_event])
+
+        assert len(view._queued_runtime_messages) == 1
+        assert view._queued_runtime_messages[0]["pending_agents"] == ["agent_b"]
+        assert banner.pending_counts == {"agent_a": 0, "agent_b": 1}
+        assert visibility and visibility[-1] is True
+
+    def test_subagent_submit_adds_timeline_queue_note_for_parent_source(self):
+        view, callback_calls = self._init_view()
+
+        class _TimelineStub:
+            def __init__(self) -> None:
+                self.entries: list[dict[str, object]] = []
+
+            def add_text(self, content, style="", text_class="", round_number=1):
+                self.entries.append(
+                    {
+                        "content": content,
+                        "style": style,
+                        "text_class": text_class,
+                        "round_number": round_number,
+                    },
+                )
+
+        class _PanelStub:
+            def __init__(self, timeline):
+                self._timeline = timeline
+
+            def query_one(self, selector, _cls=None):
+                if selector == "#subagent-timeline-agent_a":
+                    return self._timeline
+                raise LookupError(selector)
+
+        timeline = _TimelineStub()
+        view._panel = _PanelStub(timeline)
+        view._current_inner_agent = "agent_a"
+        view._round_number = 1
+        view._set_runtime_queue_region_visible = lambda _visible: None
+        notifications: list[str] = []
+        view.notify = lambda message, **kwargs: notifications.append(str(message))
+
+        event = SimpleNamespace(
+            value="How's progress?",
+            target="all",
+            stop=lambda: None,
+        )
+
+        view.on_message_input_bar_submitted(event)
+
+        assert callback_calls == [("runtime_subagent", "How's progress?", None)]
+        assert any("Message sent to all agents" in msg for msg in notifications)
+        assert any("Runtime Injection -> Queued from parent to all agents: How's progress?" == entry["content"] for entry in timeline.entries)
+        assert any(entry["text_class"] == "status runtime-injection" for entry in timeline.entries)
+
+    @pytest.mark.asyncio
+    async def test_subagent_input_widget_submit_triggers_send_callback(self):
+        from textual.app import App, ComposeResult
+
+        from massgen.frontend.displays.textual_widgets.multi_line_input import (
+            MultiLineInput,
+        )
+        from massgen.frontend.displays.textual_widgets.subagent_screen import (
+            SubagentView,
+        )
+
+        callback_calls: list[tuple[str, str, list[str] | None]] = []
+
+        def _callback(subagent_id: str, content: str, target_agents=None):  # noqa: ANN001
+            callback_calls.append((subagent_id, content, target_agents))
+            return True
+
+        class _Harness(App):
+            def compose(self) -> ComposeResult:
+                yield SubagentView(
+                    subagent=_make_subagent("runtime_subagent", status="running"),
+                    send_message_callback=_callback,
+                    id="subagent-view",
+                )
+
+        app = _Harness()
+        async with app.run_test(headless=True, size=(130, 38)) as pilot:
+            await pilot.pause()
+            view = app.query_one("#subagent-view", SubagentView)
+            input_widget = view.query_one(".shared-question-input", MultiLineInput)
+            input_widget.text = "How's progress?"
+            input_widget.action_submit()
+            await pilot.pause()
+
+            assert callback_calls == [("runtime_subagent", "How's progress?", None)]
+            assert len(view._queued_runtime_messages) == 1
+            assert view._queued_runtime_messages[0]["source_label"] == "parent"
+
+    def test_subagent_syncs_runtime_inbox_messages_into_queue_and_timeline(self, tmp_path):
+        view, _ = self._init_view()
+        workspace = tmp_path / "subagent_workspace"
+        inbox = workspace / ".massgen" / "runtime_inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+
+        message_payload = {
+            "content": "Please include blues influence and Harlem clubs.",
+            "source": "parent",
+            "target_agents": None,
+        }
+        (inbox / "msg_1700000000_1.json").write_text(json.dumps(message_payload))
+
+        class _TimelineStub:
+            def __init__(self) -> None:
+                self.entries: list[dict[str, object]] = []
+
+            def add_text(self, content, style="", text_class="", round_number=1):
+                self.entries.append(
+                    {
+                        "content": content,
+                        "style": style,
+                        "text_class": text_class,
+                        "round_number": round_number,
+                    },
+                )
+
+        class _PanelStub:
+            def __init__(self, timeline):
+                self._timeline = timeline
+
+            def query_one(self, selector, _cls=None):
+                if selector in {"#subagent-timeline-agent_a", "#subagent-timeline-agent_b"}:
+                    return self._timeline
+                raise LookupError(selector)
+
+        timeline = _TimelineStub()
+        view._panel = _PanelStub(timeline)
+        view._round_number = 1
+        view._subagent.workspace_path = str(workspace)
+        view._runtime_inbox_dir = None
+        view._runtime_inbox_seen_files = set()
+        view._set_runtime_queue_region_visible = lambda _visible: None
+
+        view._sync_runtime_queue_from_inbox()
+
+        assert len(view._queued_runtime_messages) == 1
+        queued = view._queued_runtime_messages[0]
+        assert queued["source_label"] == "parent"
+        assert queued["target_label"] == "all agents"
+        assert queued["pending_agents"] == ["agent_a", "agent_b"]
+        assert any("Runtime Injection -> Queued from parent to all agents: Please include blues influence and Harlem clubs." == entry["content"] for entry in timeline.entries)
+
+    def test_poll_updates_syncs_runtime_inbox_without_new_events(self):
+        view, _ = self._init_view()
+        sync_calls: list[str] = []
+
+        view._status_callback = None
+        view._event_reader = SimpleNamespace(get_new_events=lambda: [])
+        view._init_event_reader = lambda: None
+        view._load_initial_events = lambda: None
+        view._current_inner_agent = "agent_a"
+        view._ensure_terminal_status_note = lambda *_args, **_kwargs: None
+        view._maybe_schedule_auto_return_prompt = lambda: None
+        view._sync_runtime_queue_from_inbox = lambda: sync_calls.append("sync")
+        view._subagent.status = "running"
+
+        view._poll_updates()
+
+        assert sync_calls == ["sync"]
+
+
+class TestSubagentContinueAction:
+    """Tests for continue-subagent action handling in SubagentView."""
+
+    @pytest.mark.asyncio
+    async def test_continue_button_not_rendered_even_when_callback_exists(self):
+        from textual.app import App, ComposeResult
+
+        from massgen.frontend.displays.textual_widgets.subagent_screen import (
+            SubagentView,
+        )
+
+        class _Harness(App):
+            def compose(self) -> ComposeResult:
+                yield SubagentView(
+                    subagent=_make_subagent("sub_1", status="completed"),
+                    continue_subagent_callback=lambda *_args, **_kwargs: True,
+                    id="subagent-view",
+                )
+
+        app = _Harness()
+        async with app.run_test(headless=True, size=(130, 38)) as pilot:
+            await pilot.pause()
+            view = app.query_one("#subagent-view", SubagentView)
+            assert list(view.query("#continue_subagent_button")) == []
+
+    def test_continue_subagent_with_message_sets_running_state(self):
+        from massgen.frontend.displays.textual_widgets.subagent_screen import (
+            SubagentView,
+        )
+
+        calls: list[tuple[str, str]] = []
+
+        def _callback(subagent_id: str, message: str) -> bool:
+            calls.append((subagent_id, message))
+            return True
+
+        subagent = _make_subagent("sub_1", status="completed")
+        view = SubagentView.__new__(SubagentView)
+        view.__init__(subagent=subagent, continue_subagent_callback=_callback)
+        notifications: list[str] = []
+        view.notify = lambda message, **kwargs: notifications.append(str(message))
+        view._status_callback = None
+        view._poll_timer = None
+        view._inner_agents = []
+        view._event_adapters = {}
+        view._agents_loaded = set()
+        view._queued_runtime_messages = []
+        view._queued_runtime_pending_by_agent = {}
+        view._refresh_runtime_queue_banner = lambda: None
+        view._update_status_display = lambda: None
+        view._set_runtime_queue_region_visible = lambda _visible: None
+        view.set_interval = lambda _interval, _callback: SimpleNamespace(stop=lambda: None)
+
+        class _InputBar:
+            def __init__(self) -> None:
+                self.display = False
+
+        input_bar = _InputBar()
+        view.query_one = lambda selector, _cls=None: input_bar if selector == "#subagent-input-bar" else (_ for _ in ()).throw(LookupError(selector))  # type: ignore[assignment]
+
+        result = view._continue_subagent_with_message("Please continue with deeper analysis.")
+
+        assert result is True
+        assert calls == [("sub_1", "Please continue with deeper analysis.")]
+        assert view._subagent.status == "running"
+        assert input_bar.display is True
+        assert any("Continuing subagent" in msg for msg in notifications)
+
+    def test_continue_subagent_with_message_reports_failure(self):
+        from massgen.frontend.displays.textual_widgets.subagent_screen import (
+            SubagentView,
+        )
+
+        def _callback(_subagent_id: str, _message: str) -> bool:
+            return False
+
+        subagent = _make_subagent("sub_1", status="completed")
+        view = SubagentView.__new__(SubagentView)
+        view.__init__(subagent=subagent, continue_subagent_callback=_callback)
+        notifications: list[str] = []
+        view.notify = lambda message, **kwargs: notifications.append(str(message))
+
+        result = view._continue_subagent_with_message("try again")
+
+        assert result is False
+        assert view._subagent.status == "completed"
+        assert any("Failed to continue subagent" in msg for msg in notifications)
 
 
 # =============================================================================
@@ -491,6 +839,7 @@ class TestRuntimeInboxPollerTargetAgents:
         assert len(results) == 1
         assert results[0]["content"] == "hello"
         assert results[0]["target_agents"] == ["agent_a"]
+        assert results[0]["source"] == "parent"
 
     def test_poll_returns_none_target_for_old_messages(self, tmp_path):
         """Messages without target_agents field return None."""

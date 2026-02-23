@@ -11,6 +11,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from .evaluation_criteria_generator import EvaluationCriteriaGeneratorConfig
 from .persona_generator import PersonaGeneratorConfig
 from .task_decomposer import TaskDecomposerConfig
 
@@ -97,6 +98,8 @@ class CoordinationConfig:
                                      previous sessions and include them as available skills.
         persona_generator: Configuration for automatic persona generation to increase agent diversity.
                           When enabled, an LLM generates diverse system message personas for each agent.
+        evaluation_criteria_generator: Configuration for task-specific evaluation criteria generation.
+                                      When enabled, generates GEPA-style criteria tailored to the task.
         enable_subagents: If True, agents receive subagent MCP tools for spawning independent
                          agent instances with fresh context and isolated workspaces. Useful for
                          parallel task execution and avoiding context pollution.
@@ -165,6 +168,9 @@ class CoordinationConfig:
     skills_directory: str = ".agent/skills"
     load_previous_session_skills: bool = False
     persona_generator: PersonaGeneratorConfig = field(default_factory=PersonaGeneratorConfig)
+    evaluation_criteria_generator: EvaluationCriteriaGeneratorConfig = field(
+        default_factory=EvaluationCriteriaGeneratorConfig,
+    )
     enable_subagents: bool = False
     subagent_default_timeout: int = 300
     subagent_min_timeout: int = 60  # Minimum 1 minute
@@ -182,7 +188,9 @@ class CoordinationConfig:
     write_mode: str | None = None  # "auto" | "worktree" | "isolated" | "legacy"
     enable_changedoc: bool = True  # Write changedoc.md decision journal during coordination
     drift_conflict_policy: str = "skip"  # "skip" | "prefer_presenter" | "fail"
+    subagent_types: list[str] | None = None  # None = use DEFAULT_SUBAGENT_TYPES (excludes novelty)
     novelty_injection: str = "none"  # "none" | "gentle" | "moderate" | "aggressive"
+    checklist_criteria_preset: str | None = None  # "persona" | "decomposition" | "evaluation" | "prompt" | "analysis"
 
     def __post_init__(self):
         """Validate configuration after initialization."""

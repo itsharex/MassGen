@@ -169,11 +169,10 @@ async def test_claude_code_custom_tool_background_flag_auto_background(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_claude_code_auto_background_preserves_real_mcp_background_param(
+async def test_claude_code_does_not_auto_background_mcp_tools_with_native_background_param(
     tmp_path,
-    monkeypatch,
 ):
-    """MCP tools that define background should keep it when auto-backgrounded."""
+    """MCP tools that define background should not be wrapped as framework background jobs."""
     backend = ClaudeCodeBackend(cwd=str(tmp_path))
     backend._mcp_client = SimpleNamespace(
         tools={
@@ -189,32 +188,27 @@ async def test_claude_code_auto_background_preserves_real_mcp_background_param(
         },
     )
 
-    captured: dict = {}
+    assert (
+        backend._should_auto_background_execution(
+            "mcp__subagent_agent_a__spawn_subagents",
+            {
+                "tasks": [{"task": "test task"}],
+                "background": True,
+            },
+        )
+        is False
+    )
 
-    class _FakeJob:
-        job_id = "bgtool_claude_test"
-        tool_name = "mcp__subagent_agent_a__spawn_subagents"
-
-    async def fake_start_background_job(*, tool_name, arguments):
-        captured["tool_name"] = tool_name
-        captured["arguments"] = arguments
-        return _FakeJob()
-
-    monkeypatch.setattr(backend, "_start_background_tool_job", fake_start_background_job)
-
-    response = await backend._execute_massgen_custom_tool(
-        "mcp__subagent_agent_a__spawn_subagents",
+    # Strip logic should still preserve the real background argument.
+    stripped = backend._strip_background_control_args(
         {
             "tasks": [{"task": "test task"}],
             "background": True,
         },
+        tool_name="mcp__subagent_agent_a__spawn_subagents",
     )
-    payload = json.loads(response["content"][0]["text"])
-
-    assert payload["success"] is True
-    assert payload["status"] == "background"
-    assert captured["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
-    assert captured["arguments"]["background"] is True
+    assert stripped["background"] is True
+    assert stripped["tasks"] == [{"task": "test task"}]
 
 
 def test_claude_code_media_tools_default_to_background(tmp_path):
@@ -455,6 +449,70 @@ async def test_claude_code_list_background_tools_defaults_to_running_only(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_claude_code_list_background_tools_includes_delegate_jobs(tmp_path):
+    """Delegate-managed jobs (for example subagents) should be merged into list results."""
+    backend = ClaudeCodeBackend(cwd=str(tmp_path))
+
+    class _Delegate:
+        async def list_jobs(self, include_all: bool):  # noqa: ARG002
+            return [
+                {
+                    "job_id": "jazz_research",
+                    "tool_name": "subagent",
+                    "tool_type": "subagent",
+                    "status": "running",
+                    "created_at": "2026-02-22T00:00:00",
+                },
+            ]
+
+        async def owns(self, job_id: str):  # noqa: ARG002
+            return False
+
+    backend.register_background_delegate(_Delegate())
+
+    listed = await backend._execute_background_management_tool(
+        BACKGROUND_TOOL_LIST_NAME,
+        {},
+    )
+
+    assert listed["success"] is True
+    assert listed["count"] == 1
+    assert listed["jobs"][0]["job_id"] == "jazz_research"
+    assert listed["jobs"][0]["tool_type"] == "subagent"
+
+
+@pytest.mark.asyncio
+async def test_claude_code_cancel_background_tool_routes_to_delegate(tmp_path):
+    """cancel_background_tool should route to delegate-owned IDs when native job is absent."""
+    backend = ClaudeCodeBackend(cwd=str(tmp_path))
+
+    class _Delegate:
+        async def owns(self, job_id: str):
+            return job_id == "jazz_research"
+
+        async def cancel(self, job_id: str):
+            return {
+                "success": True,
+                "operation": "cancel_subagent",
+                "subagent_id": job_id,
+            }
+
+        async def list_jobs(self, include_all: bool):  # noqa: ARG002
+            return []
+
+    backend.register_background_delegate(_Delegate())
+
+    cancelled = await backend._execute_background_management_tool(
+        BACKGROUND_TOOL_CANCEL_NAME,
+        {"job_id": "jazz_research"},
+    )
+
+    assert cancelled["success"] is True
+    assert cancelled["operation"] == "cancel_subagent"
+    assert cancelled["subagent_id"] == "jazz_research"
+
+
+@pytest.mark.asyncio
 async def test_claude_code_start_background_tool_accepts_top_level_target_args(tmp_path):
     """Claude Code start_background_tool should accept flattened target args."""
     backend = ClaudeCodeBackend(cwd=str(tmp_path))
@@ -534,3 +592,68 @@ async def test_claude_code_start_background_tool_accepts_double_encoded_argument
     assert final["ready"] is True
     assert final["status"] == "completed"
     assert "weather::tokyo" in final["result"]
+
+
+@pytest.mark.asyncio
+async def test_claude_code_start_background_tool_subagent_target_routes_to_direct_background_spawn(
+    tmp_path,
+    monkeypatch,
+):
+    """Subagent targets through start_background_tool should behave like direct spawn_subagents(background=true)."""
+    backend = ClaudeCodeBackend(cwd=str(tmp_path))
+
+    captured: dict[str, object] = {}
+
+    class _FakeMCPClient:
+        async def call_tool(self, name, arguments):
+            captured["tool_name"] = name
+            captured["arguments"] = dict(arguments)
+            payload = {
+                "success": True,
+                "operation": "spawn_subagents",
+                "mode": "background",
+                "subagents": [
+                    {
+                        "subagent_id": "jazz_researcher",
+                        "status": "running",
+                    },
+                ],
+            }
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(type="text", text=json.dumps(payload)),
+                ],
+            )
+
+    async def fake_get_background_mcp_client():
+        return _FakeMCPClient()
+
+    async def fail_start_background_job(*, tool_name, arguments, source_call_id=None):  # noqa: ARG001
+        raise AssertionError(
+            f"framework background wrapper should be bypassed for subagent target: {tool_name}",
+        )
+
+    monkeypatch.setattr(backend, "_get_background_mcp_client", fake_get_background_mcp_client)
+    monkeypatch.setattr(backend, "_start_background_tool_job", fail_start_background_job)
+
+    started = await backend._execute_background_management_tool(
+        BACKGROUND_TOOL_START_NAME,
+        {
+            "tool_name": "mcp__subagent_agent_a__spawn_subagents",
+            "arguments": {
+                "tasks": [{"task": "Research jazz history"}],
+                "background": False,
+            },
+        },
+    )
+
+    assert started["success"] is True
+    assert started["operation"] == "spawn_subagents"
+    assert started["mode"] == "background"
+    assert started["job_id"] == "jazz_researcher"
+    assert started["subagent_id"] == "jazz_researcher"
+    assert started["job_ids"] == ["jazz_researcher"]
+    assert started["subagents"][0]["job_id"] == "jazz_researcher"
+    assert captured["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
+    assert isinstance(captured["arguments"], dict)
+    assert captured["arguments"]["background"] is True

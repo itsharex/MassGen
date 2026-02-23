@@ -18,6 +18,9 @@ from massgen.logger_config import logger
 from massgen.tool._decorators import context_params
 from massgen.tool._result import ExecutionResult, TextContent
 
+# Maximum time (seconds) for a single understand_image/video/audio call
+MEDIA_ANALYSIS_TIMEOUT = 600  # 10 minutes
+
 
 def _error_result(error: str) -> ExecutionResult:
     """Create an error ExecutionResult."""
@@ -151,9 +154,14 @@ async def read_media(
         For batch mode, returns results array with per-input status.
 
     Examples:
-        # Simple single file analysis
-        read_media(file_path="screenshot.png", prompt="Describe this")
-        → Returns description of the image
+        # Analyze a screenshot
+        read_media(file_path="screenshot.png", prompt="What layout issues do you see?")
+        → Returns critique of static layout
+
+        # Analyze a video recording of an interaction or animation
+        read_media(file_path="interaction_recording.mp4",
+                   prompt="Does the animation play smoothly? Are there visual glitches?")
+        → Returns analysis of the recorded behavior
 
         # Batch with multi-image comparison (parallel processing)
         read_media(
@@ -165,9 +173,9 @@ async def read_media(
         )
         → Returns batch results with each input processed in parallel
 
-        # Critical evaluation
-        read_media(file_path="website.png",
-                   prompt="What flaws or issues do you see? Be critical.")
+        # Critical evaluation of any media type
+        read_media(file_path="game_recording.mp4",
+                   prompt="Does gameplay look correct? Are controls responsive? Be critical.")
         → Returns critique-focused analysis
     """
     # Validate file_path / inputs - exactly one must be provided
@@ -251,11 +259,11 @@ async def read_media(
                     "agent_cwd": agent_cwd,
                     "allowed_paths": allowed_paths,
                     "task_context": task_context,
+                    "backend_type": backend_type,
+                    "model": image_config.get("model") or model or "gpt-5.2",
                 }
-                if image_config.get("model"):
-                    image_kwargs["model"] = image_config["model"]
 
-                result = await understand_image(**image_kwargs)
+                result = await asyncio.wait_for(understand_image(**image_kwargs), timeout=MEDIA_ANALYSIS_TIMEOUT)
                 # Add warning if present
                 if context_warning:
                     for block in result.output_blocks:
@@ -273,14 +281,17 @@ async def read_media(
                     understand_audio,
                 )
 
-                result = await understand_audio(
-                    audio_paths=[str(media_path)],
-                    prompt=default_prompt,
-                    backend_type=audio_config.get("backend") or backend_type,
-                    model=audio_config.get("model"),
-                    agent_cwd=agent_cwd,
-                    allowed_paths=allowed_paths,
-                    task_context=task_context,
+                result = await asyncio.wait_for(
+                    understand_audio(
+                        audio_paths=[str(media_path)],
+                        prompt=default_prompt,
+                        backend_type=audio_config.get("backend") or backend_type,
+                        model=audio_config.get("model"),
+                        agent_cwd=agent_cwd,
+                        allowed_paths=allowed_paths,
+                        task_context=task_context,
+                    ),
+                    timeout=MEDIA_ANALYSIS_TIMEOUT,
                 )
                 if context_warning:
                     for block in result.output_blocks:
@@ -298,14 +309,18 @@ async def read_media(
                     understand_video,
                 )
 
-                result = await understand_video(
-                    video_path=str(media_path),
-                    prompt=default_prompt,
-                    backend_type=video_config.get("backend") or backend_type,
-                    model=video_config.get("model"),
-                    agent_cwd=agent_cwd,
-                    allowed_paths=allowed_paths,
-                    task_context=task_context,
+                result = await asyncio.wait_for(
+                    understand_video(
+                        video_path=str(media_path),
+                        prompt=default_prompt,
+                        backend_type=video_config.get("backend") or backend_type,
+                        model=video_config.get("model"),
+                        agent_cwd=agent_cwd,
+                        allowed_paths=allowed_paths,
+                        task_context=task_context,
+                        video_extraction_config=video_config,
+                    ),
+                    timeout=MEDIA_ANALYSIS_TIMEOUT,
                 )
                 if context_warning:
                     for block in result.output_blocks:
@@ -352,11 +367,11 @@ async def read_media(
                             "agent_cwd": agent_cwd,
                             "allowed_paths": allowed_paths,
                             "task_context": task_context,
+                            "backend_type": backend_type,
+                            "model": image_config.get("model") or model or "gpt-5.2",
                         }
-                        if image_config.get("model"):
-                            image_kwargs["model"] = image_config["model"]
 
-                        result = await understand_image(**image_kwargs)
+                        result = await asyncio.wait_for(understand_image(**image_kwargs), timeout=MEDIA_ANALYSIS_TIMEOUT)
 
                         # Parse result
                         for block in result.output_blocks:
@@ -378,14 +393,17 @@ async def read_media(
 
                         # Audio: use all files
                         audio_paths = list(files_dict.values())
-                        result = await understand_audio(
-                            audio_paths=audio_paths,
-                            prompt=input_prompt,
-                            backend_type=audio_config.get("backend") or backend_type,
-                            model=audio_config.get("model"),
-                            agent_cwd=agent_cwd,
-                            allowed_paths=allowed_paths,
-                            task_context=task_context,
+                        result = await asyncio.wait_for(
+                            understand_audio(
+                                audio_paths=audio_paths,
+                                prompt=input_prompt,
+                                backend_type=audio_config.get("backend") or backend_type,
+                                model=audio_config.get("model"),
+                                agent_cwd=agent_cwd,
+                                allowed_paths=allowed_paths,
+                                task_context=task_context,
+                            ),
+                            timeout=MEDIA_ANALYSIS_TIMEOUT,
                         )
                         for block in result.output_blocks:
                             if isinstance(block, TextContent):
@@ -405,14 +423,18 @@ async def read_media(
                         )
 
                         # Video: use first file only
-                        result = await understand_video(
-                            video_path=first_path,
-                            prompt=input_prompt,
-                            backend_type=video_config.get("backend") or backend_type,
-                            model=video_config.get("model"),
-                            agent_cwd=agent_cwd,
-                            allowed_paths=allowed_paths,
-                            task_context=task_context,
+                        result = await asyncio.wait_for(
+                            understand_video(
+                                video_path=first_path,
+                                prompt=input_prompt,
+                                backend_type=video_config.get("backend") or backend_type,
+                                model=video_config.get("model"),
+                                agent_cwd=agent_cwd,
+                                allowed_paths=allowed_paths,
+                                task_context=task_context,
+                                video_extraction_config=video_config,
+                            ),
+                            timeout=MEDIA_ANALYSIS_TIMEOUT,
                         )
                         for block in result.output_blocks:
                             if isinstance(block, TextContent):

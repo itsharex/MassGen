@@ -136,6 +136,164 @@ async def test_mode_bar_keeps_compact_labels_when_width_temporarily_unavailable(
 
 
 @pytest.mark.asyncio
+async def test_mode_bar_does_not_stack_when_initial_width_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+    """Startup with unknown widths should not force the two-row compact layout."""
+    monkeypatch.setattr(textual_display_module, "get_event_emitter", lambda: None)
+    monkeypatch.setattr(
+        textual_display_module,
+        "get_user_settings",
+        lambda: SimpleNamespace(theme="dark", vim_mode=False),
+    )
+
+    display = TextualTerminalDisplay(
+        ["agent_a"],
+        agent_models={"agent_a": "gpt-5.3-codex"},
+        keyboard_interactive_mode=False,
+        output_dir=tmp_path,
+        theme="dark",
+    )
+    app = textual_display_module.TextualApp(
+        display=display,
+        question="Welcome! Type your question below...",
+        buffers=display._buffers,
+        buffer_lock=display._buffer_lock,
+        buffer_flush_interval=display.buffer_flush_interval,
+    )
+    display._app = app
+
+    async with app.run_test(headless=True, size=(120, 24)) as pilot:
+        await pilot.pause()
+        assert app._mode_bar is not None
+
+        app._mode_bar.remove_class("compact-layout")
+        app._mode_bar._last_responsive_width = 0
+
+        monkeypatch.setattr(ModeBar, "size", property(lambda _self: Size(0, 0)))
+        monkeypatch.setattr(type(app), "size", property(lambda _self: Size(0, 0)))
+
+        app._mode_bar._refresh_responsive_labels()
+
+        assert not app._mode_bar.has_class("compact-layout")
+
+
+@pytest.mark.asyncio
+async def test_mode_bar_logs_layout_refresh_decisions(monkeypatch, tmp_path: Path) -> None:
+    """Mode bar should emit explicit debug lines for layout refresh calculations."""
+    monkeypatch.setattr(textual_display_module, "get_event_emitter", lambda: None)
+    monkeypatch.setattr(
+        textual_display_module,
+        "get_user_settings",
+        lambda: SimpleNamespace(theme="dark", vim_mode=False),
+    )
+
+    import massgen.frontend.displays.textual_widgets.mode_bar as mode_bar_module
+
+    layout_logs: list[str] = []
+    monkeypatch.setattr(mode_bar_module, "_mode_log", lambda msg: layout_logs.append(msg))
+
+    display = TextualTerminalDisplay(
+        ["agent_a"],
+        agent_models={"agent_a": "gpt-5.3-codex"},
+        keyboard_interactive_mode=False,
+        output_dir=tmp_path,
+        theme="dark",
+    )
+    app = textual_display_module.TextualApp(
+        display=display,
+        question="Welcome! Type your question below...",
+        buffers=display._buffers,
+        buffer_lock=display._buffer_lock,
+        buffer_flush_interval=display.buffer_flush_interval,
+    )
+    display._app = app
+
+    async with app.run_test(headless=True, size=(120, 24)) as pilot:
+        await pilot.pause()
+        assert app._mode_bar is not None
+        app._mode_bar._refresh_responsive_labels()
+        await pilot.pause()
+
+        assert any("layout refresh:" in msg for msg in layout_logs)
+        assert any("layout decision:" in msg for msg in layout_logs)
+
+
+@pytest.mark.asyncio
+async def test_input_modes_row_logs_layout_decisions(monkeypatch, tmp_path: Path) -> None:
+    """Input row layout refresh should emit calculation details for debugging."""
+    monkeypatch.setattr(textual_display_module, "get_event_emitter", lambda: None)
+    monkeypatch.setattr(
+        textual_display_module,
+        "get_user_settings",
+        lambda: SimpleNamespace(theme="dark", vim_mode=False),
+    )
+
+    layout_logs: list[str] = []
+    monkeypatch.setattr(textual_display_module, "tui_log", lambda msg, level="debug": layout_logs.append(msg))
+
+    display = TextualTerminalDisplay(
+        ["agent_a"],
+        agent_models={"agent_a": "gpt-5.3-codex"},
+        keyboard_interactive_mode=False,
+        output_dir=tmp_path,
+        theme="dark",
+    )
+    app = textual_display_module.TextualApp(
+        display=display,
+        question="Welcome! Type your question below...",
+        buffers=display._buffers,
+        buffer_lock=display._buffer_lock,
+        buffer_flush_interval=display.buffer_flush_interval,
+    )
+    display._app = app
+
+    async with app.run_test(headless=True, size=(120, 24)) as pilot:
+        await pilot.pause()
+        app._refresh_input_modes_row_layout()
+        await pilot.pause()
+
+        assert any("[INPUT_LAYOUT]" in msg for msg in layout_logs)
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_compacts_labels_to_keep_input_header_single_row_at_thin_startup(monkeypatch, tmp_path: Path) -> None:
+    """Thin startup widths should prefer compact mode labels over stacking the input header row."""
+    monkeypatch.setattr(textual_display_module, "get_event_emitter", lambda: None)
+    monkeypatch.setattr(
+        textual_display_module,
+        "get_user_settings",
+        lambda: SimpleNamespace(theme="dark", vim_mode=False),
+    )
+    # Keep hint width deterministic across environments.
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path("/home/u/project")))
+
+    display = TextualTerminalDisplay(
+        ["agent_a"],
+        agent_models={"agent_a": "gpt-5.3-codex"},
+        keyboard_interactive_mode=False,
+        output_dir=tmp_path,
+        theme="dark",
+    )
+    app = textual_display_module.TextualApp(
+        display=display,
+        question="Welcome! Type your question below...",
+        buffers=display._buffers,
+        buffer_lock=display._buffer_lock,
+        buffer_flush_interval=display.buffer_flush_interval,
+    )
+    display._app = app
+
+    async with app.run_test(headless=True, size=(113, 24)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        input_modes_row = app.query_one("#input_modes_row")
+        assert "meta-stacked" not in input_modes_row.classes
+        assert "Norm" in _widget_text(app.query_one("#plan_toggle"))
+        assert "Multi" in _widget_text(app.query_one("#agent_toggle"))
+        assert "Par" in _widget_text(app.query_one("#coordination_toggle"))
+
+
+@pytest.mark.asyncio
 async def test_mode_bar_stays_within_input_header_at_narrow_width(monkeypatch, tmp_path: Path) -> None:
     """Mode bar should stay in bounds while keeping primary toggle labels visible."""
     monkeypatch.setattr(textual_display_module, "get_event_emitter", lambda: None)

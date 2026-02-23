@@ -626,6 +626,30 @@ class TestHumanInputHook:
             ),
         ]
 
+    def test_queue_callback_receives_source_when_supported(self):
+        hook = HumanInputHook()
+        captured: list[tuple[str, list[str] | None, int | None, str]] = []
+
+        hook.set_queue_callback(
+            lambda content, target_agents, message_id, source: captured.append(
+                (content, target_agents, message_id, source),
+            ),
+        )
+        message_id = hook.set_pending_input(
+            "Queued callback payload",
+            target_agents=["agent_a"],
+            source="parent",
+        )
+
+        assert captured == [
+            (
+                "Queued callback payload",
+                ["agent_a"],
+                message_id,
+                "parent",
+            ),
+        ]
+
     @pytest.mark.asyncio
     async def test_pending_messages_snapshot_and_pop_latest(self):
         hook = HumanInputHook()
@@ -650,6 +674,20 @@ class TestHumanInputHook:
 
         pending_after = hook.get_pending_messages(agent_ids=["agent_a", "agent_b"])
         assert [entry["id"] for entry in pending_after] == [first_id]
+
+    def test_pending_messages_include_source_label(self):
+        hook = HumanInputHook()
+        msg_id = hook.set_pending_input(
+            "From parent",
+            target_agents=["agent_a"],
+            source="parent",
+        )
+
+        pending = hook.get_pending_messages(agent_ids=["agent_a"])
+        assert len(pending) == 1
+        assert pending[0]["id"] == msg_id
+        assert pending[0]["source"] == "parent"
+        assert pending[0]["source_label"] == "parent"
 
     @pytest.mark.asyncio
     async def test_inject_callback_receives_per_message_delivery_metadata(self):
@@ -1138,8 +1176,8 @@ class TestClaudeCodeNativeHookAdapter:
         )
 
         assert "hookSpecificOutput" in claude_format
-        assert claude_format["hookSpecificOutput"]["modifiedOutput"] == "Injected content"
-        assert claude_format["hookSpecificOutput"]["injectionStrategy"] == "tool_result"
+        assert claude_format["hookSpecificOutput"]["additionalContext"] == "Injected content"
+        assert "modifiedOutput" not in claude_format["hookSpecificOutput"]
 
     def test_convert_modified_input_to_claude_format(self):
         """Test converting PreToolUse modified input result to Claude SDK format."""
@@ -1159,6 +1197,37 @@ class TestClaudeCodeNativeHookAdapter:
         assert "hookSpecificOutput" in claude_format
         assert claude_format["hookSpecificOutput"]["updatedInput"] == {"modified_arg": "new_value"}
         assert claude_format["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    @pytest.mark.asyncio
+    async def test_hook_wrapper_post_tool_use_injection_uses_additional_context(self):
+        """PostToolUse wrapper should emit additionalContext for injected content."""
+        from massgen.mcp_tools.native_hook_adapters import ClaudeCodeNativeHookAdapter
+
+        adapter = ClaudeCodeNativeHookAdapter()
+
+        def injecting_hook(event):
+            return HookResult(
+                allowed=True,
+                inject={"content": "Injected content", "strategy": "user_message"},
+            )
+
+        hook = PythonCallableHook("injector", injecting_hook, matcher="*")
+        native = adapter.convert_hook_to_native(hook, HookType.POST_TOOL_USE)
+        wrapper_func = native.hooks[0]
+
+        input_data = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "notes.txt", "content": "hello"},
+            "tool_output": "File created",
+        }
+
+        result = await wrapper_func(input_data, "tool-use-123", None)
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+        assert result["hookSpecificOutput"]["additionalContext"] == "Injected content"
+        assert "modifiedOutput" not in result["hookSpecificOutput"]
 
     def test_convert_hook_to_native_returns_hook_matcher(self):
         """Test that convert_hook_to_native returns a HookMatcher."""
@@ -1379,6 +1448,31 @@ class TestSubagentCompleteHook:
 
         assert result.allowed is True
         assert result.inject is None
+
+    @pytest.mark.asyncio
+    async def test_async_getter_is_awaited(self):
+        """Test hook awaits async getters (used by async MCP polling paths)."""
+        from massgen.mcp_tools.hooks import SubagentCompleteHook
+        from massgen.subagent.models import SubagentResult
+
+        hook = SubagentCompleteHook()
+        mock_result = SubagentResult.create_success(
+            subagent_id="async-subagent",
+            answer="async result",
+            workspace_path="/workspace/async-subagent",
+            execution_time_seconds=2.5,
+        )
+
+        async def async_getter():
+            return [("async-subagent", mock_result)]
+
+        hook.set_pending_results_getter(async_getter)
+
+        result = await hook.execute("some_tool", "{}")
+
+        assert result.allowed is True
+        assert result.inject is not None
+        assert "async-subagent" in result.inject["content"]
 
     @pytest.mark.asyncio
     async def test_single_result_injection(self):
@@ -1772,6 +1866,27 @@ class TestRuntimeInboxPoller:
 
         second = poller.poll()
         assert second == [], "Second poll within min_poll_interval should return empty"
+
+    def test_poll_returns_source_field(self, tmp_path):
+        """Poll should preserve the message source for TUI labeling."""
+        from massgen.mcp_tools.hooks import RuntimeInboxPoller
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+
+        msg = {
+            "content": "from parent",
+            "source": "parent",
+            "timestamp": "2025-01-01T00:00:00Z",
+        }
+        (inbox / "msg_1740000000_0.json").write_text(json.dumps(msg))
+
+        poller = RuntimeInboxPoller(inbox_dir=inbox, min_poll_interval=0.0)
+        messages = poller.poll()
+
+        assert len(messages) == 1
+        assert messages[0]["content"] == "from parent"
+        assert messages[0]["source"] == "parent"
 
     def test_poll_skips_malformed_json(self, tmp_path):
         """Bad JSON file is skipped (not consumed), valid ones returned."""

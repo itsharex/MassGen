@@ -113,6 +113,108 @@ class TestNoveltyInjectionConfigParsing:
 
 
 # ---------------------------------------------------------------------------
+# Subagent Types Config Tests
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentTypesConfig:
+    """Tests for subagent_types field on CoordinationConfig."""
+
+    def test_default_is_none(self):
+        """Default subagent_types should be None."""
+        config = CoordinationConfig()
+        assert config.subagent_types is None
+
+    def test_explicit_list_stored(self):
+        """Explicit subagent_types list should be stored."""
+        config = CoordinationConfig(subagent_types=["evaluator", "novelty"])
+        assert config.subagent_types == ["evaluator", "novelty"]
+
+    def test_config_validator_accepts_valid_list(self):
+        """Config validator should accept valid subagent_types list."""
+        from massgen.config_validator import ConfigValidator
+
+        config = {
+            "agents": [
+                {"id": "agent_a", "backend": {"model": "test-model", "type": "openai"}},
+            ],
+            "orchestrator": {
+                "coordination": {"subagent_types": ["evaluator", "novelty"]},
+            },
+        }
+        result = ConfigValidator().validate_config(config)
+        errors = [e for e in result.errors if "subagent_types" in e.message.lower()]
+        assert len(errors) == 0
+
+    def test_config_validator_accepts_null(self):
+        """Config validator should accept null subagent_types."""
+        from massgen.config_validator import ConfigValidator
+
+        config = {
+            "agents": [
+                {"id": "agent_a", "backend": {"model": "test-model", "type": "openai"}},
+            ],
+            "orchestrator": {
+                "coordination": {"subagent_types": None},
+            },
+        }
+        result = ConfigValidator().validate_config(config)
+        errors = [e for e in result.errors if "subagent_types" in e.message.lower()]
+        assert len(errors) == 0
+
+    def test_config_validator_rejects_string(self):
+        """Config validator should reject subagent_types as a string."""
+        from massgen.config_validator import ConfigValidator
+
+        config = {
+            "agents": [
+                {"id": "agent_a", "backend": {"model": "test-model", "type": "openai"}},
+            ],
+            "orchestrator": {
+                "coordination": {"subagent_types": "evaluator"},
+            },
+        }
+        result = ConfigValidator().validate_config(config)
+        errors = [e for e in result.errors if "subagent_types" in e.message.lower()]
+        assert len(errors) > 0
+
+    def test_config_validator_rejects_empty_string_entry(self):
+        """Config validator should reject empty string entries."""
+        from massgen.config_validator import ConfigValidator
+
+        config = {
+            "agents": [
+                {"id": "agent_a", "backend": {"model": "test-model", "type": "openai"}},
+            ],
+            "orchestrator": {
+                "coordination": {"subagent_types": ["evaluator", ""]},
+            },
+        }
+        result = ConfigValidator().validate_config(config)
+        errors = [e for e in result.errors if "subagent_types" in e.message.lower()]
+        assert len(errors) > 0
+
+
+class TestSubagentTypesConfigParsing:
+    """Tests for subagent_types wiring through _parse_coordination_config."""
+
+    def test_parse_coordination_config_passes_subagent_types(self):
+        """_parse_coordination_config must pass subagent_types to CoordinationConfig."""
+        from massgen.cli import _parse_coordination_config
+
+        coord_cfg = {"subagent_types": ["evaluator", "novelty"]}
+        result = _parse_coordination_config(coord_cfg)
+        assert result.subagent_types == ["evaluator", "novelty"]
+
+    def test_parse_coordination_config_defaults_to_none(self):
+        """_parse_coordination_config must default subagent_types to None."""
+        from massgen.cli import _parse_coordination_config
+
+        result = _parse_coordination_config({})
+        assert result.subagent_types is None
+
+
+# ---------------------------------------------------------------------------
 # Convergence Detection Tests
 # ---------------------------------------------------------------------------
 

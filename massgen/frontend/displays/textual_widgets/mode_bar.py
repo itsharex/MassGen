@@ -352,10 +352,17 @@ class ModeBar(Widget):
 
     def on_mount(self) -> None:
         """Initialize responsive labels once layout is available."""
+        app_width = self.app.size.width if self.app is not None else 0
+        _mode_log(
+            "layout refresh: " f"source=on_mount widget_width={self.size.width} app_width={app_width} " f"last_width={self._last_responsive_width}",
+        )
         self.call_after_refresh(self._refresh_responsive_labels)
 
     def on_resize(self, event: events.Resize) -> None:
         """Keep toggle labels readable on narrow terminals."""
+        _mode_log(
+            "layout refresh: " f"source=on_resize event_width={event.size.width} widget_width={self.size.width} " f"last_width={self._last_responsive_width}",
+        )
         del event
         self._refresh_responsive_labels()
 
@@ -375,6 +382,20 @@ class ModeBar(Widget):
             effective_width = min(width, app_width)
         else:
             effective_width = width or app_width
+
+        _mode_log(
+            "layout refresh: "
+            f"source=responsive_pass widget_width={self.size.width} app_width={app_width} "
+            f"derived_width={width} effective_width={effective_width} "
+            f"last_width={self._last_responsive_width} compact_active={self._compact_labels_active}",
+        )
+
+        # During cold-start layout, both widget/app width can be temporarily
+        # unavailable. Avoid forcing the conservative stacked fallback here;
+        # keep the current layout until a real width arrives.
+        if effective_width <= 0:
+            _mode_log("layout decision: unresolved_width keep_current_layout")
+            return
 
         # Compute full-label footprint first, then apply hysteresis so tiny
         # width changes don't flip labels between compact/non-compact states.
@@ -409,6 +430,13 @@ class ModeBar(Widget):
             self.add_class("compact-layout")
         else:
             self.remove_class("compact-layout")
+
+        _mode_log(
+            "layout decision: "
+            f"compact_labels={compact_labels} full_required={full_required} "
+            f"required_width={required_width} utilization={utilization:.3f} "
+            f"stacked_layout={stacked_layout} has_compact_class={self.has_class('compact-layout')}",
+        )
 
     def _apply_compact_labels(self, compact_labels: bool) -> None:
         """Apply compact/full labels across toggles and dependent buttons."""

@@ -47,6 +47,16 @@ Built-in profiles:
 - `explorer`: repo exploration and discovery
 - `researcher`: external-source research and evidence gathering
 - `evaluator`: high-volume procedural verification
+- `novelty`: proposes transformative alternatives when agents are stuck in incremental refinement (opt-in only)
+
+### Configuring Active Types
+
+`subagent_types` under `orchestrator.coordination` controls which types are exposed:
+
+- Default (omitted/null): `["evaluator", "explorer", "researcher"]` — novelty excluded
+- Explicit list filters to only those types; unknown names warn but don't fail
+- Empty list `[]` disables all specialized types
+- When `novelty` is active, checklist evaluation auto-suggests spawning a novelty subagent on zero transformative changes
 
 Profile discovery:
 

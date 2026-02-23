@@ -114,8 +114,8 @@ def test_action_show_subagents_passes_status_callback(monkeypatch):
             return [card]
 
     app.agent_widgets = {"agent_a": _FakePanel()}
-    app._open_decomposition_runtime_subagent_screen = lambda: False
-    app._open_persona_runtime_subagent_screen = lambda: False
+    app._precollab_subagents = {}
+    app._open_precollab_screen = lambda sid: False
     app.notify = lambda *args, **kwargs: None
 
     captured: dict = {}
@@ -132,3 +132,168 @@ def test_action_show_subagents_passes_status_callback(monkeypatch):
     callback = captured["kwargs"].get("status_callback")
     assert callback is not None
     assert callback("sub_1") is running
+
+
+def test_subagent_status_line_renders_terminal_reason() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentStatusLine,
+    )
+
+    line = SubagentStatusLine(status="running")
+    line.update_status("failed", 12, reason="Subagent cancelled")
+
+    rendered = line.render().plain
+    assert "Failed" in rendered
+    assert "Subagent cancelled" in rendered
+
+
+def test_subagent_status_line_renders_canceled_reason() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentStatusLine,
+    )
+
+    line = SubagentStatusLine(status="running")
+    line.update_status("cancelled", 7, reason="Cancelled by user")
+
+    rendered = line.render().plain
+    assert "Canceled" in rendered
+    assert "Cancelled by user" in rendered
+
+
+def test_subagent_status_line_sets_canceled_style_class() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentStatusLine,
+    )
+
+    line = SubagentStatusLine(status="running")
+    line.update_status("cancelled", 7, reason="Cancelled by user")
+
+    assert line.has_class("canceled")
+    assert not line.has_class("running")
+    assert not line.has_class("completed")
+    assert not line.has_class("error")
+
+
+def test_subagent_status_line_avoids_redundant_cancel_reason() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentStatusLine,
+    )
+
+    line = SubagentStatusLine(status="running")
+    line.update_status("cancelled", 7, reason="Subagent cancelled")
+
+    rendered = line.render().plain
+    assert "Canceled" in rendered
+    assert "Canceled: Subagent cancelled" not in rendered
+    assert "Subagent cancelled" not in rendered
+
+
+def test_subagent_view_sets_cancelled_state_class() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentView,
+    )
+
+    subagent = _make_subagent("sub_1", status="cancelled")
+
+    view = SubagentView.__new__(SubagentView)
+    view.__init__(subagent=subagent)
+
+    assert not view.has_class("cancelled-state")
+    view._update_status_display()
+    assert view.has_class("cancelled-state")
+
+    subagent.status = "running"
+    view._update_status_display()
+    assert not view.has_class("cancelled-state")
+
+
+def test_subagent_view_adds_terminal_status_note_when_events_absent() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentView,
+    )
+
+    class _TimelineStub:
+        def __init__(self) -> None:
+            self.entries: list[tuple[str, str, str, int]] = []
+
+        def add_text(
+            self,
+            content: str,
+            *,
+            style: str = "",
+            text_class: str = "",
+            round_number: int = 1,
+        ) -> None:
+            self.entries.append((content, style, text_class, round_number))
+
+    class _PanelStub:
+        def __init__(self, timeline: _TimelineStub) -> None:
+            self._timeline = timeline
+
+        def query_one(self, selector: str, _cls):  # noqa: ANN001 - Textual query compat
+            if selector == "#subagent-timeline-inner_a":
+                return self._timeline
+            raise LookupError(selector)
+
+    subagent = _make_subagent("sub_1", status="cancelled")
+    subagent.error = "Cancelled by user"
+
+    view = SubagentView.__new__(SubagentView)
+    view.__init__(subagent=subagent)
+    view._round_number = 1
+    timeline = _TimelineStub()
+    view._panel = _PanelStub(timeline)
+
+    view._ensure_terminal_status_note("inner_a", event_count=0)
+    view._ensure_terminal_status_note("inner_a", event_count=0)
+
+    assert len(timeline.entries) == 1
+    message, style, text_class, round_number = timeline.entries[0]
+    assert "Subagent canceled: Cancelled by user" in message
+    assert style
+    assert text_class == "status"
+    assert round_number == 1
+
+
+def test_subagent_view_avoids_redundant_cancel_reason_in_terminal_note() -> None:
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentView,
+    )
+
+    class _TimelineStub:
+        def __init__(self) -> None:
+            self.entries: list[tuple[str, str, str, int]] = []
+
+        def add_text(
+            self,
+            content: str,
+            *,
+            style: str = "",
+            text_class: str = "",
+            round_number: int = 1,
+        ) -> None:
+            self.entries.append((content, style, text_class, round_number))
+
+    class _PanelStub:
+        def __init__(self, timeline: _TimelineStub) -> None:
+            self._timeline = timeline
+
+        def query_one(self, selector: str, _cls):  # noqa: ANN001 - Textual query compat
+            if selector == "#subagent-timeline-inner_a":
+                return self._timeline
+            raise LookupError(selector)
+
+    subagent = _make_subagent("sub_1", status="cancelled")
+    subagent.error = "Subagent cancelled"
+
+    view = SubagentView.__new__(SubagentView)
+    view.__init__(subagent=subagent)
+    view._round_number = 1
+    timeline = _TimelineStub()
+    view._panel = _PanelStub(timeline)
+
+    view._ensure_terminal_status_note("inner_a", event_count=0)
+
+    assert len(timeline.entries) == 1
+    message, _style, _text_class, _round_number = timeline.entries[0]
+    assert message == "Subagent canceled."

@@ -120,17 +120,21 @@ class SystemMessageBuilder:
                 filtered.append(skill)
         return filtered
 
-    def _discover_specialized_subagents(self):
+    def _discover_specialized_subagents(self, allowed_types: list[str] | None = None):
         """Discover specialized subagent types from disk (cached per builder instance)."""
+        cache_key = tuple(sorted(allowed_types)) if allowed_types is not None else None
         if not hasattr(self, "_specialized_subagents_cache"):
+            self._specialized_subagents_cache = {}
+        if cache_key not in self._specialized_subagents_cache:
             from massgen.subagent.type_scanner import scan_subagent_types
 
-            self._specialized_subagents_cache = scan_subagent_types()
-            if self._specialized_subagents_cache:
+            result = scan_subagent_types(allowed_types=allowed_types)
+            self._specialized_subagents_cache[cache_key] = result
+            if result:
                 logger.info(
-                    f"[SystemMessageBuilder] Discovered {len(self._specialized_subagents_cache)} " f"specialized subagent types: {[t.name for t in self._specialized_subagents_cache]}",
+                    f"[SystemMessageBuilder] Discovered {len(result)} " f"specialized subagent types: {[t.name for t in result]}",
                 )
-        return self._specialized_subagents_cache
+        return self._specialized_subagents_cache[cache_key]
 
     def build_coordination_message(
         self,
@@ -158,6 +162,8 @@ class SystemMessageBuilder:
         other_branches: dict[str, str] | None = None,
         branch_diff_summaries: dict[str, str] | None = None,
         novelty_pressure_data: dict[str, Any] | None = None,
+        custom_checklist_items: list[str] | None = None,
+        item_categories: dict[str, str] | None = None,
     ) -> str:
         """Build system message for coordination phase.
 
@@ -234,6 +240,8 @@ class SystemMessageBuilder:
                     checklist_require_gap_report=checklist_require_gap_report,
                     gap_report_mode=gap_report_mode,
                     has_changedoc=changedoc_enabled,
+                    custom_checklist_items=custom_checklist_items,
+                    item_categories=item_categories,
                 ),
             )
         else:
@@ -254,6 +262,8 @@ class SystemMessageBuilder:
                     answers_used=answers_used,
                     answer_cap=answer_cap,
                     has_changedoc=changedoc_enabled,
+                    custom_checklist_items=custom_checklist_items,
+                    item_categories=item_categories,
                 ),
             )
 
@@ -454,8 +464,12 @@ class SystemMessageBuilder:
                     workspace_path = str(agent.backend.filesystem_manager.get_current_workspace())
                 # Get max concurrent from config, default to 3
                 max_concurrent = getattr(self.config.coordination_config, "subagent_max_concurrent", 3)
-                # Discover specialized subagent types from disk
-                specialized_subagents = self._discover_specialized_subagents()
+                # Discover specialized subagent types from disk, filtered by config
+                from massgen.subagent.type_scanner import DEFAULT_SUBAGENT_TYPES
+
+                _st_cfg = getattr(self.config.coordination_config, "subagent_types", None)
+                _allowed = _st_cfg if _st_cfg is not None else DEFAULT_SUBAGENT_TYPES
+                specialized_subagents = self._discover_specialized_subagents(allowed_types=_allowed)
                 builder.add_section(SubagentSection(workspace_path, max_concurrent, specialized_subagents=specialized_subagents))
                 logger.info(f"[SystemMessageBuilder] Added subagent section for {agent_id} (max_concurrent: {max_concurrent}, specialized_types: {len(specialized_subagents)})")
 

@@ -245,6 +245,39 @@ def _parse_spawn_subagents_args(args_payload: Any) -> dict[str, Any] | None:
     return None
 
 
+def _is_start_background_tool_name(tool_name: Any) -> bool:
+    """Return True when tool_name is the background start lifecycle tool."""
+    return str(tool_name or "").lower().endswith("start_background_tool")
+
+
+def _extract_spawn_subagents_args_for_tool(
+    tool_name: Any,
+    args_payload: Any,
+) -> dict[str, Any] | None:
+    """Extract spawn_subagents arguments from direct or wrapper tool payloads."""
+    parsed = _parse_spawn_subagents_args(args_payload)
+    if not isinstance(parsed, dict):
+        return None
+
+    if isinstance(parsed.get("tasks"), list):
+        return parsed
+
+    if not _is_start_background_tool_name(tool_name):
+        return parsed
+
+    target_tool = str(parsed.get("tool_name") or parsed.get("tool") or "").strip().lower()
+    if "spawn_subagent" not in target_tool:
+        return parsed
+
+    nested_raw = parsed.get("arguments", parsed.get("args"))
+    nested = _parse_spawn_subagents_args(nested_raw)
+    if isinstance(nested, dict):
+        return nested
+
+    merged = {key: value for key, value in parsed.items() if key not in {"tool_name", "tool", "arguments", "args"}}
+    return merged if isinstance(merged.get("tasks"), list) else parsed
+
+
 def _extract_spawned_subagents(result_text: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Return normalized spawn_subagents payload plus extracted subagent entries."""
     result_data = _parse_spawn_subagents_result(result_text)
@@ -260,6 +293,30 @@ def _extract_spawned_subagents(result_text: Any) -> tuple[dict[str, Any] | None,
 
     spawned = [entry for entry in spawned_raw if isinstance(entry, dict)]
     return result_data, spawned
+
+
+# Pre-collab subagent IDs that get dedicated full-screen treatment
+# instead of appearing as inline cards in the agent timeline.
+_PRECOLLAB_SUBAGENT_IDS = frozenset(
+    {
+        "persona_generation",
+        "task_decomposition",
+        "criteria_generation",
+    },
+)
+
+
+class _PrecollabSubagentState:
+    """Mutable state for a single pre-collab subagent's TUI tracking."""
+
+    __slots__ = ("call_id", "agent_id", "data", "status_callback", "auto_opened")
+
+    def __init__(self) -> None:
+        self.call_id: str | None = None
+        self.agent_id: str | None = None
+        self.data: Any | None = None  # SubagentDisplayData
+        self.status_callback: Callable | None = None
+        self.auto_opened: bool = False
 
 
 def _subagent_card_dom_id(call_id: Any) -> str:
@@ -278,6 +335,8 @@ def _map_subagent_status(raw_status: Any, completion_percentage: int | None = No
         return "timeout", max(0, min(int(progress), 100))
     if status in {"failed", "error"}:
         return "failed", 0
+    if status in {"cancelled", "canceled", "stopped"}:
+        return "canceled", 0
     if status in {"pending"}:
         return "pending", 0
     return "running", 0
@@ -293,6 +352,36 @@ def _count_workspace_files(workspace_path: str) -> int:
         return sum(1 for path in workspace.rglob("*") if path.is_file())
     except Exception:
         return 0
+
+
+def _read_subagent_reference_error(log_path: Any) -> str | None:
+    """Read terminal error details from subagent subprocess reference logs."""
+    if not log_path:
+        return None
+
+    try:
+        base = Path(str(log_path))
+    except Exception:
+        return None
+
+    if base.is_file():
+        base = base.parent
+
+    ref_file = base / "subprocess_logs.json"
+    if not ref_file.exists() or not ref_file.is_file():
+        return None
+
+    try:
+        payload = json.loads(ref_file.read_text())
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+    error = payload.get("error")
+    if isinstance(error, str):
+        error = error.strip()
+        if error:
+            return error
+    return None
 
 
 def _normalize_subagent_context_paths(raw_paths: Any) -> list[str]:
@@ -327,6 +416,16 @@ def _normalize_subagent_context_paths(raw_paths: Any) -> list[str]:
     return normalized
 
 
+def _normalize_subagent_type(raw_type: Any) -> str | None:
+    """Normalize specialized subagent type labels for display."""
+    if raw_type is None:
+        return None
+    value = str(raw_type).strip()
+    if not value:
+        return None
+    return value.lower()
+
+
 def _build_subagent_display_data(
     sa_data: dict[str, Any],
     existing: SubagentDisplayData | None = None,
@@ -347,14 +446,36 @@ def _build_subagent_display_data(
     workspace_path = str(sa_data.get("workspace") or (existing.workspace_path if existing else ""))
     timeout_seconds = float(sa_data.get("timeout_seconds") or (existing.timeout_seconds if existing else 300))
     elapsed_seconds = float(sa_data.get("execution_time_seconds") or (existing.elapsed_seconds if existing else 0.0))
-    error = sa_data.get("error") or (existing.error if existing else None)
+    log_path = sa_data.get("log_path") or (existing.log_path if existing else None)
+
+    error = sa_data.get("error")
+    if not error and existing:
+        error = existing.error
+    if not error:
+        raw_status = str(sa_data.get("status") or "").lower().strip()
+        terminal_raw_statuses = {
+            "failed",
+            "error",
+            "timeout",
+            "completed_but_timeout",
+            "partial",
+            "cancelled",
+            "canceled",
+            "stopped",
+        }
+        if display_status in {"failed", "timeout", "canceled"} or raw_status in terminal_raw_statuses:
+            error = _read_subagent_reference_error(log_path)
+
     answer = sa_data.get("answer")
     answer_preview = ((answer or "")[:200] if answer else None) or (existing.answer_preview if existing else None)
-    log_path = sa_data.get("log_path") or (existing.log_path if existing else None)
     raw_context_paths = sa_data.get("context_paths")
     if raw_context_paths is None and existing is not None:
         raw_context_paths = getattr(existing, "context_paths", [])
     context_paths = _normalize_subagent_context_paths(raw_context_paths)
+    raw_subagent_type = sa_data.get("subagent_type")
+    if raw_subagent_type is None and existing is not None:
+        raw_subagent_type = getattr(existing, "subagent_type", None)
+    subagent_type = _normalize_subagent_type(raw_subagent_type)
 
     workspace_file_count = _count_workspace_files(workspace_path)
     if workspace_file_count == 0 and existing and existing.workspace_file_count > 0:
@@ -374,6 +495,7 @@ def _build_subagent_display_data(
         answer_preview=answer_preview,
         log_path=str(log_path) if log_path else None,
         context_paths=context_paths,
+        subagent_type=subagent_type,
     )
 
 
@@ -788,6 +910,11 @@ class TextualTerminalDisplay(TerminalDisplay):
         """Set the callback for sending messages to running subagents."""
         if self._app and hasattr(self._app, "set_subagent_message_callback"):
             self._app.set_subagent_message_callback(callback)
+
+    def set_subagent_continue_callback(self, callback) -> None:
+        """Set the callback for continuing terminal subagents from TUI."""
+        if self._app and hasattr(self._app, "set_subagent_continue_callback"):
+            self._app.set_subagent_continue_callback(callback)
 
     def initialize(self, question: str, log_filename: str | None = None):
         """Initialize display with file output."""
@@ -3451,6 +3578,7 @@ if TEXTUAL_AVAILABLE:
             self._queued_human_input: str | None = None
             self._human_input_hook = None  # Set by orchestrator via set_human_input_hook()
             self._subagent_message_callback = None  # Set by orchestrator via set_subagent_message_callback()
+            self._subagent_continue_callback = None  # Set by orchestrator via set_subagent_continue_callback()
             self._queued_input_banner: QueuedInputBanner | None = None
             self._queued_input_region: Container | None = None
             self._queued_input_row: Horizontal | None = None
@@ -3482,11 +3610,7 @@ if TEXTUAL_AVAILABLE:
             self._runtime_decomposition_subtasks: dict[str, str] = {}
             self._runtime_parallel_personas: dict[str, str] = {}
             self._decomposition_completion_source: str = "subagent"
-            self._decomposition_runtime_subagent_call_id: str | None = None
-            self._decomposition_runtime_subagent_agent_id: str | None = None
-            self._decomposition_runtime_subagent_data: Any | None = None
-            self._decomposition_runtime_status_callback: Callable[[str], Any | None] | None = None
-            self._decomposition_runtime_auto_opened: bool = False
+            self._precollab_subagents: dict[str, _PrecollabSubagentState] = {}
             # Workspace browser open-guard to prevent duplicate modal pushes from
             # repeated click/key events while the UI is busy.
             self._workspace_browser_open_pending: bool = False
@@ -3494,11 +3618,6 @@ if TEXTUAL_AVAILABLE:
             # Performance guard: suppress expensive hover style updates while the
             # timeline is answer-locked (buttons remain clickable).
             self._hover_updates_suppressed: bool = False
-            self._persona_runtime_subagent_call_id: str | None = None
-            self._persona_runtime_subagent_agent_id: str | None = None
-            self._persona_runtime_subagent_data: Any | None = None
-            self._persona_runtime_status_callback: Callable[[str], Any | None] | None = None
-            self._persona_runtime_auto_opened: bool = False
 
             if not self._keyboard_interactive_mode:
                 self.BINDINGS = []
@@ -3564,16 +3683,7 @@ if TEXTUAL_AVAILABLE:
             self._runtime_decomposition_subtasks = {}
             self._runtime_parallel_personas = {}
             self._dismiss_decomposition_generation_modal()
-            self._decomposition_runtime_subagent_call_id = None
-            self._decomposition_runtime_subagent_agent_id = None
-            self._decomposition_runtime_subagent_data = None
-            self._decomposition_runtime_status_callback = None
-            self._decomposition_runtime_auto_opened = False
-            self._persona_runtime_subagent_call_id = None
-            self._persona_runtime_subagent_agent_id = None
-            self._persona_runtime_subagent_data = None
-            self._persona_runtime_status_callback = None
-            self._persona_runtime_auto_opened = False
+            self._precollab_subagents.clear()
 
             if self._tab_bar and self._mode_state.coordination_mode == "parallel":
                 if self._mode_state.parallel_personas_enabled:
@@ -4770,6 +4880,7 @@ if TEXTUAL_AVAILABLE:
                     self._queued_input_banner.add_message(
                         str(latest.get("content", "")),
                         target_label=str(latest.get("target_label", "all agents")),
+                        source_label=str(latest.get("source_label", latest.get("source", "human"))),
                     )
                 else:
                     self._queued_input_banner.clear()
@@ -4841,6 +4952,7 @@ if TEXTUAL_AVAILABLE:
                 queued_message_id = self._human_input_hook.set_pending_input(
                     text,
                     target_agents=targets if targets else None,
+                    source="human",
                 )
 
             # Show visual indicator - mount banner dynamically if not present
@@ -4919,6 +5031,7 @@ if TEXTUAL_AVAILABLE:
             content: str,
             *,
             message_id: int | None = None,
+            source_label: str | None = None,
         ) -> None:
             """Insert a dedicated timeline entry when runtime input is injected."""
             panel = self.agent_widgets.get(agent_id)
@@ -4929,6 +5042,8 @@ if TEXTUAL_AVAILABLE:
                 timeline = panel.query_one(f"#{panel._timeline_section_id}", TimelineSection)
                 round_number = getattr(panel, "_current_round", 1)
                 prefix = f"Runtime Injection #{message_id}" if message_id is not None else "Runtime Injection"
+                if source_label:
+                    prefix = f"{prefix} [{source_label}]"
                 timeline.add_text(
                     f"{prefix} -> Delivered to {agent_id}: {content}",
                     text_class="status runtime-injection",
@@ -4963,6 +5078,7 @@ if TEXTUAL_AVAILABLE:
                         agent_id,
                         str(message.get("content", "")),
                         message_id=normalized_id,
+                        source_label=str(message.get("source_label") or message.get("source") or "").strip() or None,
                     )
             else:
                 self._add_runtime_injection_timeline_entry(agent_id, content)
@@ -5003,6 +5119,10 @@ if TEXTUAL_AVAILABLE:
         def set_subagent_message_callback(self, callback) -> None:
             """Set the callback for sending messages to running subagents."""
             self._subagent_message_callback = callback
+
+        def set_subagent_continue_callback(self, callback) -> None:
+            """Set callback for continuing terminal subagents from SubagentScreen."""
+            self._subagent_continue_callback = callback
 
         def _submit_question(
             self,
@@ -5373,11 +5493,18 @@ if TEXTUAL_AVAILABLE:
                     plan_mode = self._mode_bar.get_plan_mode()
                 except Exception:
                     pass
+
+            mode_required: int | None = None
+            meta_required: int | None = None
+            one_row_required: int | None = None
+            decision_reason = ""
+            forced_compact = False
             # Plan/execute/analysis modes expose longer run-control labels and
             # an extra settings affordance in the left bar; stack the right meta
             # panel earlier to keep run controls readable in standard terminals.
             if plan_mode in {"plan", "execute", "analysis"}:
                 stack_meta = width <= 150
+                decision_reason = "plan_mode_threshold"
             else:
                 # In normal mode, keep one-row layout whenever the compacted
                 # left controls and right meta panel actually fit.
@@ -5403,20 +5530,56 @@ if TEXTUAL_AVAILABLE:
                 meta_required = max(meta_primary_required, hint_required, 24)
                 one_row_required = mode_required + meta_required + 6
 
+                # If full labels cause stacking but compact labels would fit,
+                # proactively compact the mode controls to preserve single-row
+                # startup behavior in thin terminals.
+                if self._mode_bar and one_row_required > width and not self._mode_bar._compact_labels_active:
+                    try:
+                        self._mode_bar._apply_compact_labels(True)
+                        compact_mode_required = max(0, int(self._mode_bar._measure_control_width()))
+                        compact_one_row_required = compact_mode_required + meta_required + 6
+                        if compact_one_row_required <= width:
+                            self._mode_bar._compact_labels_active = True
+                            mode_required = compact_mode_required
+                            one_row_required = compact_one_row_required
+                            decision_reason = "forced_compact_for_fit"
+                            forced_compact = True
+                        else:
+                            # Revert if compact labels still cannot satisfy the row budget.
+                            self._mode_bar._apply_compact_labels(False)
+                    except Exception:
+                        pass
+
                 if width >= 150 and "meta-stacked" not in input_modes_row.classes:
                     # Keep a small tolerance on the tested wide threshold so
                     # minor width deltas do not force a stacked layout.
                     stack_meta = one_row_required > width + 2
+                    if not decision_reason:
+                        decision_reason = "wide_threshold_with_tolerance"
                 elif "meta-stacked" in input_modes_row.classes:
                     # Small hysteresis prevents stack/unstack oscillation.
                     stack_meta = one_row_required > max(0, width - 2)
+                    if not decision_reason:
+                        decision_reason = "stacked_hysteresis"
                 else:
                     stack_meta = one_row_required > width
+                    if not decision_reason:
+                        decision_reason = "fit_comparison"
 
             if stack_meta:
                 input_modes_row.add_class("meta-stacked")
             else:
                 input_modes_row.remove_class("meta-stacked")
+
+            mode_bar_compact = self._mode_bar.has_class("compact-layout") if self._mode_bar else None
+            tui_log(
+                "[INPUT_LAYOUT] "
+                f"width={width} plan_mode={plan_mode} stack_meta={stack_meta} "
+                f"reason={decision_reason} mode_required={mode_required} "
+                f"meta_required={meta_required} one_row_required={one_row_required} "
+                f"mode_bar_compact={mode_bar_compact} forced_compact={forced_compact} "
+                f"classes={list(input_modes_row.classes)}",
+            )
 
         def _build_vim_indicator_text(self, vim_normal: bool | None) -> str:
             """Build a width-aware vim status line for the input meta panel."""
@@ -5664,7 +5827,8 @@ Type your question and press Enter to ask the agents.
                 return
 
             if lower_status in ("decomposition ready", "decomposition fallback"):
-                if self._decomposition_runtime_subagent_call_id:
+                decomp_state = self._precollab_subagents.get("task_decomposition")
+                if decomp_state and decomp_state.call_id:
                     self._dismiss_decomposition_generation_modal()
                     return
                 self._decomposition_completion_source = "subagent" if "ready" in lower_status else "fallback"
@@ -5870,19 +6034,23 @@ Type your question and press Enter to ask the agents.
                         level="debug",
                     )
 
-        def _get_decomposition_runtime_subagent(
+        def _get_precollab_subagent(
             self,
-            subagent_id: str = "task_decomposition",
+            subagent_id: str,
         ) -> Any | None:
-            """Return latest decomposition runtime subagent data."""
-            current = self._decomposition_runtime_subagent_data
-            callback = self._decomposition_runtime_status_callback
+            """Return latest data for a pre-collab subagent, refreshing via callback."""
+            state = self._precollab_subagents.get(subagent_id)
+            if not state:
+                return None
+
+            current = state.data
+            callback = state.status_callback
 
             if callback:
                 try:
                     refreshed = callback(subagent_id)
                     if refreshed is not None:
-                        self._decomposition_runtime_subagent_data = refreshed
+                        state.data = refreshed
                         current = refreshed
                 except Exception:
                     pass
@@ -5891,37 +6059,39 @@ Type your question and press Enter to ask the agents.
                 return current
             return None
 
-        def _open_decomposition_runtime_subagent_screen(
+        def _open_precollab_screen(
             self,
+            subagent_id: str,
             auto_return_on_completion: bool = False,
         ) -> bool:
-            """Open the decomposition runtime subagent screen.
+            """Open the SubagentScreen for a pre-collab subagent.
 
             Returns:
                 True if a screen was opened, False otherwise.
             """
-            subagent = self._get_decomposition_runtime_subagent()
+            subagent = self._get_precollab_subagent(subagent_id)
             if not subagent:
                 return False
 
             screen = SubagentScreen(
                 subagent=subagent,
                 all_subagents=[subagent],
-                status_callback=self._get_decomposition_runtime_subagent,
+                status_callback=lambda sid=subagent_id: self._get_precollab_subagent(sid),
                 auto_return_on_completion=auto_return_on_completion,
                 send_message_callback=self._subagent_message_callback,
+                continue_subagent_callback=getattr(self, "_subagent_continue_callback", None),
             )
             self.push_screen(screen)
             return True
 
-        def _decomposition_subagent_events_ready(self) -> bool:
-            """Return True when decomposition subagent has enough data for full subagent view.
+        def _precollab_events_ready(self, subagent_id: str) -> bool:
+            """Return True when a pre-collab subagent has enough event data for display.
 
             Readiness requires:
             - a readable events stream, and
             - detectable inner-agent identity data (metadata or event agent IDs/sources).
             """
-            subagent = self._get_decomposition_runtime_subagent()
+            subagent = self._get_precollab_subagent(subagent_id)
             if not subagent:
                 return False
 
@@ -5978,13 +6148,16 @@ Type your question and press Enter to ask the agents.
                         continue
 
                 # Fallback: scan recent event lines for inner-agent sources.
+                # Exclude the subagent's own ID from the "seen agents" set.
+                excluded_sources = {"mcp_setup", "mcp_session", "orchestrator", "system", subagent_id}
+
                 def _is_agent_source(source: str | None) -> bool:
                     if not source:
                         return False
                     lowered = source.lower()
                     if lowered.startswith("mcp_") or lowered.startswith("mcp__") or "mcp__" in lowered:
                         return False
-                    if lowered in ("mcp_setup", "mcp_session", "orchestrator", "system", "task_decomposition"):
+                    if lowered in excluded_sources:
                         return False
                     return True
 
@@ -6023,10 +6196,10 @@ Type your question and press Enter to ask the agents.
             except Exception:
                 return False
 
-        def _auto_open_decomposition_runtime_subagent_screen(self, attempt: int = 0) -> None:
-            """Auto-open decomposition subagent screen once event data is available."""
-            if self._decomposition_subagent_events_ready():
-                self._open_decomposition_runtime_subagent_screen(auto_return_on_completion=True)
+        def _auto_open_precollab_screen(self, subagent_id: str, attempt: int = 0) -> None:
+            """Auto-open a pre-collab subagent screen once event data is available."""
+            if self._precollab_events_ready(subagent_id):
+                self._open_precollab_screen(subagent_id, auto_return_on_completion=True)
                 return
 
             # Retry for a short window; avoid forcing an early empty screen.
@@ -6035,164 +6208,7 @@ Type your question and press Enter to ask the agents.
 
             self.set_timer(
                 0.1,
-                lambda: self._auto_open_decomposition_runtime_subagent_screen(attempt + 1),
-            )
-
-        def _get_persona_runtime_subagent(
-            self,
-            subagent_id: str = "persona_generation",
-        ) -> Any | None:
-            """Return latest runtime persona-generation subagent data."""
-            current = self._persona_runtime_subagent_data
-            callback = self._persona_runtime_status_callback
-
-            if callback:
-                try:
-                    refreshed = callback(subagent_id)
-                    if refreshed is not None:
-                        self._persona_runtime_subagent_data = refreshed
-                        current = refreshed
-                except Exception:
-                    pass
-
-            if current is not None and getattr(current, "id", None) == subagent_id:
-                return current
-            return None
-
-        def _open_persona_runtime_subagent_screen(
-            self,
-            auto_return_on_completion: bool = False,
-        ) -> bool:
-            """Open the runtime persona-generation subagent screen."""
-            subagent = self._get_persona_runtime_subagent()
-            if not subagent:
-                return False
-
-            screen = SubagentScreen(
-                subagent=subagent,
-                all_subagents=[subagent],
-                status_callback=self._get_persona_runtime_subagent,
-                auto_return_on_completion=auto_return_on_completion,
-                send_message_callback=self._subagent_message_callback,
-            )
-            self.push_screen(screen)
-            return True
-
-        def _persona_subagent_events_ready(self) -> bool:
-            """Return True when persona-generation subagent has enough event data."""
-            subagent = self._get_persona_runtime_subagent()
-            if not subagent:
-                return False
-
-            log_path_raw = getattr(subagent, "log_path", None)
-            if not log_path_raw:
-                return False
-
-            try:
-                from massgen.subagent.models import SubagentResult
-
-                log_path = Path(log_path_raw)
-                if not log_path.is_absolute():
-                    log_path = (Path.cwd() / log_path).resolve()
-
-                events_path: Path | None = None
-                if log_path.is_file():
-                    events_path = log_path
-                elif log_path.is_dir():
-                    resolved = SubagentResult.resolve_events_path(log_path)
-                    if resolved:
-                        events_path = Path(resolved)
-
-                if not events_path or not events_path.exists():
-                    return False
-                if events_path.stat().st_size <= 0:
-                    return False
-
-                metadata_candidates = [events_path.parent / "execution_metadata.yaml"]
-                if log_path.is_dir():
-                    metadata_candidates.extend(
-                        [
-                            log_path / "full_logs" / "execution_metadata.yaml",
-                            log_path / "execution_metadata.yaml",
-                        ],
-                    )
-                else:
-                    metadata_candidates.append(log_path.parent / "execution_metadata.yaml")
-
-                for candidate in metadata_candidates:
-                    if not candidate.exists():
-                        continue
-                    try:
-                        import yaml
-
-                        with open(candidate, encoding="utf-8") as f:
-                            metadata = yaml.safe_load(f) or {}
-                        agents_cfg = (metadata.get("config") or {}).get("agents") or []
-                        if isinstance(agents_cfg, list):
-                            agent_ids = [a.get("id") for a in agents_cfg if isinstance(a, dict) and isinstance(a.get("id"), str) and a.get("id")]
-                            if agent_ids:
-                                return True
-                    except Exception:
-                        continue
-
-                # Fallback: scan recent event lines for inner-agent sources.
-                def _is_agent_source(source: str | None) -> bool:
-                    if not source:
-                        return False
-                    lowered = source.lower()
-                    if lowered.startswith("mcp_") or lowered.startswith("mcp__") or "mcp__" in lowered:
-                        return False
-                    if lowered in ("mcp_setup", "mcp_session", "orchestrator", "system", "persona_generation"):
-                        return False
-                    return True
-
-                try:
-                    import json
-
-                    tail_lines = events_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-400:]
-                    seen_agents: set[str] = set()
-                    for raw in tail_lines:
-                        if not raw.strip():
-                            continue
-                        try:
-                            event = json.loads(raw)
-                        except Exception:
-                            continue
-
-                        agent_id = event.get("agent_id")
-                        if isinstance(agent_id, str) and _is_agent_source(agent_id):
-                            seen_agents.add(agent_id)
-
-                        data = event.get("data") if isinstance(event.get("data"), dict) else {}
-                        source = data.get("source") if isinstance(data, dict) else None
-                        if not source and isinstance(data, dict):
-                            chunk = data.get("chunk")
-                            if isinstance(chunk, dict):
-                                source = chunk.get("source")
-                        if isinstance(source, str) and _is_agent_source(source):
-                            seen_agents.add(source)
-
-                    if seen_agents:
-                        return True
-                except Exception:
-                    return False
-
-                return False
-            except Exception:
-                return False
-
-        def _auto_open_persona_runtime_subagent_screen(self, attempt: int = 0) -> None:
-            """Auto-open persona-generation subagent screen once event data is available."""
-            if self._persona_subagent_events_ready():
-                self._open_persona_runtime_subagent_screen(auto_return_on_completion=True)
-                return
-
-            if attempt >= 120:
-                return
-
-            self.set_timer(
-                0.1,
-                lambda: self._auto_open_persona_runtime_subagent_screen(attempt + 1),
+                lambda sid=subagent_id, a=attempt: self._auto_open_precollab_screen(sid, a + 1),
             )
 
         def show_runtime_subagent_card(
@@ -6209,9 +6225,9 @@ Type your question and press Enter to ask the agents.
             """Render a subagent card for orchestrator-owned runtime subagents."""
             from massgen.subagent.models import SubagentDisplayData
 
-            # Decomposition pre-run generation should not appear in the main timeline,
-            # but should be visible immediately in the dedicated subagent screen.
-            if subagent_id == "task_decomposition":
+            # Pre-collab subagents (persona, decomposition, criteria) should not
+            # appear in the main timeline — they open directly in a full-screen view.
+            if subagent_id in _PRECOLLAB_SUBAGENT_IDS:
                 trimmed_task = (task or "").strip()
                 if len(trimmed_task) > 300:
                     trimmed_task = trimmed_task[:297] + "..."
@@ -6225,10 +6241,15 @@ Type your question and press Enter to ask the agents.
                     except Exception:
                         resolved_log_path = None
 
-                self._decomposition_runtime_subagent_call_id = call_id
-                self._decomposition_runtime_subagent_agent_id = agent_id
-                self._decomposition_runtime_status_callback = status_callback
-                self._decomposition_runtime_subagent_data = SubagentDisplayData(
+                state = self._precollab_subagents.get(subagent_id)
+                if not state:
+                    state = _PrecollabSubagentState()
+                    self._precollab_subagents[subagent_id] = state
+
+                state.call_id = call_id
+                state.agent_id = agent_id
+                state.status_callback = status_callback
+                state.data = SubagentDisplayData(
                     id=subagent_id,
                     task=trimmed_task,
                     status="running",
@@ -6243,49 +6264,12 @@ Type your question and press Enter to ask the agents.
                     log_path=resolved_log_path,
                 )
 
-                self._dismiss_decomposition_generation_modal()
-                if not self._decomposition_runtime_auto_opened:
-                    self._decomposition_runtime_auto_opened = True
-                    self.set_timer(0.05, self._auto_open_decomposition_runtime_subagent_screen)
-                return
+                if subagent_id == "task_decomposition":
+                    self._dismiss_decomposition_generation_modal()
 
-            # Persona generation prep should also stay out of the main timeline and
-            # open directly in the dedicated subagent screen.
-            if subagent_id == "persona_generation":
-                trimmed_task = (task or "").strip()
-                if len(trimmed_task) > 300:
-                    trimmed_task = trimmed_task[:297] + "..."
-
-                resolved_log_path = log_path
-                if not resolved_log_path:
-                    try:
-                        log_dir = get_log_session_dir()
-                        if log_dir:
-                            resolved_log_path = str(log_dir / "subagents" / subagent_id)
-                    except Exception:
-                        resolved_log_path = None
-
-                self._persona_runtime_subagent_call_id = call_id
-                self._persona_runtime_subagent_agent_id = agent_id
-                self._persona_runtime_status_callback = status_callback
-                self._persona_runtime_subagent_data = SubagentDisplayData(
-                    id=subagent_id,
-                    task=trimmed_task,
-                    status="running",
-                    progress_percent=0,
-                    elapsed_seconds=0.0,
-                    timeout_seconds=float(timeout_seconds or 300),
-                    workspace_path="",
-                    workspace_file_count=0,
-                    last_log_line="Starting...",
-                    error=None,
-                    answer_preview=None,
-                    log_path=resolved_log_path,
-                )
-
-                if not self._persona_runtime_auto_opened:
-                    self._persona_runtime_auto_opened = True
-                    self.set_timer(0.05, self._auto_open_persona_runtime_subagent_screen)
+                if not state.auto_opened:
+                    state.auto_opened = True
+                    self.set_timer(0.05, lambda sid=subagent_id: self._auto_open_precollab_screen(sid))
                 return
 
             target_agent = agent_id if agent_id in self.agent_widgets else None
@@ -6421,78 +6405,6 @@ Type your question and press Enter to ask the agents.
             """Update status/result info for an orchestrator-owned runtime subagent."""
             from massgen.subagent.models import SubagentDisplayData
 
-            # Decomposition pre-run generation is intentionally not rendered in timeline.
-            # Keep status in memory so Ctrl+U and the dedicated subagent screen still work.
-            if subagent_id == "task_decomposition":
-                existing = self._get_decomposition_runtime_subagent(subagent_id) or self._decomposition_runtime_subagent_data
-
-                status_map = {
-                    "running": "running",
-                    "pending": "pending",
-                    "completed": "completed",
-                    "timeout": "timeout",
-                    "failed": "failed",
-                    "error": "error",
-                }
-                normalized_status = status_map.get((status or "").lower(), "failed")
-
-                if existing is not None:
-                    self._decomposition_runtime_subagent_data = SubagentDisplayData(
-                        id=existing.id,
-                        task=existing.task,
-                        status=normalized_status,
-                        progress_percent=100 if normalized_status in ("completed", "timeout", "failed", "error") else existing.progress_percent,
-                        elapsed_seconds=existing.elapsed_seconds,
-                        timeout_seconds=existing.timeout_seconds,
-                        workspace_path=existing.workspace_path,
-                        workspace_file_count=existing.workspace_file_count,
-                        last_log_line=existing.last_log_line,
-                        error=error or existing.error,
-                        answer_preview=answer_preview or existing.answer_preview,
-                        log_path=existing.log_path,
-                        context_paths=list(getattr(existing, "context_paths", []) or []),
-                    )
-
-                if call_id == self._decomposition_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                    self._decomposition_runtime_subagent_call_id = None
-                    self._decomposition_runtime_subagent_agent_id = None
-                return
-
-            if subagent_id == "persona_generation":
-                existing = self._get_persona_runtime_subagent(subagent_id) or self._persona_runtime_subagent_data
-
-                status_map = {
-                    "running": "running",
-                    "pending": "pending",
-                    "completed": "completed",
-                    "timeout": "timeout",
-                    "failed": "failed",
-                    "error": "error",
-                }
-                normalized_status = status_map.get((status or "").lower(), "failed")
-
-                if existing is not None:
-                    self._persona_runtime_subagent_data = SubagentDisplayData(
-                        id=existing.id,
-                        task=existing.task,
-                        status=normalized_status,
-                        progress_percent=100 if normalized_status in ("completed", "timeout", "failed", "error") else existing.progress_percent,
-                        elapsed_seconds=existing.elapsed_seconds,
-                        timeout_seconds=existing.timeout_seconds,
-                        workspace_path=existing.workspace_path,
-                        workspace_file_count=existing.workspace_file_count,
-                        last_log_line=existing.last_log_line,
-                        error=error or existing.error,
-                        answer_preview=answer_preview or existing.answer_preview,
-                        log_path=existing.log_path,
-                        context_paths=list(getattr(existing, "context_paths", []) or []),
-                    )
-
-                if call_id == self._persona_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                    self._persona_runtime_subagent_call_id = None
-                    self._persona_runtime_subagent_agent_id = None
-                return
-
             status_map = {
                 "running": "running",
                 "pending": "pending",
@@ -6500,14 +6412,48 @@ Type your question and press Enter to ask the agents.
                 "timeout": "timeout",
                 "failed": "failed",
                 "error": "error",
+                "cancelled": "canceled",
+                "canceled": "canceled",
+                "stopped": "canceled",
             }
             normalized_status = status_map.get((status or "").lower(), "failed")
 
+            # Pre-collab subagents are not rendered in the timeline — keep status
+            # in memory so Ctrl+U and the dedicated subagent screen still work.
+            if subagent_id in _PRECOLLAB_SUBAGENT_IDS:
+                pc_state = self._precollab_subagents.get(subagent_id)
+                if not pc_state:
+                    return
+
+                existing = self._get_precollab_subagent(subagent_id) or pc_state.data
+                if existing is not None:
+                    pc_state.data = SubagentDisplayData(
+                        id=existing.id,
+                        task=existing.task,
+                        status=normalized_status,
+                        progress_percent=100 if normalized_status in ("completed", "timeout", "failed", "error", "canceled") else existing.progress_percent,
+                        elapsed_seconds=existing.elapsed_seconds,
+                        timeout_seconds=existing.timeout_seconds,
+                        workspace_path=existing.workspace_path,
+                        workspace_file_count=existing.workspace_file_count,
+                        last_log_line=existing.last_log_line,
+                        error=error or existing.error,
+                        answer_preview=answer_preview or existing.answer_preview,
+                        log_path=existing.log_path,
+                        context_paths=list(getattr(existing, "context_paths", []) or []),
+                    )
+
+                if call_id == pc_state.call_id and normalized_status in ("completed", "timeout", "failed", "error", "canceled"):
+                    pc_state.call_id = None
+                    pc_state.agent_id = None
+                return
+
+            # Resolve target agent — check pre-collab states for call_id ownership.
             target_agent = agent_id
-            if call_id == self._decomposition_runtime_subagent_call_id and self._decomposition_runtime_subagent_agent_id:
-                target_agent = self._decomposition_runtime_subagent_agent_id
-            elif call_id == self._persona_runtime_subagent_call_id and self._persona_runtime_subagent_agent_id:
-                target_agent = self._persona_runtime_subagent_agent_id
+            for pc_state in self._precollab_subagents.values():
+                if call_id == pc_state.call_id and pc_state.agent_id:
+                    target_agent = pc_state.agent_id
+                    break
 
             panel = self.agent_widgets.get(target_agent)
             if not panel:
@@ -6533,7 +6479,7 @@ Type your question and press Enter to ask the agents.
             if existing is None:
                 return
 
-            final_progress = 100 if normalized_status in ("completed", "timeout", "failed", "error") else existing.progress_percent
+            final_progress = 100 if normalized_status in ("completed", "timeout", "failed", "error", "canceled") else existing.progress_percent
             updated = SubagentDisplayData(
                 id=existing.id,
                 task=existing.task,
@@ -6551,12 +6497,13 @@ Type your question and press Enter to ask the agents.
             )
             card.update_subagent(subagent_id, updated)
 
-            if call_id == self._decomposition_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                self._decomposition_runtime_subagent_call_id = None
-                self._decomposition_runtime_subagent_agent_id = None
-            elif call_id == self._persona_runtime_subagent_call_id and normalized_status in ("completed", "timeout", "failed", "error"):
-                self._persona_runtime_subagent_call_id = None
-                self._persona_runtime_subagent_agent_id = None
+            # Clear call ownership on terminal status for any pre-collab state.
+            if normalized_status in ("completed", "timeout", "failed", "error", "canceled"):
+                for pc_state in self._precollab_subagents.values():
+                    if call_id == pc_state.call_id:
+                        pc_state.call_id = None
+                        pc_state.agent_id = None
+                        break
 
         def show_subagent_card_from_spawn(
             self,
@@ -6606,6 +6553,7 @@ Type your question and press Enter to ask the agents.
                 task_desc = task_data.get("task", "")
                 log_path = str(subagent_logs_base / subagent_id) if subagent_logs_base else None
                 context_paths = _normalize_subagent_context_paths(task_data.get("context_paths", []))
+                subagent_type = _normalize_subagent_type(task_data.get("subagent_type"))
 
                 subagents.append(
                     SubagentDisplayData(
@@ -6622,6 +6570,7 @@ Type your question and press Enter to ask the agents.
                         answer_preview=None,
                         log_path=log_path,
                         context_paths=context_paths,
+                        subagent_type=subagent_type,
                     ),
                 )
 
@@ -6655,11 +6604,6 @@ Type your question and press Enter to ask the agents.
                     except Exception as e:
                         tui_log(f"[TextualDisplay] {e}")
 
-                    status_callback = self._build_spawn_status_callback(
-                        agent_id=agent_id,
-                        seed_subagents=subagents,
-                    )
-
                     round_number = max(
                         1,
                         int(getattr(panel, "_current_round", getattr(timeline, "_viewed_round", 1)) or 1),
@@ -6669,9 +6613,34 @@ Type your question and press Enter to ask the agents.
                     card = SubagentCard(
                         subagents=subagents,
                         tool_call_id=call_id,
-                        status_callback=status_callback,
+                        status_callback=None,
                         id=card_dom_id,
                     )
+
+                    status_callback = None
+                    try:
+                        try:
+                            status_callback = self._build_spawn_status_callback(
+                                agent_id=agent_id,
+                                seed_subagents=subagents,
+                                card=card,
+                            )
+                        except TypeError:
+                            # Backward compatibility for tests/overrides that still expose
+                            # the older two-argument callback builder shape.
+                            status_callback = self._build_spawn_status_callback(
+                                agent_id=agent_id,
+                                seed_subagents=subagents,
+                            )
+                    except Exception as e:
+                        tui_log(f"[TextualDisplay] {e}")
+
+                    if status_callback is not None:
+                        try:
+                            card.set_status_callback(status_callback)
+                        except Exception as e:
+                            tui_log(f"[TextualDisplay] {e}")
+
                     timeline.add_widget(card, round_number=round_number)
                     tui_log(
                         f"show_subagent_card_from_spawn: added SubagentCard with {len(subagents)} pending subagents",
@@ -7806,6 +7775,7 @@ Type your question and press Enter to ask the agents.
                                     all_subagents=card.subagents,
                                     status_callback=self._build_subagent_status_callback(card),
                                     send_message_callback=self._subagent_message_callback,
+                                    continue_subagent_callback=getattr(self, "_subagent_continue_callback", None),
                                 )
                                 self.push_screen(screen)
                                 return
@@ -7815,6 +7785,7 @@ Type your question and press Enter to ask the agents.
                                 all_subagents=card.subagents,
                                 status_callback=self._build_subagent_status_callback(card),
                                 send_message_callback=self._subagent_message_callback,
+                                continue_subagent_callback=getattr(self, "_subagent_continue_callback", None),
                             )
                             self.push_screen(screen)
                             return
@@ -7822,10 +7793,9 @@ Type your question and press Enter to ask the agents.
                     continue
 
             # Fallback: runtime preparation subagents (hidden from timeline by design)
-            if self._open_decomposition_runtime_subagent_screen():
-                return
-            if self._open_persona_runtime_subagent_screen():
-                return
+            for precollab_id in _PRECOLLAB_SUBAGENT_IDS:
+                if self._open_precollab_screen(precollab_id):
+                    return
 
             self.notify("No active subagents", severity="information", timeout=2)
 
@@ -9537,6 +9507,62 @@ Type your question and press Enter to ask the agents.
                 cache["entries"] = entries
                 return entries
 
+            def _lookup_known_background_status(subagent_id: str) -> str | None:
+                panel = self.agent_widgets.get(agent_id)
+                if panel is None:
+                    return None
+
+                timeline = None
+                get_timeline = getattr(panel, "_get_timeline", None)
+                if callable(get_timeline):
+                    try:
+                        timeline = get_timeline()
+                    except Exception:
+                        timeline = None
+                if timeline is None:
+                    return None
+
+                collect_known = getattr(timeline, "_collect_known_background_statuses", None)
+                if not callable(collect_known):
+                    return None
+
+                try:
+                    statuses = collect_known() or {}
+                except Exception:
+                    return None
+                if not isinstance(statuses, dict):
+                    return None
+
+                status = statuses.get(subagent_id)
+                if status is None:
+                    status = statuses.get(str(subagent_id))
+                if status is None:
+                    return None
+
+                normalized = str(status).lower().strip()
+                return normalized or None
+
+            def _lookup_background_history_entry(subagent_id: str) -> dict[str, Any] | None:
+                panel = self.agent_widgets.get(agent_id)
+                if panel is None:
+                    return None
+                history_fn = getattr(panel, "_get_background_tool_history", None)
+                if not callable(history_fn):
+                    return None
+                try:
+                    history_items = history_fn() or []
+                except Exception:
+                    return None
+                for item in history_items:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate_id = str(item.get("async_id") or item.get("job_id") or item.get("subagent_id") or "").strip()
+                    if not candidate_id:
+                        continue
+                    if candidate_id == subagent_id:
+                        return item
+                return None
+
             def _status_callback(subagent_id: str) -> SubagentDisplayData | None:
                 latest = live_callback(subagent_id)
                 if latest and latest.status not in {"running", "pending"}:
@@ -9544,7 +9570,47 @@ Type your question and press Enter to ask the agents.
 
                 entry = _load_entries().get(subagent_id)
                 if not entry:
-                    return latest
+                    known_status = _lookup_known_background_status(subagent_id)
+                    if known_status and known_status not in {"running", "pending", "background", "queued"}:
+                        baseline = latest or by_id.get(subagent_id)
+                        merged = _build_subagent_display_data(
+                            {
+                                "subagent_id": subagent_id,
+                                "status": known_status,
+                            },
+                            baseline,
+                        )
+                        by_id[subagent_id] = merged
+                        return merged
+
+                    history_entry = _lookup_background_history_entry(subagent_id)
+                    if not history_entry:
+                        return latest
+
+                    history_status = str(history_entry.get("latest_status") or history_entry.get("status") or "").lower().strip()
+                    if history_status in {"running", "pending", "background", "queued"} or not history_status:
+                        return latest
+                    if history_status in {"cancelled", "canceled", "stopped"}:
+                        history_status = "canceled"
+
+                    history_payload: dict[str, Any] = {
+                        "subagent_id": subagent_id,
+                        "status": history_status,
+                    }
+                    result_payload = history_entry.get("result")
+                    if isinstance(result_payload, str) and result_payload:
+                        if history_status in {"failed", "error", "timeout", "canceled"}:
+                            history_payload["error"] = result_payload
+                        else:
+                            history_payload["answer"] = result_payload
+                    error_payload = history_entry.get("error")
+                    if isinstance(error_payload, str) and error_payload:
+                        history_payload["error"] = error_payload
+
+                    baseline = latest or by_id.get(subagent_id)
+                    merged = _build_subagent_display_data(history_payload, baseline)
+                    by_id[subagent_id] = merged
+                    return merged
 
                 # Ignore non-terminal file entries when we already have a live snapshot.
                 entry_status = str(entry.get("status", "")).lower()
@@ -9602,6 +9668,7 @@ Type your question and press Enter to ask the agents.
                 all_subagents=event.all_subagents,
                 status_callback=status_callback,
                 send_message_callback=self._subagent_message_callback,
+                continue_subagent_callback=getattr(self, "_subagent_continue_callback", None),
             )
             self.push_screen(screen, _on_screen_dismiss)
             event.stop()
@@ -12334,7 +12401,7 @@ Type your question and press Enter to ask the agents.
 
             return is_planning_tool(tool_name)
 
-        def _is_subagent_tool(self, tool_name: str) -> bool:
+        def _is_subagent_tool(self, tool_name: str, args_payload: Any | None = None) -> bool:
             """Check if a tool is a subagent tool (should show SubagentCard instead of tool card).
 
             Args:
@@ -12347,8 +12414,20 @@ Type your question and press Enter to ask the agents.
                 "spawn_subagents",
                 "spawn_subagent",
             ]
-            tool_lower = tool_name.lower()
-            return any(st in tool_lower for st in subagent_tools)
+            tool_lower = str(tool_name or "").lower()
+            if any(st in tool_lower for st in subagent_tools):
+                return True
+
+            if _is_start_background_tool_name(tool_name):
+                args_data = _extract_spawn_subagents_args_for_tool(tool_name, args_payload)
+                if isinstance(args_data, dict):
+                    target_tool = str(args_data.get("tool_name") or args_data.get("tool") or "").lower()
+                    if any(st in target_tool for st in subagent_tools):
+                        return True
+                    if isinstance(args_data.get("tasks"), list):
+                        return True
+
+            return False
 
         def _show_subagent_card_from_args(
             self,
@@ -12391,7 +12470,10 @@ Type your question and press Enter to ask the agents.
                 tui_log("_show_subagent_card_from_args: no args_full")
                 return
 
-            args_data = _parse_spawn_subagents_args(args)
+            args_data = _extract_spawn_subagents_args_for_tool(
+                getattr(tool_data, "tool_name", ""),
+                args,
+            )
             if args_data is None:
                 tui_log(f"_show_subagent_card_from_args: failed to parse args: {str(args)[:100]}")
                 return
@@ -12422,6 +12504,7 @@ Type your question and press Enter to ask the agents.
                 task_desc = task_data.get("task", "")
                 log_path = str(subagent_logs_base / subagent_id) if subagent_logs_base else None
                 context_paths = _normalize_subagent_context_paths(task_data.get("context_paths", []))
+                subagent_type = _normalize_subagent_type(task_data.get("subagent_type"))
 
                 subagents.append(
                     SubagentDisplayData(
@@ -12438,6 +12521,7 @@ Type your question and press Enter to ask the agents.
                         answer_preview=None,
                         log_path=log_path,
                         context_paths=context_paths,
+                        subagent_type=subagent_type,
                     ),
                 )
 
@@ -12452,22 +12536,34 @@ Type your question and press Enter to ask the agents.
                 resolved_round = max(1, int(resolved_round or 1))
             except Exception:
                 resolved_round = 1
-            status_callback = None
-            app = getattr(self, "app", None)
-            if app and hasattr(app, "_build_spawn_status_callback"):
-                try:
-                    status_callback = app._build_spawn_status_callback(
-                        agent_id=self.agent_id,
-                        seed_subagents=subagents,
-                    )
-                except Exception as e:
-                    tui_log(f"[TextualDisplay] {e}")
             card = SubagentCard(
                 subagents=subagents,
                 tool_call_id=tool_data.tool_id,
-                status_callback=status_callback,
+                status_callback=None,
                 id=card_id,
             )
+
+            app = getattr(self, "app", None)
+            if app and hasattr(app, "_build_spawn_status_callback"):
+                try:
+                    try:
+                        status_callback = app._build_spawn_status_callback(
+                            agent_id=self.agent_id,
+                            seed_subagents=subagents,
+                            card=card,
+                        )
+                    except TypeError:
+                        # Backward compatibility for tests/overrides that still expose
+                        # the older two-argument callback builder shape.
+                        status_callback = app._build_spawn_status_callback(
+                            agent_id=self.agent_id,
+                            seed_subagents=subagents,
+                        )
+                    if status_callback is not None:
+                        card.set_status_callback(status_callback)
+                except Exception as e:
+                    tui_log(f"[TextualDisplay] {e}")
+
             timeline.add_widget(card, round_number=resolved_round)
             tui_log(f"_show_subagent_card_from_args: added SubagentCard with {len(subagents)} pending subagents")
 
@@ -12555,8 +12651,12 @@ Type your question and press Enter to ask the agents.
             """
             # Check if tool name matches a subagent tool
             tool_name = tool_data.tool_name.lower()
-            tui_log(f"_check_and_display_subagent_card: tool_name={tool_name}, is_subagent={self._is_subagent_tool(tool_name)}")
-            if not self._is_subagent_tool(tool_name):
+            is_subagent_tool = self._is_subagent_tool(
+                tool_name,
+                getattr(tool_data, "args_full", None),
+            )
+            tui_log(f"_check_and_display_subagent_card: tool_name={tool_name}, is_subagent={is_subagent_tool}")
+            if not is_subagent_tool:
                 return
 
             _, spawned = _extract_spawned_subagents(tool_data.result_full)

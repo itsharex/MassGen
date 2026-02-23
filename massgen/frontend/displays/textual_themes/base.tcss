@@ -5434,6 +5434,22 @@ SubagentScreen, SubagentView {
     background: $background;
 }
 
+SubagentView.cancelled-state,
+SubagentView.canceled-state {
+    background: $error 10%;
+}
+
+SubagentView.cancelled-state SubagentPanel,
+SubagentView.canceled-state SubagentPanel {
+    border-left: thick $error;
+    opacity: 0.6;
+}
+
+SubagentView.cancelled-state TimelineSection,
+SubagentView.canceled-state TimelineSection {
+    opacity: 0.7;
+}
+
 SubagentScreen #subagent-content,
 SubagentView #subagent-content {
     width: 100%;
@@ -5513,6 +5529,11 @@ SubagentStatusLine.completed {
 }
 
 SubagentStatusLine.error {
+    color: $error;
+}
+
+SubagentStatusLine.canceled,
+SubagentStatusLine.cancelled {
     color: $error;
 }
 

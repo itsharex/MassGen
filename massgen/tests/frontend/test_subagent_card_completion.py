@@ -6,10 +6,12 @@ import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from textual.app import App, ComposeResult
 
 from massgen.frontend.displays import textual_terminal_display as textual_display_module
+from massgen.frontend.displays.textual_widgets.content_sections import TimelineSection
 from massgen.frontend.displays.textual_widgets.subagent_card import (
     SubagentCard,
     SubagentColumn,
@@ -24,6 +26,7 @@ def _make_subagent(
     task: str = "evaluate output",
     elapsed_seconds: float = 0.0,
     timeout_seconds: float = 300.0,
+    subagent_type: str | None = None,
 ) -> SubagentDisplayData:
     return SubagentDisplayData(
         id=subagent_id,
@@ -38,6 +41,7 @@ def _make_subagent(
         error=None,
         answer_preview=None,
         log_path=None,
+        subagent_type=subagent_type,
     )
 
 
@@ -102,6 +106,36 @@ class _SpawnPanel:
         if selector == "#timeline":
             return self._timeline
         raise LookupError(selector)
+
+
+class _HistoryPanel:
+    def __init__(self, history: list[dict[str, Any]]) -> None:
+        self._history = history
+
+    def _get_background_tool_history(self) -> list[dict[str, Any]]:
+        return list(self._history)
+
+    def query(self, _cls):  # noqa: ANN001 - Textual query compat
+        return []
+
+
+class _KnownStatusTimeline:
+    def __init__(self, statuses: dict[str, str]) -> None:
+        self._statuses = statuses
+
+    def _collect_known_background_statuses(self) -> dict[str, str]:
+        return dict(self._statuses)
+
+
+class _KnownStatusPanel:
+    def __init__(self, timeline: _KnownStatusTimeline) -> None:
+        self._timeline = timeline
+
+    def _get_timeline(self) -> _KnownStatusTimeline:
+        return self._timeline
+
+    def query(self, _cls):  # noqa: ANN001 - Textual query compat
+        return []
 
 
 class _ExistingSubagentCard:
@@ -198,7 +232,7 @@ def test_show_subagent_card_from_spawn_uses_current_round_and_keeps_existing_car
     app_cls = textual_display_module.TextualApp
     app = app_cls.__new__(app_cls)
     app.agent_widgets = {"agent_a": panel}
-    app._build_spawn_status_callback = lambda agent_id, seed_subagents: None
+    app._build_spawn_status_callback = lambda agent_id, seed_subagents, card=None: None
 
     monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
 
@@ -233,7 +267,7 @@ def test_show_subagent_card_from_spawn_carries_context_paths(monkeypatch) -> Non
     app_cls = textual_display_module.TextualApp
     app = app_cls.__new__(app_cls)
     app.agent_widgets = {"agent_a": panel}
-    app._build_spawn_status_callback = lambda agent_id, seed_subagents: None
+    app._build_spawn_status_callback = lambda agent_id, seed_subagents, card=None: None
 
     monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
 
@@ -257,6 +291,75 @@ def test_show_subagent_card_from_spawn_carries_context_paths(monkeypatch) -> Non
     assert getattr(card.subagents[0], "context_paths", None) == ["docs/brief.md", "src/components"]
 
 
+def test_show_subagent_card_from_spawn_carries_subagent_type(monkeypatch) -> None:
+    """Spawn callback cards should keep specialized subagent type labels for UI display."""
+    timeline = _SpawnTimeline(existing_cards=[])
+    panel = _SpawnPanel(timeline, current_round=2)
+
+    app_cls = textual_display_module.TextualApp
+    app = app_cls.__new__(app_cls)
+    app.agent_widgets = {"agent_a": panel}
+    app._build_spawn_status_callback = lambda agent_id, seed_subagents, card=None: None
+
+    monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
+
+    app.show_subagent_card_from_spawn(
+        agent_id="agent_a",
+        args={
+            "tasks": [
+                {
+                    "subagent_id": "explorer_scan",
+                    "task": "Analyze repository structure",
+                    "subagent_type": "explorer",
+                },
+            ],
+        },
+        call_id="call:type.1",
+    )
+
+    assert len(timeline.added_cards) == 1
+    card = timeline.added_cards[0]
+    assert isinstance(card, SubagentCard)
+    assert getattr(card.subagents[0], "subagent_type", None) == "explorer"
+
+
+def test_show_subagent_card_from_spawn_builds_card_scoped_status_callback(monkeypatch) -> None:
+    """Spawn callback should scope status polling to the newly-created card."""
+    timeline = _SpawnTimeline(existing_cards=[])
+    panel = _SpawnPanel(timeline, current_round=2)
+
+    app_cls = textual_display_module.TextualApp
+    app = app_cls.__new__(app_cls)
+    app.agent_widgets = {"agent_a": panel}
+
+    captured_cards: list[object | None] = []
+
+    def _capture_callback(agent_id, seed_subagents, card=None):  # noqa: ANN001 - test helper shape
+        captured_cards.append(card)
+        return None
+
+    app._build_spawn_status_callback = _capture_callback
+    monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
+
+    app.show_subagent_card_from_spawn(
+        agent_id="agent_a",
+        args={
+            "tasks": [
+                {
+                    "subagent_id": "retry_same_id",
+                    "task": "Run evaluator task",
+                },
+            ],
+        },
+        call_id="call:scoped.spawn",
+    )
+
+    assert len(timeline.added_cards) == 1
+    assert len(captured_cards) == 1
+    assert captured_cards[0] is timeline.added_cards[0]
+    assert isinstance(captured_cards[0], SubagentCard)
+
+
 def test_build_subagent_display_data_preserves_existing_context_paths() -> None:
     """Status refreshes should not drop previously-known subagent context paths."""
     existing = _make_subagent("evaluator_beatles_site", status="running")
@@ -272,6 +375,49 @@ def test_build_subagent_display_data_preserves_existing_context_paths() -> None:
     )
 
     assert getattr(updated, "context_paths", None) == ["docs/brief.md"]
+
+
+def test_build_subagent_display_data_preserves_existing_subagent_type() -> None:
+    """Status refreshes should not drop previously-known specialized subagent type."""
+    existing = _make_subagent("explorer_scan", status="running", subagent_type="explorer")
+
+    updated = textual_display_module._build_subagent_display_data(
+        {
+            "subagent_id": "explorer_scan",
+            "status": "running",
+            "execution_time_seconds": 2.0,
+        },
+        existing,
+    )
+
+    assert getattr(updated, "subagent_type", None) == "explorer"
+
+
+def test_build_subagent_display_data_reads_subprocess_reference_error(tmp_path) -> None:
+    """Terminal refreshes should surface subprocess reference errors for display."""
+    log_dir = tmp_path / "subagent_logs" / "remote_evaluator"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "subprocess_logs.json").write_text(
+        json.dumps(
+            {
+                "subagent_id": "remote_evaluator",
+                "error": "Subagent cancelled",
+            },
+        ),
+    )
+
+    existing = _make_subagent("remote_evaluator", status="running")
+    existing.log_path = str(log_dir)
+
+    updated = textual_display_module._build_subagent_display_data(
+        {
+            "subagent_id": "remote_evaluator",
+            "status": "failed",
+        },
+        existing,
+    )
+
+    assert updated.error == "Subagent cancelled"
 
 
 def test_show_subagent_card_from_args_respects_round_number() -> None:
@@ -299,6 +445,75 @@ def test_show_subagent_card_from_args_respects_round_number() -> None:
 
     assert timeline.added_round_number == 4
     assert isinstance(timeline.added_card, SubagentCard)
+
+
+def test_show_subagent_card_from_args_accepts_start_background_wrapper_payload() -> None:
+    """Wrapper start_background_tool payloads targeting spawn_subagents should still render SubagentCard."""
+    panel_cls = textual_display_module.AgentPanel
+    panel = panel_cls.__new__(panel_cls)
+    panel.agent_id = "agent_a"
+
+    timeline = _ArgsTimeline()
+    tool_data = SimpleNamespace(
+        tool_id="call:subagent.wrapper",
+        tool_name="custom_tool__start_background_tool",
+        args_full=json.dumps(
+            {
+                "tool_name": "mcp__subagent_agent_a__spawn_subagents",
+                "arguments": {
+                    "tasks": [
+                        {
+                            "subagent_id": "jazz_researcher",
+                            "task": "Research jazz history",
+                        },
+                    ],
+                    "background": False,
+                },
+            },
+        ),
+    )
+
+    assert panel._is_subagent_tool(tool_data.tool_name, tool_data.args_full) is True
+    panel._show_subagent_card_from_args(tool_data, timeline, round_number=2)
+
+    assert timeline.added_round_number == 2
+    assert isinstance(timeline.added_card, SubagentCard)
+    assert timeline.added_card.subagents[0].id == "jazz_researcher"
+
+
+def test_show_subagent_card_from_args_builds_card_scoped_status_callback(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture type
+    """Fallback args path should scope status callback to the card it just created."""
+    panel_cls = textual_display_module.AgentPanel
+    panel = panel_cls.__new__(panel_cls)
+    panel.agent_id = "agent_a"
+
+    captured_cards: list[object | None] = []
+    fake_app = SimpleNamespace(
+        _build_spawn_status_callback=lambda agent_id, seed_subagents, card=None: captured_cards.append(card) or None,
+    )
+    monkeypatch.setattr(panel_cls, "app", property(lambda _self: fake_app), raising=False)
+
+    timeline = _ArgsTimeline()
+    tool_data = SimpleNamespace(
+        tool_id="call:subagent.scoped.args",
+        tool_name="subagent_agent_a/spawn_subagents",
+        args_full=json.dumps(
+            {
+                "tasks": [
+                    {
+                        "subagent_id": "retry_same_id",
+                        "task": "Retry task",
+                    },
+                ],
+            },
+        ),
+    )
+
+    panel._show_subagent_card_from_args(tool_data, timeline, round_number=2)
+
+    assert isinstance(timeline.added_card, SubagentCard)
+    assert len(captured_cards) == 1
+    assert captured_cards[0] is timeline.added_card
 
 
 def test_spawn_status_callback_uses_spawn_status_file_when_tool_result_is_missing(tmp_path):
@@ -350,6 +565,105 @@ def test_spawn_status_callback_uses_spawn_status_file_when_tool_result_is_missin
     assert updated is not None
     assert updated.status == "completed"
     assert updated.answer_preview == "# Final evaluator report"
+
+
+def test_spawn_status_callback_uses_background_history_on_cancel() -> None:
+    """When _spawn_status.json is missing, background history should mark cancellation."""
+    app_cls = textual_display_module.TextualApp
+    app = app_cls.__new__(app_cls)
+    history_entry = {
+        "async_id": "remote_evaluator",
+        "latest_status": "cancelled",
+        "is_active": False,
+        "result": "Cancelled by user",
+    }
+    panel = _HistoryPanel([history_entry])
+    app.agent_widgets = {"agent_a": panel}
+    app.coordination_display = SimpleNamespace(orchestrator=SimpleNamespace(agents={}))
+
+    initial = _make_subagent(
+        "remote_evaluator",
+        status="running",
+        task="re-evaluate asynchronous path",
+        timeout_seconds=300.0,
+    )
+
+    callback = app._build_spawn_status_callback("agent_a", [initial])
+    updated = callback("remote_evaluator")
+
+    assert updated is not None
+    assert updated.status == "canceled"
+    assert updated.error == "Cancelled by user"
+
+
+def test_spawn_status_callback_uses_known_background_statuses_without_history() -> None:
+    """Terminal statuses from timeline payloads should update spawn cards."""
+    app_cls = textual_display_module.TextualApp
+    app = app_cls.__new__(app_cls)
+    timeline = _KnownStatusTimeline({"remote_evaluator": "cancelled"})
+    panel = _KnownStatusPanel(timeline)
+    app.agent_widgets = {"agent_a": panel}
+    app.coordination_display = SimpleNamespace(orchestrator=SimpleNamespace(agents={}))
+
+    initial = _make_subagent(
+        "remote_evaluator",
+        status="running",
+        task="monitor cancellation wiring",
+        timeout_seconds=300.0,
+    )
+
+    callback = app._build_spawn_status_callback("agent_a", [initial])
+    updated = callback("remote_evaluator")
+
+    assert updated is not None
+    assert updated.status == "canceled"
+
+
+def test_extract_background_statuses_from_subagent_payloads() -> None:
+    """ToolSection status extraction should understand subagent lifecycle payloads."""
+    # cancel_subagent style payload
+    cancel_payload = json.dumps(
+        {
+            "success": True,
+            "operation": "cancel_subagent",
+            "subagent_id": "jazz_research",
+            "status": "cancelled",
+        },
+    )
+    cancel_statuses = TimelineSection._extract_background_statuses_from_payload(cancel_payload)
+    assert cancel_statuses.get("jazz_research") == "cancelled"
+
+    # list_subagents style payload
+    list_payload = json.dumps(
+        {
+            "success": True,
+            "operation": "list_subagents",
+            "subagents": [
+                {
+                    "subagent_id": "jazz_research",
+                    "status": "cancelled",
+                },
+            ],
+        },
+    )
+    list_statuses = TimelineSection._extract_background_statuses_from_payload(list_payload)
+    assert list_statuses.get("jazz_research") == "cancelled"
+
+    # spawn_subagents style payload
+    spawn_payload = json.dumps(
+        {
+            "success": True,
+            "operation": "spawn_subagents",
+            "subagents": [
+                {
+                    "subagent_id": "jazz_research",
+                    "status": "running",
+                },
+            ],
+        },
+    )
+    spawn_statuses = TimelineSection._extract_background_statuses_from_payload(spawn_payload)
+    assert spawn_statuses.get("jazz_research") == "running"
 
 
 def test_running_progress_bar_caps_at_99_percent() -> None:
@@ -414,6 +728,65 @@ def test_completed_progress_bar_uses_available_width(monkeypatch) -> None:  # no
 
     bar = column._build_progress_bar()
     assert bar.plain == "━" * 37
+
+
+def test_subagent_column_header_includes_subagent_type_when_available() -> None:
+    """Subagent header should surface specialized type on the right side when present."""
+    subagent = _make_subagent(
+        "analysis_worker",
+        status="running",
+        elapsed_seconds=65.0,
+        subagent_type="explorer",
+    )
+    column = SubagentColumn(
+        subagent=subagent,
+        all_subagents=[subagent],
+        summary="running",
+        tools=[],
+        open_callback=lambda _subagent, _all_subagents: None,
+    )
+
+    header = column._build_header()
+    assert "explorer" in header.plain.lower()
+
+
+def test_subagent_column_header_right_aligns_type_and_timing(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture type
+    """Type/timing suffix should be right-aligned in the header row."""
+    subagent = _make_subagent(
+        "analysis_worker",
+        status="running",
+        elapsed_seconds=65.0,
+        subagent_type="explorer",
+    )
+    column = SubagentColumn(
+        subagent=subagent,
+        all_subagents=[subagent],
+        summary="running",
+        tools=[],
+        open_callback=lambda _subagent, _all_subagents: None,
+    )
+
+    monkeypatch.setattr(column, "_measure_header_width", lambda: 40, raising=False)
+
+    header_plain = column._build_header().plain
+    assert len(header_plain) == 40
+    assert "[explorer]" in header_plain
+    assert header_plain.endswith("5s ▸")
+
+
+def test_subagent_card_open_modal_event_carries_source_card() -> None:
+    """OpenModal events should include source card for same-ID collision handling."""
+    running = _make_subagent("evaluator_beatles_site", status="running")
+    card = SubagentCard(subagents=[running], tool_call_id="item_88")
+
+    posted: list[object] = []
+    card.post_message = lambda message: posted.append(message)  # type: ignore[assignment]
+
+    card._request_open(running, [running])
+
+    assert posted
+    event = posted[0]
+    assert getattr(event, "card", None) is card
 
 
 async def test_subagent_card_ignores_style_env_variants(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture type

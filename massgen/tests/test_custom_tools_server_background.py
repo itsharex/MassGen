@@ -3,6 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import fastmcp
 import pytest
@@ -41,7 +42,7 @@ async def test_background_tool_manager_custom_tool_lifecycle():
 
     final = None
     for _ in range(40):
-        final = manager.get_result(job_id)
+        final = await manager.get_result(job_id)
         if final["ready"]:
             break
         await asyncio.sleep(0.01)
@@ -79,7 +80,7 @@ async def test_background_tool_manager_accepts_double_encoded_arguments():
 
     final = None
     for _ in range(40):
-        final = manager.get_result(job_id)
+        final = await manager.get_result(job_id)
         if final["ready"]:
             break
         await asyncio.sleep(0.01)
@@ -129,7 +130,7 @@ async def test_background_tool_manager_mcp_tool_lifecycle(monkeypatch):
 
     final = None
     for _ in range(40):
-        final = manager.get_result(job_id)
+        final = await manager.get_result(job_id)
         if final["ready"]:
             break
         await asyncio.sleep(0.01)
@@ -189,7 +190,7 @@ async def test_registered_custom_tool_mode_background_auto_starts_job():
 
     final = None
     for _ in range(40):
-        final = manager.get_result(job_id)
+        final = await manager.get_result(job_id)
         if final["ready"]:
             break
         await asyncio.sleep(0.01)
@@ -204,8 +205,8 @@ async def test_registered_custom_tool_mode_background_auto_starts_job():
 
 
 @pytest.mark.asyncio
-async def test_registered_mcp_tool_preserves_real_background_param_for_auto_background():
-    """When a tool defines background itself, wrapper must pass it through."""
+async def test_registered_mcp_tool_with_native_background_param_runs_foreground_not_wrapped():
+    """When a tool defines background itself, do not auto-wrap as framework background job."""
 
     class _RecordingBackgroundManager:
         def __init__(self):
@@ -220,7 +221,22 @@ async def test_registered_mcp_tool_preserves_real_background_param_for_auto_back
                 "tool_name": tool_name,
             }
 
+    class _FakeToolManager:
+        def __init__(self):
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool(self, tool_request, execution_context):  # noqa: ARG002
+            self.calls.append(tool_request)
+
+            class _Result:
+                @staticmethod
+                def model_dump():
+                    return {"success": True, "operation": "spawn_subagents"}
+
+            yield _Result()
+
     manager = _RecordingBackgroundManager()
+    fake_tool_manager = _FakeToolManager()
     mcp = fastmcp.FastMCP("test_mcp_tools")
 
     _register_mcp_tool(
@@ -238,7 +254,7 @@ async def test_registered_mcp_tool_preserves_real_background_param_for_auto_back
             },
             "required": ["tasks"],
         },
-        tool_manager=ToolManager(),
+        tool_manager=fake_tool_manager,
         execution_context={"agent_id": "agent_x"},
         background_manager=manager,
     )
@@ -250,17 +266,73 @@ async def test_registered_mcp_tool_preserves_real_background_param_for_auto_back
             break
     assert handler is not None
 
-    started = json.loads(
+    result = json.loads(
         await handler(
             tasks=[{"task": "test task"}],
             background=True,
         ),
     )
 
+    assert result["success"] is True
+    assert manager.calls == []
+    assert fake_tool_manager.calls
+    assert fake_tool_manager.calls[0]["name"] == "mcp__subagent_agent_a__spawn_subagents"
+    assert fake_tool_manager.calls[0]["input"]["background"] is True
+
+
+@pytest.mark.asyncio
+async def test_background_tool_manager_start_subagent_target_routes_to_direct_background_spawn(
+    monkeypatch,
+):
+    """start_background_tool should treat subagent spawn targets like direct spawn_subagents(background=true)."""
+    manager = BackgroundToolManager(
+        tool_manager=ToolManager(),
+        execution_context={"agent_id": "agent_x"},
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _FakeMCPClient:
+        async def call_tool(self, name, arguments):
+            captured["tool_name"] = name
+            captured["arguments"] = dict(arguments)
+            payload = {
+                "success": True,
+                "operation": "spawn_subagents",
+                "mode": "background",
+                "subagents": [
+                    {
+                        "subagent_id": "jazz_researcher",
+                        "status": "running",
+                    },
+                ],
+            }
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=json.dumps(payload))],
+            )
+
+    async def fake_get_client():
+        return _FakeMCPClient()
+
+    monkeypatch.setattr(manager, "_get_mcp_client", fake_get_client)
+
+    started = await manager.start(
+        tool_name="mcp__subagent_agent_x__spawn_subagents",
+        arguments={
+            "tasks": [{"task": "Research jazz history"}],
+            "background": False,
+        },
+    )
+
     assert started["success"] is True
-    assert manager.calls
-    assert manager.calls[0]["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
-    assert manager.calls[0]["arguments"]["background"] is True
+    assert started["operation"] == "spawn_subagents"
+    assert started["mode"] == "background"
+    assert started["job_id"] == "jazz_researcher"
+    assert started["subagent_id"] == "jazz_researcher"
+    assert started["job_ids"] == ["jazz_researcher"]
+    assert started["subagents"][0]["job_id"] == "jazz_researcher"
+    assert captured["tool_name"] == "mcp__subagent_agent_x__spawn_subagents"
+    assert captured["arguments"]["background"] is True
 
 
 @pytest.mark.asyncio
@@ -362,17 +434,114 @@ async def test_background_tool_manager_list_defaults_to_running_only():
     )
     assert second["success"] is True
 
-    running_only = manager.list_jobs()
+    running_only = await manager.list_jobs()
     running_ids = {job["job_id"] for job in running_only["jobs"]}
     assert second["job_id"] in running_ids
     assert first["job_id"] not in running_ids
 
-    all_jobs = manager.list_jobs(include_all=True)
+    all_jobs = await manager.list_jobs(include_all=True)
     all_ids = {job["job_id"] for job in all_jobs["jobs"]}
     assert first["job_id"] in all_ids
     assert second["job_id"] in all_ids
 
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_background_tool_manager_list_includes_subagent_delegate_jobs(monkeypatch):
+    """list_background_tools should include running subagents via delegate bridge."""
+    manager = BackgroundToolManager(
+        tool_manager=ToolManager(),
+        execution_context={"agent_id": "agent_x"},
+    )
+
+    class _FakeMCPClient:
+        def __init__(self):
+            self.tools = {
+                "mcp__subagent_agent_x__list_subagents": SimpleNamespace(inputSchema={"type": "object"}),
+            }
+
+        async def call_tool(self, name, arguments):
+            assert name == "mcp__subagent_agent_x__list_subagents"
+            assert arguments == {}
+            payload = {
+                "success": True,
+                "operation": "list_subagents",
+                "subagents": [
+                    {
+                        "subagent_id": "jazz_research",
+                        "status": "running",
+                        "task": "Research jazz history",
+                    },
+                ],
+                "count": 1,
+            }
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))])
+
+    async def fake_get_client():
+        return _FakeMCPClient()
+
+    monkeypatch.setattr(manager, "_get_mcp_client", fake_get_client)
+
+    listed = await manager.list_jobs(include_all=False)
+    assert listed["success"] is True
+    assert listed["count"] == 1
+    assert listed["jobs"][0]["job_id"] == "jazz_research"
+    assert listed["jobs"][0]["subagent_id"] == "jazz_research"
+    assert listed["jobs"][0]["tool_type"] == "subagent"
+
+
+@pytest.mark.asyncio
+async def test_background_tool_manager_cancel_routes_to_subagent_delegate(monkeypatch):
+    """cancel_background_tool should route to cancel_subagent for subagent IDs."""
+    manager = BackgroundToolManager(
+        tool_manager=ToolManager(),
+        execution_context={"agent_id": "agent_x"},
+    )
+
+    class _FakeMCPClient:
+        def __init__(self):
+            self.tools = {
+                "mcp__subagent_agent_x__list_subagents": SimpleNamespace(inputSchema={"type": "object"}),
+                "mcp__subagent_agent_x__cancel_subagent": SimpleNamespace(
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"subagent_id": {"type": "string"}},
+                    },
+                ),
+            }
+
+        async def call_tool(self, name, arguments):
+            if name == "mcp__subagent_agent_x__list_subagents":
+                payload = {
+                    "success": True,
+                    "operation": "list_subagents",
+                    "subagents": [
+                        {"subagent_id": "jazz_research", "status": "running"},
+                    ],
+                    "count": 1,
+                }
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))])
+            if name == "mcp__subagent_agent_x__cancel_subagent":
+                assert arguments == {"subagent_id": "jazz_research"}
+                payload = {
+                    "success": True,
+                    "operation": "cancel_subagent",
+                    "subagent_id": "jazz_research",
+                }
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))])
+            raise AssertionError(f"Unexpected tool call: {name}")
+
+    async def fake_get_client():
+        return _FakeMCPClient()
+
+    monkeypatch.setattr(manager, "_get_mcp_client", fake_get_client)
+
+    cancelled = await manager.cancel("jazz_research")
+    assert cancelled["success"] is True
+    assert cancelled["operation"] == "cancel_subagent"
+    assert cancelled["subagent_id"] == "jazz_research"
+    assert cancelled["job_id"] == "jazz_research"
 
 
 def test_custom_tools_server_media_tools_default_to_background():
@@ -431,4 +600,4 @@ async def test_background_tool_manager_media_start_requires_context_file(tmp_pat
 
     assert started["success"] is False
     assert "CONTEXT.md" in started["error"]
-    assert manager.list_jobs(include_all=True)["count"] == 0
+    assert (await manager.list_jobs(include_all=True))["count"] == 0

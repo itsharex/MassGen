@@ -526,6 +526,104 @@ class TestResponseBackendCustomTools:
         assert "Weather in Tokyo" in result["result"]
 
     @pytest.mark.asyncio
+    async def test_start_background_tool_subagent_target_routes_to_direct_background_spawn(
+        self,
+        monkeypatch,
+    ):
+        """start_background_tool targeting spawn_subagents should mirror direct background spawn semantics."""
+        backend = ResponseBackend(api_key=self.api_key)
+        backend._execution_context = ExecutionContext(messages=[], agent_id="agent_a")
+        backend._mcp_functions["mcp__subagent_agent_a__spawn_subagents"] = types.SimpleNamespace(
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tasks": {"type": "array", "items": {"type": "object"}},
+                    "background": {"type": "boolean"},
+                },
+            },
+        )
+
+        captured: dict[str, object] = {}
+        callback_calls: list[dict[str, object]] = []
+
+        async def fake_execute_mcp(function_name, arguments_json, max_retries=3):  # noqa: ARG001
+            parsed = json.loads(arguments_json)
+            captured["tool_name"] = function_name
+            captured["arguments"] = parsed
+            payload = {
+                "success": True,
+                "operation": "spawn_subagents",
+                "mode": "background",
+                "subagents": [
+                    {
+                        "subagent_id": "jazz_researcher",
+                        "status": "running",
+                    },
+                ],
+            }
+            payload_text = json.dumps(payload)
+            return (
+                payload_text,
+                types.SimpleNamespace(
+                    content=[types.SimpleNamespace(text=payload_text)],
+                ),
+            )
+
+        async def fail_start_background_job(*, tool_name, arguments, source_call_id=None):  # noqa: ARG001
+            raise AssertionError(
+                f"framework background wrapper should be bypassed for subagent target: {tool_name}",
+            )
+
+        backend.set_subagent_spawn_callback(
+            lambda tool_name, args, call_id: callback_calls.append(
+                {
+                    "tool_name": tool_name,
+                    "args": dict(args),
+                    "call_id": call_id,
+                },
+            ),
+        )
+        monkeypatch.setattr(backend, "_execute_mcp_function_with_retry", fake_execute_mcp)
+        monkeypatch.setattr(backend, "_start_background_tool_job", fail_start_background_job)
+
+        call = {
+            "name": "custom_tool__start_background_tool",
+            "call_id": "start-bg-subagent-call",
+            "arguments": json.dumps(
+                {
+                    "tool_name": "mcp__subagent_agent_a__spawn_subagents",
+                    "arguments": {
+                        "tasks": [{"task": "Research jazz history"}],
+                        "background": False,
+                    },
+                },
+            ),
+        }
+
+        final_chunk = None
+        async for chunk in backend.stream_custom_tool_execution(call):
+            if chunk.completed:
+                final_chunk = chunk
+
+        assert final_chunk is not None
+        payload = json.loads(final_chunk.accumulated_result)
+        assert payload["success"] is True
+        assert payload["operation"] == "spawn_subagents"
+        assert payload["mode"] == "background"
+        assert payload["job_id"] == "jazz_researcher"
+        assert payload["subagent_id"] == "jazz_researcher"
+        assert payload["job_ids"] == ["jazz_researcher"]
+        assert payload["subagents"][0]["job_id"] == "jazz_researcher"
+
+        assert captured["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
+        assert isinstance(captured["arguments"], dict)
+        assert captured["arguments"]["background"] is True
+        assert callback_calls
+        assert callback_calls[0]["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
+        assert callback_calls[0]["call_id"] == "start-bg-subagent-call"
+        assert callback_calls[0]["args"]["background"] is True
+
+    @pytest.mark.asyncio
     async def test_wait_for_background_tool_returns_next_completion(self):
         """Wait lifecycle tool should block until the next job completes."""
         backend = ResponseBackend(
@@ -766,11 +864,11 @@ class TestResponseBackendCustomTools:
         assert result_payload["job_id"]
 
     @pytest.mark.asyncio
-    async def test_execute_tool_with_logging_auto_background_preserves_real_mcp_background_param(
+    async def test_execute_tool_with_logging_mcp_tool_with_native_background_param_runs_foreground(
         self,
         monkeypatch,
     ):
-        """MCP tools that define background should keep it when auto-backgrounded."""
+        """MCP tools that define background should run foreground (no wrapper background job)."""
         backend = ResponseBackend(api_key=self.api_key)
         backend._execution_context = ExecutionContext(messages=[], agent_id="agent_a")
         backend._mcp_functions["mcp__subagent_agent_a__spawn_subagents"] = types.SimpleNamespace(
@@ -785,16 +883,27 @@ class TestResponseBackendCustomTools:
 
         captured: dict = {}
 
-        class _FakeJob:
-            job_id = "bgtool_test_mcp"
-            tool_name = "mcp__subagent_agent_a__spawn_subagents"
+        async def fake_execute_mcp(function_name, arguments_json, max_retries=3):  # noqa: ARG001
+            captured["tool_name"] = function_name
+            captured["arguments"] = json.loads(arguments_json)
+            return (
+                '{"success": true, "operation": "spawn_subagents", "mode": "background"}',
+                types.SimpleNamespace(
+                    content=[
+                        types.SimpleNamespace(
+                            text='{"success": true, "operation": "spawn_subagents", "mode": "background"}',
+                        ),
+                    ],
+                ),
+            )
 
-        async def fake_start_background_job(*, tool_name, arguments, source_call_id=None):  # noqa: ARG001
-            captured["tool_name"] = tool_name
-            captured["arguments"] = arguments
-            return _FakeJob()
+        async def fail_start_background_job(*, tool_name, arguments, source_call_id=None):  # noqa: ARG001
+            raise AssertionError(
+                f"auto-background wrapper should not run for {tool_name} with native background arg",
+            )
 
-        monkeypatch.setattr(backend, "_start_background_tool_job", fake_start_background_job)
+        monkeypatch.setattr(backend, "_execute_mcp_function_with_retry", fake_execute_mcp)
+        monkeypatch.setattr(backend, "_start_background_tool_job", fail_start_background_job)
 
         call = {
             "name": "mcp__subagent_agent_a__spawn_subagents",
@@ -821,17 +930,20 @@ class TestResponseBackendCustomTools:
         updated_messages = []
         processed_call_ids = set()
 
-        async for _ in backend._execute_tool_with_logging(
+        chunks = []
+        async for chunk in backend._execute_tool_with_logging(
             call,
             config,
             updated_messages,
             processed_call_ids,
         ):
-            pass
+            chunks.append(chunk)
 
         assert "auto-bg-mcp-call" in processed_call_ids
         assert captured["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
         assert captured["arguments"]["background"] is True
+        assert any(getattr(chunk, "status", "") == "mcp_tool_response" for chunk in chunks)
+        assert updated_messages
 
     def test_media_tools_default_to_background_mode(self):
         """read_media and generate_media should auto-background unless explicitly foreground."""

@@ -193,6 +193,7 @@ class Orchestrator(ChatAgent):
         enable_rate_limit: bool = False,
         trace_classification: str = "legacy",
         generated_personas: dict[str, Any] | None = None,
+        generated_evaluation_criteria: list | None = None,
         plan_session_id: str | None = None,
     ):
         """
@@ -219,6 +220,8 @@ class Orchestrator(ChatAgent):
                                   coordination/status as non-content for server mode.
             generated_personas: Pre-generated personas from previous turn (for multi-turn persistence)
                                Format: {agent_id: GeneratedPersona, ...}
+            generated_evaluation_criteria: Pre-generated evaluation criteria from previous turn
+                                          Format: [GeneratedCriterion, ...]
             plan_session_id: Optional plan session ID for plan execution mode (prevents workspace contamination)
         """
         super().__init__(
@@ -385,6 +388,15 @@ class Orchestrator(ChatAgent):
         if self._personas_generated:
             logger.info(
                 f"📝 Restored {len(self._generated_personas)} persona(s) from previous turn",
+            )
+
+        # Evaluation criteria generation tracking
+        # If criteria are passed in (from previous turn), use them and mark as already generated
+        self._generated_evaluation_criteria: list | None = generated_evaluation_criteria
+        self._evaluation_criteria_generated: bool = bool(generated_evaluation_criteria)
+        if self._evaluation_criteria_generated:
+            logger.info(
+                f"📝 Restored {len(self._generated_evaluation_criteria)} evaluation criteria from previous turn",
             )
 
         # Multi-turn session tracking (loaded by CLI, not managed by orchestrator)
@@ -681,6 +693,8 @@ class Orchestrator(ChatAgent):
             return
 
         from massgen.system_prompt_sections import (
+            _CHECKLIST_ITEM_CATEGORIES,
+            _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC,
             _CHECKLIST_ITEMS,
             _CHECKLIST_ITEMS_CHANGEDOC,
             _checklist_confidence_cutoff,
@@ -688,7 +702,23 @@ class Orchestrator(ChatAgent):
             _checklist_required_true,
         )
 
-        items = _CHECKLIST_ITEMS_CHANGEDOC if self._is_changedoc_enabled() else _CHECKLIST_ITEMS
+        # Use generated criteria if available, then preset, then defaults.
+        # Priority: dynamically generated > named preset > changedoc > generic.
+        if self._generated_evaluation_criteria is not None:
+            items = [c.text for c in self._generated_evaluation_criteria]
+            item_categories = {c.id: c.category for c in self._generated_evaluation_criteria}
+        elif preset := getattr(self.config.coordination_config, "checklist_criteria_preset", None):
+            from massgen.evaluation_criteria_generator import get_criteria_for_preset
+
+            criteria = get_criteria_for_preset(preset)
+            items = [c.text for c in criteria]
+            item_categories = {c.id: c.category for c in criteria}
+        elif self._is_changedoc_enabled():
+            items = list(_CHECKLIST_ITEMS_CHANGEDOC)
+            item_categories = dict(_CHECKLIST_ITEM_CATEGORIES_CHANGEDOC)
+        else:
+            items = list(_CHECKLIST_ITEMS)
+            item_categories = dict(_CHECKLIST_ITEM_CATEGORIES)
 
         for agent_id, agent in self.agents.items():
             backend = agent.backend
@@ -698,6 +728,17 @@ class Orchestrator(ChatAgent):
             total = self.config.max_new_answers_per_agent or 5
             remaining = total
             effective_t = _checklist_effective_threshold(threshold, remaining, total)
+            # Determine active subagent types for novelty gating
+            from massgen.subagent.type_scanner import DEFAULT_SUBAGENT_TYPES
+
+            _active_subagent_types = getattr(
+                getattr(self.config, "coordination_config", None),
+                "subagent_types",
+                None,
+            )
+            if _active_subagent_types is None:
+                _active_subagent_types = DEFAULT_SUBAGENT_TYPES
+
             checklist_state = {
                 "threshold": threshold,
                 "remaining": remaining,
@@ -708,10 +749,13 @@ class Orchestrator(ChatAgent):
                 "require_gap_report": bool(
                     getattr(self.config, "checklist_require_gap_report", True),
                 ),
+                "require_diagnostic_report": bool(
+                    getattr(self.config, "checklist_require_gap_report", True),
+                ),
                 # Require explicit change substantiveness metadata so rounds can
                 # naturally terminate when only incremental work remains.
                 "require_substantiveness": True,
-                # Needed by checklist server to interpret T-item semantics.
+                # Needed by checklist server to interpret item semantics.
                 "changedoc_mode": self._is_changedoc_enabled(),
                 "workspace_path": getattr(
                     getattr(backend, "filesystem_manager", None),
@@ -721,6 +765,12 @@ class Orchestrator(ChatAgent):
                 # Pre-computed so stdio server doesn't need massgen imports
                 "required": _checklist_required_true(effective_t, num_items=len(items)),
                 "cutoff": _checklist_confidence_cutoff(effective_t),
+                # E-prefix for evaluation items (replaces legacy T-prefix)
+                "item_prefix": "E",
+                # Dynamic core/stretch categories for convergence off-ramp
+                "item_categories": item_categories,
+                # Novelty subagent guidance only when novelty type is available
+                "novelty_subagent_enabled": "novelty" in [t.lower() for t in _active_subagent_types],
             }
             backend._checklist_state = checklist_state
             backend._checklist_items = list(items)
@@ -766,7 +816,7 @@ class Orchestrator(ChatAgent):
         score_entry_schema = {
             "type": "object",
             "properties": {
-                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "score": {"type": "integer", "minimum": 0, "maximum": 10},
                 "reasoning": {
                     "type": "string",
                     "description": "Why you gave this score — reference specific evidence.",
@@ -781,11 +831,11 @@ class Orchestrator(ChatAgent):
                     "type": "object",
                     "description": (
                         "Your confidence scores with reasoning for each checklist item. "
-                        "Keys are item IDs (T1-T4), values are objects with 'score' (0-100) "
+                        f"Keys are item IDs (E1-E{len(checklist_items)}), values are objects with 'score' (0-10) "
                         "and 'reasoning' (justification for that score)."
                     ),
-                    "properties": {f"T{i+1}": score_entry_schema for i in range(len(checklist_items))},
-                    "required": [f"T{i+1}" for i in range(len(checklist_items))],
+                    "properties": {f"E{i+1}": score_entry_schema for i in range(len(checklist_items))},
+                    "required": [f"E{i+1}" for i in range(len(checklist_items))],
                 },
                 "improvements": {
                     "type": "string",
@@ -846,7 +896,7 @@ class Orchestrator(ChatAgent):
             name="submit_checklist",
             description=(
                 "Submit your checklist evaluation. Each score in 'scores' must be "
-                "an object with 'score' (0-100) and 'reasoning' (why you gave that "
+                "an object with 'score' (0-10) and 'reasoning' (why you gave that "
                 "score). The 'improvements' field should describe features or content "
                 "that an ideal answer would have but no existing answer has attempted. "
                 "The 'substantiveness' field must classify planned changes as "
@@ -1012,6 +1062,9 @@ class Orchestrator(ChatAgent):
                 "require_gap_report": bool(
                     getattr(self.config, "checklist_require_gap_report", True),
                 ),
+                "require_diagnostic_report": bool(
+                    getattr(self.config, "checklist_require_gap_report", True),
+                ),
                 "require_substantiveness": True,
                 "changedoc_mode": self._is_changedoc_enabled(),
                 "workspace_path": getattr(
@@ -1019,6 +1072,8 @@ class Orchestrator(ChatAgent):
                     "cwd",
                     None,
                 ),
+                # Preserve novelty gating from initial state (config-driven, doesn't change)
+                "novelty_subagent_enabled": state.get("novelty_subagent_enabled", False),
             },
         )
         # Re-write specs file for stdio backends so the MCP server sees updated state
@@ -1537,6 +1592,11 @@ class Orchestrator(ChatAgent):
                 f"[Orchestrator] Adding --use-two-tier-workspace flag to planning MCP for {agent_id}",
             )
 
+        # Pass hook directory for MCP server-level hook injection (Codex)
+        if hasattr(agent, "backend") and hasattr(agent.backend, "supports_mcp_server_hooks") and agent.backend.supports_mcp_server_hooks() and hasattr(agent.backend, "get_hook_dir"):
+            hook_dir = agent.backend.get_hook_dir()
+            args.extend(["--hook-dir", str(hook_dir)])
+
         logger.info(f"[Orchestrator] Planning MCP args for {agent_id}: {args}")
 
         config = {
@@ -1870,9 +1930,18 @@ class Orchestrator(ChatAgent):
         # Discover and serialize specialized subagent types for the MCP server
         specialized_subagents_path = ""
         try:
-            from massgen.subagent.type_scanner import scan_subagent_types
+            from massgen.subagent.type_scanner import (
+                DEFAULT_SUBAGENT_TYPES,
+                scan_subagent_types,
+            )
 
-            specialized_types = scan_subagent_types()
+            _subagent_types_cfg = getattr(
+                getattr(self.config, "coordination_config", None),
+                "subagent_types",
+                None,
+            )
+            _allowed = _subagent_types_cfg if _subagent_types_cfg is not None else DEFAULT_SUBAGENT_TYPES
+            specialized_types = scan_subagent_types(allowed_types=_allowed)
             if specialized_types:
                 specialized_data = [t.to_dict() for t in specialized_types]
                 specialized_file = tempfile.NamedTemporaryFile(
@@ -2191,6 +2260,181 @@ class Orchestrator(ChatAgent):
                 pass
             self._personas_generated = True  # Don't retry on failure
 
+    async def _generate_and_inject_evaluation_criteria(self) -> None:
+        """Generate task-specific evaluation criteria via a pre-collab subagent run.
+
+        When enabled, spawns a subagent to generate criteria specific to the current task.
+        Falls back to static defaults on failure. Follows the same pattern as persona generation.
+        """
+        if not hasattr(self.config, "coordination_config"):
+            return
+        if not hasattr(self.config.coordination_config, "evaluation_criteria_generator"):
+            return
+
+        ecg = self.config.coordination_config.evaluation_criteria_generator
+        if not ecg.enabled:
+            logger.info("[Orchestrator] Evaluation criteria generation disabled in config")
+            return
+
+        if self._evaluation_criteria_generated:
+            logger.info("[Orchestrator] Evaluation criteria already generated, skipping")
+            return
+
+        logger.info("[Orchestrator] Generating evaluation criteria via subagent")
+
+        try:
+            from .evaluation_criteria_generator import EvaluationCriteriaGenerator
+
+            generator = EvaluationCriteriaGenerator()
+
+            # Build parent agent configs for inheritance
+            parent_configs = []
+            for agent_id, agent in self.agents.items():
+                agent_cfg = {"id": agent_id}
+                if hasattr(agent, "backend") and hasattr(agent.backend, "config"):
+                    backend_cfg = {k: v for k, v in agent.backend.config.items() if k not in ("mcp_servers", "_config_path")}
+                    agent_cfg["backend"] = backend_cfg
+                parent_configs.append(agent_cfg)
+
+            # Get workspace path
+            parent_workspace = None
+            for agent in self.agents.values():
+                if hasattr(agent, "backend") and hasattr(agent.backend, "filesystem_manager") and agent.backend.filesystem_manager and agent.backend.filesystem_manager.cwd:
+                    parent_workspace = str(agent.backend.filesystem_manager.cwd)
+                    break
+
+            if not parent_workspace:
+                import tempfile
+
+                parent_workspace = tempfile.mkdtemp(prefix="massgen_criteria_")
+
+            # Get log directory
+            log_directory = None
+            try:
+                log_dir = get_log_session_dir()
+                if log_dir:
+                    log_directory = str(log_dir)
+            except Exception:
+                pass
+
+            # Determine if changedoc is enabled
+            has_changedoc = getattr(
+                self.config.coordination_config,
+                "enable_changedoc",
+                False,
+            )
+
+            # Display notification setup
+            display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
+            criteria_anchor_agent = next(iter(self.agents.keys()), None)
+            criteria_call_id = "criteria_generation_criteria_generation"
+
+            def _on_criteria_subagent_started(
+                subagent_id: str,
+                subagent_task: str,
+                timeout_seconds: int,
+                status_callback: Any,
+                log_path: str | None,
+            ) -> None:
+                if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_started"):
+                    try:
+                        display.notify_runtime_subagent_started(
+                            agent_id=criteria_anchor_agent,
+                            subagent_id=subagent_id,
+                            task=subagent_task,
+                            timeout_seconds=timeout_seconds,
+                            call_id=criteria_call_id,
+                            status_callback=status_callback,
+                            log_path=log_path,
+                        )
+                    except Exception:
+                        pass
+
+            criteria = await generator.generate_criteria_via_subagent(
+                task=self.current_task or "",
+                agent_configs=parent_configs,
+                has_changedoc=has_changedoc,
+                parent_workspace=parent_workspace,
+                log_directory=log_directory,
+                orchestrator_id=self.orchestrator_id,
+                min_criteria=ecg.min_criteria,
+                max_criteria=ecg.max_criteria,
+                on_subagent_started=_on_criteria_subagent_started,
+            )
+
+            self._generated_evaluation_criteria = criteria
+            self._evaluation_criteria_generated = True
+
+            # Re-initialize checklist tool now that generated criteria are available.
+            # The initial _init_checklist_tool() in __init__ used default items because
+            # criteria hadn't been generated yet. This second call picks up the generated
+            # criteria via the self._generated_evaluation_criteria check (line ~707).
+            self._init_checklist_tool()
+
+            # Save to log
+            self._save_evaluation_criteria_to_log(criteria)
+
+            source = generator.last_generation_source
+            logger.info(
+                f"[Orchestrator] Generated {len(criteria)} evaluation criteria (source: {source})",
+            )
+
+            # Notify display of completion
+            if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
+                try:
+                    if source == "subagent":
+                        criteria_preview = " | ".join(f"{c.id}: {c.text[:60]}..." if len(c.text) > 60 else f"{c.id}: {c.text}" for c in criteria[:3])
+                        display.notify_runtime_subagent_completed(
+                            agent_id=criteria_anchor_agent,
+                            subagent_id="criteria_generation",
+                            call_id=criteria_call_id,
+                            status="completed",
+                            answer_preview=criteria_preview or f"{len(criteria)} criteria generated.",
+                        )
+                    else:
+                        display.notify_runtime_subagent_completed(
+                            agent_id=criteria_anchor_agent,
+                            subagent_id="criteria_generation",
+                            call_id=criteria_call_id,
+                            status="completed",
+                            answer_preview=f"Using {len(criteria)} fallback criteria.",
+                        )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"[Orchestrator] Failed to generate evaluation criteria: {e}")
+            logger.warning("[Orchestrator] Continuing without criteria generation")
+            self._evaluation_criteria_generated = True  # Don't retry on failure
+            # Notify display of failure
+            try:
+                display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
+                criteria_anchor_agent = next(iter(self.agents.keys()), None)
+                if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
+                    display.notify_runtime_subagent_completed(
+                        agent_id=criteria_anchor_agent,
+                        subagent_id="criteria_generation",
+                        call_id="criteria_generation_criteria_generation",
+                        status="failed",
+                        error=str(e),
+                    )
+            except Exception:
+                pass
+
+    def _save_evaluation_criteria_to_log(self, criteria: list) -> None:
+        """Save generated evaluation criteria to a YAML file in the log directory."""
+        try:
+            import yaml
+
+            log_dir = get_log_session_dir()
+            criteria_file = log_dir / "generated_evaluation_criteria.yaml"
+            criteria_data = [{"id": c.id, "text": c.text, "category": c.category} for c in criteria]
+            with open(criteria_file, "w") as f:
+                yaml.dump(criteria_data, f, default_flow_style=False)
+            logger.info(f"[Orchestrator] Saved evaluation criteria to {criteria_file}")
+        except Exception as e:
+            logger.debug(f"[Orchestrator] Failed to save evaluation criteria to log: {e}")
+
     @staticmethod
     def _has_peer_answers(
         agent_id: str,
@@ -2236,6 +2480,14 @@ class Orchestrator(ChatAgent):
             Dictionary of agent_id -> GeneratedPersona
         """
         return self._generated_personas
+
+    def get_generated_evaluation_criteria(self) -> list | None:
+        """Get the generated evaluation criteria for persistence across turns.
+
+        Returns:
+            List of GeneratedCriterion objects, or None if not generated.
+        """
+        return self._generated_evaluation_criteria
 
     def _save_personas_to_log(self, personas: dict[str, Any]) -> None:
         """
@@ -3679,19 +3931,47 @@ Your answer:"""
                                 logger.info(f"[Orchestrator] Cleaned {cleaned} orphaned branches in {ctx_path}")
                             break  # Only need to clean once per repo
 
-        # Generate and inject personas if enabled (happens once per session)
-        if (
+        # Generate personas and/or evaluation criteria if enabled (happens once per session)
+        _persona_enabled = (
             hasattr(self.config, "coordination_config")
             and hasattr(self.config.coordination_config, "persona_generator")
             and self.config.coordination_config.persona_generator.enabled
             and not self._personas_generated
-        ):
+        )
+        _criteria_enabled = (
+            hasattr(self.config, "coordination_config")
+            and hasattr(self.config.coordination_config, "evaluation_criteria_generator")
+            and self.config.coordination_config.evaluation_criteria_generator.enabled
+            and not self._evaluation_criteria_generated
+        )
+
+        if _persona_enabled and _criteria_enabled:
+            yield StreamChunk(
+                type="preparation_status",
+                status="Generating personas and evaluation criteria...",
+                detail="Creating agent identities and task-specific criteria",
+            )
+            await asyncio.gather(
+                self._generate_and_inject_personas(),
+                self._generate_and_inject_evaluation_criteria(),
+            )
+        elif _persona_enabled:
             yield StreamChunk(
                 type="preparation_status",
                 status="Generating personas...",
                 detail="Creating unique agent identities",
             )
-        await self._generate_and_inject_personas()
+            await self._generate_and_inject_personas()
+        elif _criteria_enabled:
+            yield StreamChunk(
+                type="preparation_status",
+                status="Generating evaluation criteria...",
+                detail="Creating task-specific evaluation criteria",
+            )
+            await self._generate_and_inject_evaluation_criteria()
+        else:
+            # Neither enabled, still call persona generation for its guard logic
+            await self._generate_and_inject_personas()
 
         # Notify TUI of persona assignments for parallel mode.
         if (
@@ -5085,37 +5365,79 @@ Your answer:"""
                     f"[Orchestrator._save_agent_snapshot] Failed to save context for {agent_id}: {ce}",
                 )
 
-        # Save execution trace if available (for both answer and vote snapshots)
-        # Votes also contain valuable execution history (tool calls, reasoning, etc.)
-        if answer_content is not None or vote_data is not None or is_final:
-            try:
-                if hasattr(agent.backend, "_save_execution_trace"):
-                    # Save to log directory for historical tracking
-                    log_session_dir = get_log_session_dir()
-                    if log_session_dir:
-                        if is_final:
-                            timestamped_dir = log_session_dir / "final" / agent_id
-                        else:
-                            timestamped_dir = log_session_dir / agent_id / timestamp
-                        timestamped_dir.mkdir(parents=True, exist_ok=True)
-                        agent.backend._save_execution_trace(timestamped_dir)
+        # Save execution trace whenever snapshotting is requested, including early-end
+        # partial snapshots that may not contain an answer/vote yet.
+        try:
+            if hasattr(agent.backend, "_save_execution_trace"):
+                # Save to log directory for historical tracking
+                log_session_dir = get_log_session_dir()
+                if log_session_dir:
+                    if is_final:
+                        timestamped_dir = log_session_dir / "final" / agent_id
+                    else:
+                        timestamped_dir = log_session_dir / agent_id / timestamp
+                    timestamped_dir.mkdir(parents=True, exist_ok=True)
+                    agent.backend._save_execution_trace(timestamped_dir)
 
-                    # Also save to snapshot_storage so other agents can access it
-                    # via temp_workspace when they receive context updates
-                    if agent.backend.filesystem_manager and agent.backend.filesystem_manager.snapshot_storage:
-                        snapshot_storage = agent.backend.filesystem_manager.snapshot_storage
-                        snapshot_storage.mkdir(parents=True, exist_ok=True)
-                        agent.backend._save_execution_trace(snapshot_storage)
-                        logger.debug(
-                            f"[Orchestrator._save_agent_snapshot] Saved execution trace to snapshot_storage: {snapshot_storage}",
-                        )
-            except Exception as te:
-                logger.warning(
-                    f"[Orchestrator._save_agent_snapshot] Failed to save execution trace for {agent_id}: {te}",
-                )
+                # Also save to snapshot_storage so other agents can access it
+                # via temp_workspace when they receive context updates
+                if agent.backend.filesystem_manager and agent.backend.filesystem_manager.snapshot_storage:
+                    snapshot_storage = agent.backend.filesystem_manager.snapshot_storage
+                    snapshot_storage.mkdir(parents=True, exist_ok=True)
+                    agent.backend._save_execution_trace(snapshot_storage)
+                    logger.debug(
+                        f"[Orchestrator._save_agent_snapshot] Saved execution trace to snapshot_storage: {snapshot_storage}",
+                    )
+        except Exception as te:
+            logger.warning(
+                f"[Orchestrator._save_agent_snapshot] Failed to save execution trace for {agent_id}: {te}",
+            )
 
         # Return the timestamp for tracking
         return timestamp if not is_final else "final"
+
+    async def _save_partial_snapshots_for_early_termination(self) -> None:
+        """Persist per-agent partial snapshots when orchestration ends before answer/vote."""
+        for agent_id, state in self.agent_states.items():
+            if state.is_killed:
+                continue
+            try:
+                await self._save_agent_snapshot(
+                    agent_id=agent_id,
+                    answer_content=None,
+                    vote_data=None,
+                    is_final=False,
+                    context_data=self.get_last_context(agent_id),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[Orchestrator] Failed to save early-termination snapshot for {agent_id}: {e}",
+                )
+
+    def _save_partial_execution_traces_for_interrupted_turn(self) -> None:
+        """Best-effort trace persistence for interrupted turns (e.g., cancellation)."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        log_session_dir = get_log_session_dir()
+
+        for agent_id, agent in self.agents.items():
+            backend = getattr(agent, "backend", None)
+            if not backend or not hasattr(backend, "_save_execution_trace"):
+                continue
+
+            try:
+                if log_session_dir:
+                    trace_dir = log_session_dir / agent_id / timestamp
+                    trace_dir.mkdir(parents=True, exist_ok=True)
+                    backend._save_execution_trace(trace_dir)
+
+                if backend.filesystem_manager and backend.filesystem_manager.snapshot_storage:
+                    snapshot_storage = backend.filesystem_manager.snapshot_storage
+                    snapshot_storage.mkdir(parents=True, exist_ok=True)
+                    backend._save_execution_trace(snapshot_storage)
+            except Exception as e:
+                logger.warning(
+                    f"[Orchestrator] Failed to save interrupted-turn trace for {agent_id}: {e}",
+                )
 
     def get_last_context(self, agent_id: str) -> Any:
         """Get the last context for an agent, or None if not available."""
@@ -5427,7 +5749,10 @@ Your answer:"""
             f"[Orchestrator] Background subagent {subagent_id} completed for {parent_agent_id} " f"(status={result.status}, success={result.success})",
         )
 
-    def _get_pending_subagent_results(self, agent_id: str) -> list[tuple[str, "SubagentResult"]]:
+    async def _get_pending_subagent_results_async(
+        self,
+        agent_id: str,
+    ) -> list[tuple[str, "SubagentResult"]]:
         """Get pending subagent results for an agent by polling the MCP server.
 
         This is called by SubagentCompleteHook to retrieve completed subagent results
@@ -5451,7 +5776,7 @@ Your answer:"""
                 self._injected_subagents[agent_id] = set()
 
             # Poll the subagent MCP server for all subagents.
-            list_result = self._call_subagent_mcp_tool(
+            list_result = await self._call_subagent_mcp_tool_async(
                 parent_agent_id=agent_id,
                 tool_name="list_subagents",
                 params={},
@@ -5513,6 +5838,15 @@ Your answer:"""
         except Exception as e:
             logger.error(f"[Orchestrator] Error polling for completed subagents: {e}", exc_info=True)
             return []
+
+    def _get_pending_subagent_results(
+        self,
+        agent_id: str,
+    ) -> list[tuple[str, "SubagentResult"]]:
+        """Sync wrapper for compatibility with existing sync call sites."""
+        from .utils import run_async_safely
+
+        return run_async_safely(self._get_pending_subagent_results_async(agent_id))
 
     def _setup_hook_manager_for_agent(
         self,
@@ -5725,11 +6059,31 @@ Your answer:"""
 
             # Create a closure that captures agent_id for pending results retrieval
             def make_pending_getter(aid: str):
-                return lambda: self._get_pending_subagent_results(aid)
+                return lambda: self._get_pending_subagent_results_async(aid)
 
             subagent_hook.set_pending_results_getter(make_pending_getter(agent_id))
             manager.register_global_hook(HookType.POST_TOOL_USE, subagent_hook)
             logger.debug(f"[Orchestrator] Registered SubagentCompleteHook for {agent_id}")
+
+            # Wire background tool delegate so list/status/result/cancel route to subagents
+            if hasattr(agent.backend, "register_background_delegate"):
+                from massgen.subagent.background_delegate import (
+                    SubagentBackgroundDelegate,
+                )
+
+                def _make_call_tool(aid: str):
+                    return lambda tool_name, params: self._call_subagent_mcp_tool_async(
+                        aid,
+                        tool_name,
+                        params,
+                    )
+
+                delegate = SubagentBackgroundDelegate(
+                    call_tool=_make_call_tool(agent_id),
+                    agent_id=agent_id,
+                )
+                agent.backend.register_background_delegate(delegate)
+                logger.debug(f"[Orchestrator] Registered SubagentBackgroundDelegate for {agent_id}")
 
         # Register background tool completion hook for async tool result injection
         if hasattr(agent.backend, "get_pending_background_tool_results"):
@@ -5895,7 +6249,7 @@ Your answer:"""
 
         # 2. Check for subagent completions
         if self._background_subagents_enabled and self._pending_subagent_results.get(agent_id):
-            pending = self._get_pending_subagent_results(agent_id)
+            pending = await self._get_pending_subagent_results_async(agent_id)
             if pending:
                 from massgen.subagent.result_formatter import format_batch_results
 
@@ -6079,7 +6433,7 @@ Your answer:"""
         local_pending = list(self._pending_subagent_results.get(agent_id, []))
         if local_pending:
             pending_subagent_results.extend(local_pending)
-        polled_pending = self._get_pending_subagent_results(agent_id)
+        polled_pending = await self._get_pending_subagent_results_async(agent_id)
         if polled_pending:
             pending_subagent_results.extend(polled_pending)
 
@@ -6421,16 +6775,32 @@ Your answer:"""
             return
 
         self._ensure_runtime_human_input_hook_initialized()
+        _inj_emitter = get_event_emitter()
         for msg in messages:
             content = msg["content"] if isinstance(msg, dict) else msg
             target_agents = msg.get("target_agents") if isinstance(msg, dict) else None
+            source = msg.get("source") if isinstance(msg, dict) else None
+            source_label = str(source or "parent")
             logger.info(
-                "[Orchestrator] Injecting runtime inbox message: '%s' (target=%s)",
-                content[:80],
-                target_agents,
+                f"[Orchestrator] Injecting runtime inbox message: '{content[:80]}' " f"(target={target_agents}, source={source_label})",
             )
             if self._human_input_hook:
-                self._human_input_hook.set_pending_input(content, target_agents=target_agents)
+                self._human_input_hook.set_pending_input(
+                    content,
+                    target_agents=target_agents,
+                    source=source_label,
+                )
+            if _inj_emitter:
+                if isinstance(target_agents, list):
+                    recipient_agent_ids = [aid for aid in target_agents if isinstance(aid, str) and aid.strip()]
+                else:
+                    recipient_agent_ids = list(self.agents.keys())
+                for recipient_agent_id in dict.fromkeys(recipient_agent_ids):
+                    _inj_emitter.emit_injection_received(
+                        agent_id=recipient_agent_id,
+                        source_agents=[source_label],
+                        injection_type="runtime_inbox_input",
+                    )
 
     @staticmethod
     def _try_parse_json_dict_from_text(raw_text: str | None) -> dict[str, Any] | None:
@@ -6531,13 +6901,13 @@ Your answer:"""
 
         return None
 
-    def _call_subagent_mcp_tool(
+    async def _call_subagent_mcp_tool_async(
         self,
         parent_agent_id: str,
         tool_name: str,
         params: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Call a subagent MCP tool for a parent agent across backend implementations."""
+        """Async MCP bridge used by subagent helpers and delegates."""
         agent = self.agents.get(parent_agent_id)
         if not agent:
             return None
@@ -6549,11 +6919,7 @@ Your answer:"""
         mcp_executor = getattr(backend, "_execute_mcp_function_with_retry", None)
         if callable(mcp_executor):
             try:
-                from .utils import run_async_safely
-
-                raw_result = run_async_safely(
-                    mcp_executor(full_tool_name, json.dumps(params)),
-                )
+                raw_result = await mcp_executor(full_tool_name, json.dumps(params))
                 normalized = self._normalize_subagent_mcp_result(raw_result)
                 if normalized is not None:
                     return normalized
@@ -6569,7 +6935,6 @@ Your answer:"""
         background_client_getter = getattr(backend, "_get_background_mcp_client", None)
         if callable(background_client_getter):
             try:
-                from .utils import run_async_safely
 
                 async def _call_with_background_client() -> Any:
                     client = await background_client_getter()
@@ -6580,7 +6945,7 @@ Your answer:"""
                         arguments=params,
                     )
 
-                raw_result = run_async_safely(_call_with_background_client())
+                raw_result = await _call_with_background_client()
                 normalized = self._normalize_subagent_mcp_result(raw_result)
                 if normalized is not None:
                     return normalized
@@ -6598,9 +6963,7 @@ Your answer:"""
             try:
                 call_result = mcp_client.call_tool(full_tool_name, params)
                 if inspect.isawaitable(call_result):
-                    from .utils import run_async_safely
-
-                    call_result = run_async_safely(call_result)
+                    call_result = await call_result
                 normalized = self._normalize_subagent_mcp_result(call_result)
                 if normalized is not None:
                     return normalized
@@ -6614,6 +6977,19 @@ Your answer:"""
 
         return None
 
+    def _call_subagent_mcp_tool(
+        self,
+        parent_agent_id: str,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Sync wrapper for compatibility with legacy sync call sites."""
+        from .utils import run_async_safely
+
+        return run_async_safely(
+            self._call_subagent_mcp_tool_async(parent_agent_id, tool_name, params),
+        )
+
     def _send_runtime_message_via_direct_inbox_write(
         self,
         parent_agent_id: str,
@@ -6626,19 +7002,8 @@ Your answer:"""
         This bypasses MCP request/response delivery and is useful when the
         subagent MCP server is busy handling a blocking spawn call.
         """
-        agent = self.agents.get(parent_agent_id)
-        backend = getattr(agent, "backend", None) if agent else None
-        filesystem_manager = getattr(backend, "filesystem_manager", None)
-        get_workspace = getattr(filesystem_manager, "get_current_workspace", None) if filesystem_manager else None
-        if not callable(get_workspace):
-            return False
-
-        workspace = get_workspace()
-        if not workspace:
-            return False
-
-        parent_workspace = Path(workspace)
-        if not parent_workspace.exists():
+        parent_workspace = self._resolve_subagent_parent_workspace(parent_agent_id)
+        if parent_workspace is None or not parent_workspace.exists():
             return False
 
         subagent_workspace = parent_workspace / "subagents" / subagent_id / "workspace"
@@ -6664,6 +7029,52 @@ Your answer:"""
             f"[Orchestrator] Runtime message delivered via direct inbox fallback for subagent {subagent_id} " f"(parent={parent_agent_id}, target={target_agents})",
         )
         return True
+
+    def _resolve_subagent_parent_workspace(self, parent_agent_id: str) -> Path | None:
+        """Resolve parent workspace root for subagent workspace operations."""
+        agent = self.agents.get(parent_agent_id)
+        backend = getattr(agent, "backend", None) if agent else None
+        filesystem_manager = getattr(backend, "filesystem_manager", None) if backend else None
+
+        backend_workspace_path: Path | None = None
+        get_workspace = getattr(filesystem_manager, "get_current_workspace", None) if filesystem_manager else None
+        if callable(get_workspace):
+            try:
+                resolved = get_workspace()
+                if resolved:
+                    backend_workspace_path = Path(resolved)
+            except Exception:
+                backend_workspace_path = None
+
+        if backend_workspace_path is None and filesystem_manager is not None:
+            cwd = getattr(filesystem_manager, "cwd", None)
+            if cwd:
+                backend_workspace_path = Path(cwd)
+
+        workspace_path: Path | None = None
+        if self._agent_temporary_workspace:
+            temp_workspace = Path(self._agent_temporary_workspace)
+            if temp_workspace.name == "temp" and temp_workspace.parent:
+                workspace_path = temp_workspace.parent
+            elif temp_workspace.name == "temp_workspaces":
+                workspace_path = None
+            elif temp_workspace.parent.name == "temp_workspaces":
+                workspace_path = temp_workspace
+
+        if workspace_path is None:
+            workspace_path = backend_workspace_path
+
+        if workspace_path is None:
+            return None
+
+        # Some backends expose per-agent subdirectories (workspace/agent_1_...).
+        # Subagent workspaces are rooted one level up at workspace/subagents/.
+        if not (workspace_path / "subagents").exists():
+            parent_candidate = workspace_path.parent
+            if (parent_candidate / "subagents").exists():
+                workspace_path = parent_candidate
+
+        return workspace_path
 
     def send_runtime_message_to_subagent(
         self,
@@ -6702,6 +7113,43 @@ Your answer:"""
             )
         logger.warning(
             f"[Orchestrator] Failed to deliver runtime message to subagent {subagent_id} " f"after trying {len(self.agents)} parent agent route(s)",
+        )
+        return False
+
+    def continue_subagent_from_tui(
+        self,
+        subagent_id: str,
+        message: str,
+        timeout_seconds: int | None = None,
+    ) -> bool:
+        """Continue a terminal subagent from TUI runtime controls."""
+        params: dict[str, Any] = {
+            "subagent_id": subagent_id,
+            "message": message,
+        }
+        if timeout_seconds is not None:
+            params["timeout_seconds"] = timeout_seconds
+
+        for parent_agent_id in self.agents:
+            result = self._call_subagent_mcp_tool(
+                parent_agent_id=parent_agent_id,
+                tool_name="continue_subagent",
+                params=params,
+            )
+            if isinstance(result, dict) and result.get("success"):
+                logger.info(
+                    f"[Orchestrator] Continue request dispatched for subagent {subagent_id} via {parent_agent_id}",
+                )
+                return True
+            logger.debug(
+                "[Orchestrator] Continue subagent attempt via %s failed for %s (result=%s)",
+                parent_agent_id,
+                subagent_id,
+                result,
+            )
+
+        logger.warning(
+            f"[Orchestrator] Failed to continue subagent {subagent_id} after trying {len(self.agents)} parent agent route(s)",
         )
         return False
 
@@ -6834,6 +7282,9 @@ Your answer:"""
         if display and hasattr(display, "set_subagent_message_callback"):
             display.set_subagent_message_callback(self.send_runtime_message_to_subagent)
             logger.info("[Orchestrator] Shared subagent message callback with TUI display")
+        if display and hasattr(display, "set_subagent_continue_callback"):
+            display.set_subagent_continue_callback(self.continue_subagent_from_tui)
+            logger.info("[Orchestrator] Shared subagent continue callback with TUI display")
 
     def _register_round_timeout_hooks(
         self,
@@ -7092,11 +7543,31 @@ Your answer:"""
 
             # Create a closure that captures agent_id for pending results retrieval
             def make_pending_getter(aid: str):
-                return lambda: self._get_pending_subagent_results(aid)
+                return lambda: self._get_pending_subagent_results_async(aid)
 
             subagent_hook.set_pending_results_getter(make_pending_getter(agent_id))
             manager.register_global_hook(HookType.POST_TOOL_USE, subagent_hook)
             logger.debug(f"[Orchestrator] Registered SubagentCompleteHook (native) for {agent_id}")
+
+            # Wire background tool delegate so list/status/result/cancel route to subagents
+            if hasattr(agent.backend, "register_background_delegate"):
+                from massgen.subagent.background_delegate import (
+                    SubagentBackgroundDelegate,
+                )
+
+                def _make_call_tool(aid: str):
+                    return lambda tool_name, params: self._call_subagent_mcp_tool_async(
+                        aid,
+                        tool_name,
+                        params,
+                    )
+
+                delegate = SubagentBackgroundDelegate(
+                    call_tool=_make_call_tool(agent_id),
+                    agent_id=agent_id,
+                )
+                agent.backend.register_background_delegate(delegate)
+                logger.debug(f"[Orchestrator] Registered SubagentBackgroundDelegate (native) for {agent_id}")
 
         # Register background tool completion hook for async tool result injection
         if hasattr(agent.backend, "get_pending_background_tool_results"):
@@ -8645,6 +9116,8 @@ Your answer:"""
                 other_branches=other_agent_branches if other_agent_branches else None,
                 branch_diff_summaries=branch_diff_summaries,
                 novelty_pressure_data=novelty_data,
+                custom_checklist_items=[c.text for c in self._generated_evaluation_criteria] if self._generated_evaluation_criteria else None,
+                item_categories={c.id: c.category for c in self._generated_evaluation_criteria} if self._generated_evaluation_criteria else None,
             )
 
             # Update checklist tool state if registered (mutable dict — tool closure reads this)
@@ -8660,12 +9133,19 @@ Your answer:"""
                                 True,
                             ),
                         ),
+                        "require_diagnostic_report": bool(
+                            getattr(
+                                self.config,
+                                "checklist_require_gap_report",
+                                True,
+                            ),
+                        ),
                         "workspace_path": getattr(
                             getattr(agent.backend, "filesystem_manager", None),
                             "cwd",
                             None,
                         ),
-                        "report_cutoff": 70,
+                        "report_cutoff": 7,
                     },
                 )
                 self._refresh_checklist_state_for_agent(agent_id)
@@ -10479,6 +10959,7 @@ Your answer:"""
 
         if not self._selected_agent:
             error_msg = "❌ Unable to provide coordinated answer - no successful agents"
+            await self._save_partial_snapshots_for_early_termination()
             self.add_to_history("assistant", error_msg)
             log_stream_chunk("orchestrator", "error", error_msg)
             yield StreamChunk(type="content", content=error_msg)
@@ -10823,6 +11304,7 @@ INSTRUCTIONS FOR NEXT ATTEMPT:
 
         # If no answers available, provide fallback with timeout explanation
         if len(available_answers) == 0:
+            await self._save_partial_snapshots_for_early_termination()
             log_stream_chunk(
                 "orchestrator",
                 "error",
@@ -13004,6 +13486,10 @@ Then call either submit(confirmed=True) if the answer is satisfactory, or restar
             >>> if partial:
             ...     save_partial_turn(session_id, turn, task, partial)
         """
+        # Best-effort trace flush for cancellation/interrupt flows where snapshot
+        # code paths may not have run yet.
+        self._save_partial_execution_traces_for_interrupted_turn()
+
         # Collect any answers that have been submitted
         answers = {}
         for agent_id, state in self.agent_states.items():

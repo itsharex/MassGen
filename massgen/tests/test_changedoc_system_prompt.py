@@ -237,17 +237,17 @@ class TestChangedocChecklist:
         """_build_changedoc_checklist_analysis() mentions key steps."""
         analysis = _build_changedoc_checklist_analysis()
         assert "Decision Audit" in analysis
-        assert "Ideal Decision Set" in analysis
-        assert "Gap Analysis" in analysis
+        assert "Failure Patterns" in analysis
+        assert "Success Patterns" in analysis
 
     def test_changedoc_analysis_differs_from_generic(self):
         """Changedoc analysis is distinct from the generic analysis."""
         generic = _build_checklist_analysis()
         changedoc = _build_changedoc_checklist_analysis()
         assert generic != changedoc
-        # Generic has "Ideal Version", changedoc has "Ideal Decision Set"
-        assert "Ideal Version" not in changedoc
-        assert "Ideal Decision Set" not in generic
+        # Changedoc has "Decision Audit", generic does not
+        assert "Decision Audit" in changedoc
+        assert "Decision Audit" not in generic
 
     def test_evaluation_section_uses_changedoc_items(self):
         """EvaluationSection(has_changedoc=True) produces changedoc-aware text."""
@@ -269,7 +269,7 @@ class TestChangedocChecklist:
         )
         content = section.build_content()
         # Should contain generic items, not changedoc-specific analysis
-        assert "Ideal Version" in content
+        assert "Diagnostic Analysis" in content
         assert "Decision Audit" not in content
 
     def test_system_message_builder_passes_changedoc_flag(self):
@@ -315,8 +315,8 @@ class TestChangedocChecklist:
             previous_turns=[],
         )
 
-        # The coordination section should use generic analysis
-        assert "Ideal Version" in msg
+        # The coordination section should use generic analysis (GEPA-style diagnostics)
+        assert "Failure Patterns" in msg or "Root Causes" in msg
         assert "Decision Audit" not in msg
 
 
@@ -380,9 +380,9 @@ class TestChangedocAnalysisImprovements:
         assert "INCREMENTAL" in analysis
 
     def test_analysis_contains_convergence_awareness(self):
-        """Ideal Decision Set step includes convergence awareness guidance."""
+        """Analysis includes convergence awareness — same approach detection."""
         analysis = _build_changedoc_checklist_analysis()
-        assert "overlap" in analysis.lower() or "already exist" in analysis.lower()
+        assert "converging" in analysis.lower() or "same basic" in analysis.lower()
 
     def test_analysis_contains_subtractive_improvement(self):
         """Fresh Approach section mentions subtractive improvement possibility."""
@@ -489,28 +489,29 @@ class TestQualityAssessmentInChangedoc:
 class TestGapReportModeInDecision:
     """Tests for gap_report_mode in _build_checklist_gated_decision."""
 
-    def test_gated_decision_changedoc_mode_references_changedoc(self):
-        """gap_report_mode='changedoc' references changedoc Quality Assessment."""
+    def test_gated_decision_changedoc_mode_requires_separate_report(self):
+        """gap_report_mode='changedoc' still requires separate diagnostic report."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         decision = _build_checklist_gated_decision(
             checklist_items=["Check 1", "Check 2"],
             gap_report_mode="changedoc",
         )
-        # Should reference changedoc quality assessment, not a separate file
-        assert "changedoc" in decision.lower() or "quality assessment" in decision.lower()
-        # Should NOT require writing a separate gap report file
-        assert "tasks/checklist_gap_report.md" not in decision
+        # Should require a diagnostic report separate from changedoc
+        assert "diagnostic report" in decision.lower()
+        assert "separate from your changedoc" in decision.lower()
+        assert "report_path" in decision
 
-    def test_gated_decision_separate_mode_recommends_report(self):
-        """gap_report_mode='separate' recommends writing a gap report file."""
+    def test_gated_decision_separate_mode_requires_report(self):
+        """gap_report_mode='separate' requires diagnostic report file."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         decision = _build_checklist_gated_decision(
             checklist_items=["Check 1"],
             gap_report_mode="separate",
         )
-        assert "gap report" in decision.lower() or "report" in decision.lower()
+        assert "diagnostic report" in decision.lower()
+        assert "report_path" in decision
 
     def test_gated_decision_none_mode_no_report(self):
         """gap_report_mode='none' has no report requirement section."""
@@ -539,15 +540,18 @@ class TestAntiGlazingAndSynthesis:
         assert "do not upgrade" in analysis.lower()
         assert "CSS tweaks" in analysis
 
-    def test_gap_analysis_anti_glazing(self):
-        """Gap analysis step explicitly says not to describe what works well."""
+    def test_analysis_anti_glazing(self):
+        """Analysis framework focuses on failures over praise."""
         analysis = _build_changedoc_checklist_analysis()
-        assert "Do not describe what works well" in analysis
+        # The diagnostic framework discourages overly generous reviews
+        assert "too generous" in analysis
 
-    def test_gap_analysis_no_praise_padding(self):
-        """Gap analysis closing discourages padding with praise."""
+    def test_analysis_focuses_on_failures(self):
+        """Analysis framework focuses on identifying failures, not praising."""
         analysis = _build_changedoc_checklist_analysis()
-        assert "do not pad with praise" in analysis
+        # The GEPA diagnostic framework is failure-focused
+        assert "Failure Patterns" in analysis
+        assert "too generous" in analysis
 
     def test_open_gaps_replaces_quality_assessment(self):
         """Open Gaps replaces Quality Assessment — no glazing sections remain."""
@@ -585,12 +589,12 @@ class TestAntiGlazingAndSynthesis:
         prompt = _build_changedoc_subsequent_round_prompt()
         assert "synthesized from" in prompt
 
-    def test_t4_ambition_craft(self):
-        """T4 checklist item covers creative ambition or meaningful craft."""
+    def test_e4_polish_and_craft(self):
+        """E4 checklist item covers care beyond correctness."""
         from massgen.system_prompt_sections import _CHECKLIST_ITEMS_CHANGEDOC
 
-        t4_text = _CHECKLIST_ITEMS_CHANGEDOC[3]  # 0-indexed, T4 is the 4th item
-        assert "ambition" in t4_text.lower() or "craft" in t4_text.lower()
+        e4_text = _CHECKLIST_ITEMS_CHANGEDOC[3]  # 0-indexed, E4 is the 4th item
+        assert "beyond correctness" in e4_text.lower() or "creative" in e4_text.lower()
 
     def test_subsequent_prompt_has_rationale_preservation_rule(self):
         """Subsequent-round prompt must contain Rationale Preservation Rule."""
@@ -657,11 +661,11 @@ class TestAntiGlazingAndSynthesis:
 class TestOutputIntegrityPrinciple:
     """Tests that system prompts emphasize working output over feature accumulation."""
 
-    def test_t1_mentions_functioning_or_working(self):
-        """T1 checklist item must require the deliverable actually functions, not just has features."""
-        t1_text = _CHECKLIST_ITEMS_CHANGEDOC[0]  # 0-indexed, T1 is the 1st item
-        lower = t1_text.lower()
-        assert "function" in lower or "works" in lower or "working" in lower or "internally consistent" in lower, f"T1 must require deliverable actually functions. Got: {t1_text}"
+    def test_e1_requires_goal_alignment(self):
+        """E1 checklist item must require the output achieves what was asked for."""
+        e1_text = _CHECKLIST_ITEMS_CHANGEDOC[0]  # 0-indexed, E1 is the 1st item
+        lower = e1_text.lower()
+        assert "achieves" in lower or "requirements" in lower or "asked for" in lower, f"E1 must require goal alignment. Got: {e1_text}"
 
     def test_decision_section_verify_before_extend(self):
         """Decision/improvement section must instruct verifying existing before adding new."""
@@ -683,6 +687,80 @@ class TestOutputIntegrityPrinciple:
         assert (
             "broken" in lower or "internally consistent" in lower or "actually work" in lower or "output integrity" in lower or "still function" in lower
         ), "Changedoc analysis must check whether the output actually works, not just has features"
+
+
+# ---------------------------------------------------------------------------
+# E-Criterion Anchoring in Diagnostic Sections
+# ---------------------------------------------------------------------------
+
+
+class TestECriterionAnchoring:
+    """Diagnostic analysis sections must instruct agents to anchor findings to E criteria.
+
+    Like GEPA's per-aspect ASI (each VISUAL_ASPECT gets its own diagnostic data),
+    MassGen's diagnostic sections should reference E1-EN criteria so identified gaps
+    don't get lost between analysis and scoring.
+    """
+
+    def test_generic_analysis_references_e_criteria(self):
+        """Generic analysis framework must instruct anchoring to E criteria."""
+        analysis = _build_checklist_analysis()
+        assert "E1" in analysis or "E-criterion" in analysis.lower() or "evaluation criteria" in analysis.lower()
+
+    def test_changedoc_analysis_references_e_criteria(self):
+        """Changedoc analysis framework must instruct anchoring to E criteria."""
+        analysis = _build_changedoc_checklist_analysis()
+        assert "E1" in analysis or "E-criterion" in analysis.lower() or "evaluation criteria" in analysis.lower()
+
+    def test_generic_failure_patterns_anchor_to_criteria(self):
+        """Failure Patterns section must instruct mapping failures to E criteria."""
+        analysis = _build_checklist_analysis()
+        # Find the Failure Patterns section and check it references criteria
+        fp_start = analysis.index("Failure Patterns")
+        # Next section starts with ###
+        next_section = analysis.index("###", fp_start + 1)
+        fp_section = analysis[fp_start:next_section]
+        lower = fp_section.lower()
+        assert "e1" in lower or "criterion" in lower or "evaluation criteria" in lower, "Failure Patterns must instruct agents to map failures to E criteria"
+
+    def test_changedoc_failure_patterns_anchor_to_criteria(self):
+        """Changedoc Failure Patterns section must instruct mapping failures to E criteria."""
+        analysis = _build_changedoc_checklist_analysis()
+        fp_start = analysis.index("Failure Patterns")
+        next_section = analysis.index("###", fp_start + 1)
+        fp_section = analysis[fp_start:next_section]
+        lower = fp_section.lower()
+        assert "e1" in lower or "criterion" in lower or "evaluation criteria" in lower, "Changedoc Failure Patterns must instruct agents to map failures to E criteria"
+
+    def test_generic_goal_alignment_anchors_to_criteria(self):
+        """Goal Alignment section must reference E criteria for scoring alignment."""
+        analysis = _build_checklist_analysis()
+        ga_start = analysis.index("Goal Alignment")
+        next_section = analysis.index("###", ga_start + 1)
+        ga_section = analysis[ga_start:next_section]
+        lower = ga_section.lower()
+        assert "e1" in lower or "criterion" in lower or "score" in lower, "Goal Alignment must connect findings to criteria for scoring"
+
+    def test_diagnostic_report_section_anchors_to_criteria(self):
+        """Diagnostic report instructions must require E-criterion references."""
+        from massgen.system_prompt_sections import _build_checklist_gated_decision
+
+        # Use dummy items to get the decision section
+        items = ["Requirement A", "Requirement B"]
+        result = _build_checklist_gated_decision(
+            checklist_items=items,
+            iterate_action="new_answer",
+            terminate_action="terminate_discussion",
+            gap_report_mode="separate",
+        )
+        lower = result.lower()
+        assert "e1" in lower or "criterion" in lower or "evaluation criteria" in lower, "Diagnostic report instructions must reference E criteria"
+
+    def test_analysis_shows_e_criterion_example_format(self):
+        """Analysis sections should show example format of E-criterion anchoring."""
+        analysis = _build_checklist_analysis()
+        # Should have an example like "E1 (..." or "E2 (" showing the pattern
+        assert "E1" in analysis and "E2" in analysis, "Analysis must show example E-criterion references (E1, E2, etc.)"
 
 
 # ---------------------------------------------------------------------------

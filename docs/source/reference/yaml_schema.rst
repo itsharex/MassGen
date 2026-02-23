@@ -980,6 +980,10 @@ Coordination Configuration
      - integer
      - No
      - Maximum number of orchestration restarts allowed (default: 0). When set > 0, enables post-evaluation where the winning agent reviews the final answer and can request a restart with specific improvement instructions. Recommended values: 1-2.
+   * - ``subagent_types``
+     - list of strings or null
+     - No
+     - Which specialized subagent types to expose. Default (null/omitted): ``[evaluator, explorer, researcher]``. Set explicitly to include ``novelty`` or custom project types. Empty list disables all specialized types.
    * - ``enable_subagents``
      - boolean
      - No

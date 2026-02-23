@@ -76,13 +76,13 @@ OPENAI_AUDIO = BackendConfig(
 
 OPENAI_VIDEO = BackendConfig(
     name="openai",
-    model="gpt-4.1",
+    model="gpt-5.2",
     api_key_env_vars=["OPENAI_API_KEY"],
 )
 
 OPENAI_IMAGE = BackendConfig(
     name="openai",
-    model="gpt-4.1",
+    model="gpt-5.2",
     api_key_env_vars=["OPENAI_API_KEY"],
 )
 
@@ -116,13 +116,13 @@ GROK_VIDEO = BackendConfig(
 # OpenRouter backends - OpenAI-compatible API
 OPENROUTER_IMAGE = BackendConfig(
     name="openrouter",
-    model="openai/gpt-4.1",  # OpenAI model naming
+    model="openai/gpt-5.2",  # OpenAI model naming
     api_key_env_vars=["OPENROUTER_API_KEY"],
 )
 
 OPENROUTER_VIDEO = BackendConfig(
     name="openrouter",
-    model="openai/gpt-4.1",  # OpenAI model naming, uses frame extraction
+    model="openai/gpt-5.2",  # OpenAI model naming, uses frame extraction
     api_key_env_vars=["OPENROUTER_API_KEY"],
 )
 

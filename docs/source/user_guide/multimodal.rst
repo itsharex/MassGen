@@ -190,6 +190,64 @@ Specify backends and models per media type:
      audio_generation_model: gpt-4o-mini-tts
 
 
+Native Backend Routing (v0.1.55+)
+----------------------------------
+
+Image and video understanding now route to the **agent's own backend** when it supports the capability, instead of always using OpenAI. This preserves model diversity and per-agent consistency.
+
+**Supported image backends**: OpenAI, Claude, Gemini, Grok, Claude Code (SDK), Codex (CLI).
+
+If the agent's backend doesn't support image understanding, it falls back to OpenAI ``gpt-5.2``.
+
+.. code-block:: yaml
+
+   # A Claude agent will use Claude's vision API for image analysis
+   agents:
+     - id: claude_vision
+       backend:
+         type: claude
+         model: claude-sonnet-4-5
+         enable_multimodal_tools: true
+
+Video Frame Extraction (v0.1.56+)
+-----------------------------------
+
+Video understanding (for non-Gemini backends) extracts frames from the video and sends them as images. You can configure the extraction strategy via ``multimodal_config.video``:
+
+.. code-block:: yaml
+
+   backend:
+     enable_multimodal_tools: true
+     multimodal_config:
+       video:
+         extraction_mode: "scene"   # "scene" (default) or "uniform"
+         max_frames: 30             # Hard cap (default: 30, absolute max: 60)
+         fps: 1.0                   # Frames/sec for uniform mode (default: 1.0)
+         threshold: 0.3             # Scene detection sensitivity (scene mode)
+         frames_per_scene: 3        # Frames per detected scene (scene mode)
+         num_frames: 8              # Legacy fixed count (overrides fps if set)
+
+**Extraction Modes:**
+
+- **scene** (default): Uses PySceneDetect to find scene boundaries, then samples frames within each scene. Produces better coverage of meaningful content and avoids wasting tokens on static segments. Falls back to uniform if PySceneDetect is not installed.
+- **uniform**: Evenly spaced frames. Uses ``fps`` (default 1.0) to compute frame count based on video duration, or ``num_frames`` for a fixed count.
+
+**Frame Cap Behavior:**
+
+- ``max_frames`` is configurable (default 30), but cannot exceed the absolute maximum of 60
+- A 10-second video at 1 FPS produces 10 frames (good coverage)
+- A 2-minute video at 1 FPS produces 30 frames (hits default cap)
+- A 30-minute video at 1 FPS produces 30 frames (capped, cost-safe)
+- Setting ``num_frames: 8`` explicitly gives exactly 8 frames (backward compatible)
+
+**Installation for Scene Detection:**
+
+.. code-block:: bash
+
+   pip install massgen[video]
+
+If PySceneDetect is not installed, scene mode gracefully falls back to uniform extraction.
+
 Legacy Tools
 ------------
 
@@ -198,9 +256,9 @@ Individual Understanding Tools
 
 The unified ``read_media`` tool internally delegates to these specialized tools:
 
-- ``understand_image``: OpenAI gpt-4o vision
+- ``understand_image``: Routes to agent's native backend (OpenAI, Claude, Gemini, Grok, Claude Code, Codex)
 - ``understand_audio``: OpenAI Whisper transcription + gpt-4o analysis
-- ``understand_video``: Frame extraction + gpt-4o vision
+- ``understand_video``: Routes to best available backend (Gemini native, or frame extraction via OpenAI/Claude/Grok)
 
 These tools are **not automatically registered** when ``enable_multimodal_tools: true``. They are only used internally by ``read_media``.
 
@@ -259,7 +317,7 @@ Complete Multimodal Workflow
          multimodal_config:
            image:
              backend: openai
-             model: gpt-4.1
+             model: gpt-5.2
            video:
              backend: google
              model: veo-2
@@ -302,7 +360,7 @@ Multi-Agent with Specialized Backends
          multimodal_config:
            image:
              backend: openai
-             model: gpt-4.1  # Best for images
+             model: gpt-5.2  # Best for images
 
      - id: video_specialist
        backend:

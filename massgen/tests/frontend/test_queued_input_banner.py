@@ -37,7 +37,7 @@ def test_banner_shows_recent_multiple_messages_with_targets():
     text = rendered[-1].plain
     assert "3 messages queued" in text
     assert "latest" in text
-    assert "[all agents]" in text
+    assert "all agents" in text
     assert "Third queue item" in text
 
 
@@ -65,5 +65,26 @@ def test_banner_set_messages_renders_ids_and_pending_agents():
 
     text = rendered[-1].plain
     assert "#12" in text
-    assert "[agent_b]" in text
+    assert "agent_b" in text
     assert "pending: agent_b" in text
+
+
+def test_banner_set_messages_renders_source_label():
+    banner = QueuedInputBanner()
+    rendered = []
+    banner.update = lambda content: rendered.append(content)
+
+    banner.set_messages(
+        [
+            {
+                "id": 21,
+                "content": "Status update from parent",
+                "target_label": "all agents",
+                "pending_agents": ["agent_a"],
+                "source_label": "parent",
+            },
+        ],
+    )
+
+    text = rendered[-1].plain
+    assert "source: parent" in text

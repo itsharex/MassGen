@@ -1049,6 +1049,39 @@ class ConfigValidator:
                             f"Use one of: {valid_values}",
                         )
 
+                if "subagent_types" in coordination:
+                    st = coordination["subagent_types"]
+                    if st is not None:
+                        if not isinstance(st, list):
+                            result.add_error(
+                                f"'subagent_types' must be a list of strings or null, got {type(st).__name__}",
+                                f"{location}.coordination.subagent_types",
+                                "Use a list like: [evaluator, explorer, novelty]",
+                            )
+                        else:
+                            for i, t in enumerate(st):
+                                if not isinstance(t, str) or not t.strip():
+                                    result.add_error(
+                                        "'subagent_types' entries must be non-empty strings",
+                                        f"{location}.coordination.subagent_types[{i}]",
+                                        "Use type name strings like 'evaluator', 'explorer', 'novelty'",
+                                    )
+
+                if "checklist_criteria_preset" in coordination:
+                    preset = coordination["checklist_criteria_preset"]
+                    if preset is not None:
+                        from .evaluation_criteria_generator import (
+                            VALID_CRITERIA_PRESETS,
+                        )
+
+                        if preset not in VALID_CRITERIA_PRESETS:
+                            valid_values = ", ".join(sorted(VALID_CRITERIA_PRESETS))
+                            result.add_error(
+                                f"Invalid checklist_criteria_preset: '{preset}'",
+                                f"{location}.coordination.checklist_criteria_preset",
+                                f"Use one of: {valid_values}",
+                            )
+
         # Validate voting_sensitivity if present
         if "voting_sensitivity" in orchestrator_config:
             voting_sensitivity = orchestrator_config["voting_sensitivity"]

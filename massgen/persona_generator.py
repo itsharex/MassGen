@@ -696,6 +696,7 @@ Generate personas now:"""
                 coordination={
                     "enable_subagents": False,  # No nested subagents
                     "broadcast": False,  # Keep it simple
+                    "checklist_criteria_preset": "persona",
                 },
             )
 

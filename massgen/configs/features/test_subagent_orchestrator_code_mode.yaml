@@ -52,8 +52,8 @@ orchestrator:
       # enable_web_search: true
       agents:
       - backend:
-          type: openai
-          model: gpt-5-mini
+          type: openrouter
+          model: z-ai/glm-5
   context_paths: []
 ui:
   type: rich_terminal

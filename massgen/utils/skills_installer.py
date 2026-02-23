@@ -6,6 +6,7 @@ This module provides cross-platform installation of skills including:
 - OpenAI skills collection
 - Vercel agent skills collection
 - Vercel Agent Browser skill
+- Remotion skill
 - Crawl4AI skill
 
 Works on Windows, macOS, and Linux.
@@ -36,6 +37,7 @@ OPENSKILLS_PACKAGE_SOURCES = {
     "openai": "openai/skills",
     "vercel": "vercel-labs/agent-skills",
     "agent_browser": "vercel-labs/agent-browser",
+    "remotion": "remotion-dev/skills",
 }
 
 SKILL_PACKAGE_METADATA = {
@@ -54,6 +56,10 @@ SKILL_PACKAGE_METADATA = {
     "agent_browser": {
         "name": "Vercel Agent Browser Skill",
         "description": "Skill for browser-native automation via the agent-browser runtime",
+    },
+    "remotion": {
+        "name": "Remotion Skill",
+        "description": "Video generation and editing skill powered by Remotion",
     },
     "crawl4ai": {
         "name": "Crawl4AI",
@@ -92,6 +98,27 @@ VERCEL_MARKER_SKILLS = {
     "vercel-deploy-claimable",
 }
 
+REMOTION_MARKER_SKILLS = {
+    "remotion",
+}
+
+REMOTION_INSTALL_SETUP_HEADING = "## Install and Setup"
+REMOTION_INSTALL_SETUP_SECTION = """
+## Install and Setup
+
+If no existing Remotion project is found in the current workspace, initialize one first.
+
+1. Detect package manager from lockfiles (`bun.lockb`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`).
+2. Prefer official scaffolding:
+   - `bun create video` (if Bun is available)
+   - otherwise `npx create-video@latest`
+3. If a Remotion project already exists, do not re-initialize it.
+4. Before rendering, ensure a local Remotion CLI is available:
+   - use `npx remotion ...` commands, or
+   - add `@remotion/cli` to project dependencies when script execution requires it.
+5. After bootstrap, apply the rule files in this skill for composition and animation details.
+"""
+
 
 def _get_package_manifest_path() -> Path:
     """Return metadata file tracking package installations done by MassGen."""
@@ -129,6 +156,56 @@ def _record_package_install(package_id: str, source: str) -> None:
         "installed_at": datetime.now(timezone.utc).isoformat(),
     }
     _save_package_manifest(manifest)
+
+
+def _get_remotion_skill_md_path() -> Path:
+    """Return the expected local Remotion SKILL.md path."""
+    return Path.home() / ".agent" / "skills" / "remotion" / "SKILL.md"
+
+
+def _apply_remotion_install_setup_section(skill_text: str) -> str:
+    """Insert install/setup guidance into Remotion SKILL.md content."""
+    if REMOTION_INSTALL_SETUP_HEADING in skill_text:
+        return skill_text
+
+    setup_block = f"{REMOTION_INSTALL_SETUP_SECTION.strip()}\n\n"
+
+    if skill_text.startswith("---"):
+        lines = skill_text.splitlines(keepends=True)
+        delimiter_count = 0
+        insert_at: int | None = None
+        for idx, line in enumerate(lines):
+            if line.strip() == "---":
+                delimiter_count += 1
+                if delimiter_count == 2:
+                    insert_at = idx + 1
+                    break
+
+        if insert_at is not None:
+            prefix = "".join(lines[:insert_at])
+            suffix = "".join(lines[insert_at:]).lstrip("\n")
+            return f"{prefix}\n{setup_block}{suffix}"
+
+    return f"{setup_block}{skill_text.lstrip('\n')}"
+
+
+def _ensure_remotion_install_setup_section() -> bool:
+    """Ensure Remotion SKILL.md includes bootstrap guidance."""
+    skill_md_path = _get_remotion_skill_md_path()
+    if not skill_md_path.exists():
+        _print_warning(f"Remotion SKILL.md not found at {skill_md_path}; skipping setup guidance patch")
+        return False
+
+    try:
+        original = skill_md_path.read_text(encoding="utf-8")
+        updated = _apply_remotion_install_setup_section(original)
+        if updated != original:
+            skill_md_path.write_text(updated, encoding="utf-8")
+            _print_info("Added Install and Setup guidance to Remotion SKILL.md")
+        return True
+    except Exception as e:
+        _print_warning(f"Failed to patch Remotion SKILL.md with setup guidance: {e}")
+        return False
 
 
 def _is_package_recorded(package_id: str) -> bool:
@@ -242,7 +319,7 @@ def install_openskills_cli() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    _print_step("1", "6", "Installing openskills CLI...")
+    _print_step("1", "7", "Installing openskills CLI...")
 
     # Check if npm is available
     if not _check_command_exists("npm"):
@@ -277,7 +354,7 @@ def install_anthropic_skills() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    _print_step("2", "6", "Installing Anthropic skills collection...")
+    _print_step("2", "7", "Installing Anthropic skills collection...")
     return _install_openskills_skill_package("anthropic")
 
 
@@ -287,7 +364,7 @@ def install_openai_skills() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    _print_step("3", "6", "Installing OpenAI skills collection...")
+    _print_step("3", "7", "Installing OpenAI skills collection...")
     return _install_openskills_skill_package("openai")
 
 
@@ -297,7 +374,7 @@ def install_vercel_skills() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    _print_step("4", "6", "Installing Vercel agent skills collection...")
+    _print_step("4", "7", "Installing Vercel agent skills collection...")
     return _install_openskills_skill_package("vercel")
 
 
@@ -307,8 +384,25 @@ def install_agent_browser_skill() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    _print_step("5", "6", "Installing Vercel Agent Browser skill...")
+    _print_step("5", "7", "Installing Vercel Agent Browser skill...")
     return _install_openskills_skill_package("agent_browser")
+
+
+def install_remotion_skill() -> bool:
+    """Install Remotion skill via openskills.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    _print_step("6", "7", "Installing Remotion skill...")
+    installed = _install_openskills_skill_package("remotion")
+    if not installed:
+        return False
+
+    if not _ensure_remotion_install_setup_section():
+        _print_warning("Remotion skill installed, but setup guidance patch could not be applied")
+
+    return True
 
 
 def _install_openskills_skill_package(package_id: str) -> bool:
@@ -367,7 +461,7 @@ def install_crawl4ai_skill() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    _print_step("6", "6", "Installing Crawl4AI skill...")
+    _print_step("7", "7", "Installing Crawl4AI skill...")
 
     skills_dir = Path.home() / ".agent" / "skills"
     crawl4ai_dir = skills_dir / "crawl4ai"
@@ -510,6 +604,9 @@ def check_skill_packages_installed() -> dict:
 
     has_agent_browser = "agent-browser" in installed_skill_names
 
+    remotion_skills = [s for s in installed_skills if s["name"].lower() in REMOTION_MARKER_SKILLS]
+    has_remotion = bool(remotion_skills)
+
     has_crawl4ai = any(s["name"].lower().startswith("crawl4ai") for s in installed_skills)
 
     return {
@@ -533,6 +630,12 @@ def check_skill_packages_installed() -> dict:
             "name": SKILL_PACKAGE_METADATA["agent_browser"]["name"],
             "description": SKILL_PACKAGE_METADATA["agent_browser"]["description"],
             "installed": has_agent_browser,
+        },
+        "remotion": {
+            "name": SKILL_PACKAGE_METADATA["remotion"]["name"],
+            "description": SKILL_PACKAGE_METADATA["remotion"]["description"],
+            "installed": has_remotion,
+            "skill_count": len(remotion_skills) if has_remotion else 0,
         },
         "crawl4ai": {
             "name": SKILL_PACKAGE_METADATA["crawl4ai"]["name"],
@@ -585,7 +688,8 @@ def install_skills() -> None:
     3. OpenAI skills collection
     4. Vercel agent skills collection
     5. Vercel Agent Browser skill
-    6. Crawl4AI skill
+    6. Remotion skill
+    7. Crawl4AI skill
 
     This function is called by `massgen --setup-skills` command.
     """
@@ -600,7 +704,7 @@ def install_skills() -> None:
     results.append(("openskills CLI", install_openskills_cli()))
     print()
 
-    # 2-5. Install openskills-backed packages (only if openskills succeeded)
+    # 2-6. Install openskills-backed packages (only if openskills succeeded)
     if results[0][1]:
         results.append(("Anthropic skills", install_anthropic_skills()))
         print()
@@ -609,15 +713,18 @@ def install_skills() -> None:
         results.append(("Vercel agent skills", install_vercel_skills()))
         print()
         results.append(("Vercel Agent Browser skill", install_agent_browser_skill()))
+        print()
+        results.append(("Remotion skill", install_remotion_skill()))
     else:
         _print_warning("Skipping openskills packages (openskills CLI required)")
         results.append(("Anthropic skills", False))
         results.append(("OpenAI skills", False))
         results.append(("Vercel agent skills", False))
         results.append(("Vercel Agent Browser skill", False))
+        results.append(("Remotion skill", False))
     print()
 
-    # 6. Install Crawl4AI skill
+    # 7. Install Crawl4AI skill
     results.append(("Crawl4AI skill", install_crawl4ai_skill()))
     print()
 
@@ -680,9 +787,10 @@ def install_quickstart_skills() -> bool:
     openai_installed = packages["openai"]["installed"]
     vercel_installed = packages["vercel"]["installed"]
     agent_browser_installed = packages["agent_browser"]["installed"]
+    remotion_installed = packages["remotion"]["installed"]
     crawl4ai_installed = packages["crawl4ai"]["installed"]
 
-    if openskills_installed and anthropic_installed and openai_installed and vercel_installed and agent_browser_installed and crawl4ai_installed:
+    if openskills_installed and anthropic_installed and openai_installed and vercel_installed and agent_browser_installed and remotion_installed and crawl4ai_installed:
         _print_success("Required quickstart skill packages are already installed")
         return True
 
@@ -740,6 +848,17 @@ def install_quickstart_skills() -> bool:
         else:
             _print_warning("Skipping Vercel Agent Browser skill because openskills failed to install")
             results.append(("Vercel Agent Browser skill", False))
+
+    # Install Remotion skill only when missing.
+    if remotion_installed:
+        _print_success("Remotion skill already installed")
+        results.append(("Remotion skill", True))
+    else:
+        if openskills_ok:
+            results.append(("Remotion skill", install_remotion_skill()))
+        else:
+            _print_warning("Skipping Remotion skill because openskills failed to install")
+            results.append(("Remotion skill", False))
 
     # Install Crawl4AI only when missing.
     if crawl4ai_installed:

@@ -123,59 +123,41 @@ A good first draft is rarely perfect. Look for what can be *better*, not just wh
 # ---------------------------------------------------------------------------
 
 _CHECKLIST_ITEMS = [
-    ("The output genuinely impresses — quality, depth, and polish go well" " beyond adequacy. Would make the person who asked say" ' "this is exceptional."'),
-    (
-        "The most impactful weaknesses were addressed — including this"
-        " answer's own known gaps, strengths from other answers that this one"
-        " lacks, and problems other answers identified but didn't solve."
-        " Critical problems (broken functionality, performance issues, missing"
-        " core requirements) were fixed before lower-value additions. Effort"
-        " went to the highest-value improvements, not just the easiest."
-    ),
-    ("The output would genuinely satisfy a demanding user — they would not" " wish it were better in any significant way."),
-    (
-        "At least one element shows creative ambition or meaningful craft that"
-        " goes beyond the safe, obvious approach. Thoughtful synthesis that"
-        " combines the best of multiple approaches and improves on them"
-        " counts."
-    ),
+    ("The output directly achieves what was asked for — requirements are met," " not just approximated. Missing or partially implemented requirements" " count as failures."),
+    ("No broken functionality, errors, or obvious defects. Everything that's" " present works correctly. A working output with fewer features beats a" " broken one with more."),
+    ("The output is thorough — no significant gaps, thin sections, or" " placeholder content. Each component has enough depth to be genuinely" " useful, not just present."),
+    ("The output shows care beyond correctness — thoughtful choices," " consistent style, attention to edge cases, or creative elements that" " distinguish it from adequate work."),
 ]
 
+# Category tags for default checklist items: "core" or "stretch"
+_CHECKLIST_ITEM_CATEGORIES = {
+    "E1": "core",
+    "E2": "core",
+    "E3": "core",
+    "E4": "stretch",
+}
+
 _CHECKLIST_ITEMS_CHANGEDOC = [
-    (
-        "The deliverable works, impresses, and shows genuine depth. Output is"
-        " functional and internally consistent. Quality, polish, and content"
-        " depth go beyond adequacy — would genuinely impress the person who"
-        " asked. A working output with fewer features beats a broken one with"
-        " more."
-    ),
-    (
-        "The most impactful gaps were addressed — or justified as not worth"
-        " the cost. Gaps come from three sources: (1) open gaps identified in"
-        " this answer's own changedoc, (2) strengths from other agents'"
-        " answers that this one lacks, and (3) open gaps identified in other"
-        " agents' changedocs — problems they spotted but didn't solve."
-        " Critical gaps (broken functionality, severe performance problems,"
-        " accessibility failures) that persist unaddressed are a failure here,"
-        " regardless of what new features were added. If a gap was"
-        " deliberately skipped, the changedoc explains why."
-    ),
+    ("The output directly achieves what was asked for — requirements are met," " not just approximated. Missing or partially implemented requirements" " count as failures."),
+    ("No broken functionality, errors, or obvious defects. Everything that's" " present works correctly. A working output with fewer features beats a" " broken one with more."),
     (
         "Changedoc is honest, complete, and traceable. Every significant"
         " decision is documented with genuine rationale. Implementation"
         " references point to code that actually exists. No fabricated claims."
-        " Alternatives are real, not strawmen."
+        " Gaps from all sources — this answer's own changedoc, other agents'"
+        " answers, and other agents' changedocs — are addressed or explicitly"
+        " justified. Critical gaps that persist unaddressed are a failure."
     ),
-    (
-        "At least one element shows creative ambition or meaningful craft."
-        " Something goes beyond the safe, obvious approach. This can be a"
-        " novel feature, an existing element made significantly richer, an"
-        " elegant solution to a known hard problem, or a distinctive design"
-        " choice. Synthesis that combines the best of multiple approaches AND"
-        " improves on them counts. Mechanical copying does not — but"
-        " thoughtful synthesis with creative improvement does."
-    ),
+    ("The output shows care beyond correctness — thoughtful choices," " consistent style, attention to edge cases, or creative elements that" " distinguish it from adequate work."),
 ]
+
+# Category tags for changedoc checklist items
+_CHECKLIST_ITEM_CATEGORIES_CHANGEDOC = {
+    "E1": "core",
+    "E2": "core",
+    "E3": "core",
+    "E4": "stretch",
+}
 
 
 def _checklist_budget_context(remaining: int, total: int) -> str:
@@ -227,91 +209,97 @@ def _checklist_required_true(effective_threshold: int, num_items: int = 4) -> in
 
 
 def _checklist_confidence_cutoff(effective_threshold: int) -> int:
-    """Minimum confidence % for a score to count as TRUE."""
-    return max(40, 95 - effective_threshold * 5)
+    """Minimum confidence score (0-10) for a score to count as TRUE."""
+    return max(4, int(10 - effective_threshold * 0.5))
 
 
 def _build_checklist_analysis() -> str:
-    """Build analysis section for checklist modes.
+    """Build GEPA-style diagnostic analysis section for checklist modes.
 
-    The analysis prompt handles both N=1 and N>1 in a single template.
-    Per-Answer Assessment naturally works for 1+ answers. The Ideal Version
-    and Gap Analysis sections force agents to establish an excellence
-    reference point before scoring.
+    Uses structured diagnostic feedback (failure patterns, success patterns,
+    root causes, goal alignment) instead of abstract critique. This produces
+    more actionable evaluation that tells agents *why* something failed, not
+    just *that* it failed.
+
+    The analysis handles both N=1 and N>1 in a single template.
     """
-    return """## Comparative Analysis
+    return """## Diagnostic Analysis
 
 Complete your full analysis before reading the Decision section below. Do not let
 the decision criteria influence your assessment.
 
-### Per-Answer Critique
+**Anchor every finding to evaluation criteria.** For each failure, success, or root
+cause, reference the specific E-criterion it affects (E1, E2, E3, etc.). This
+prevents gaps from getting lost between analysis and scoring.
 
-Your role is adversarial reviewer. For each answer, your job is to find every flaw,
-weakness, and missed opportunity. Do not describe what works — describe what doesn't.
+### Failure Patterns
 
-For each answer, list:
-- **Output flaws**: What would a demanding user be disappointed by? What feels
-  generic, shallow, or rushed? What would make them say "I expected better"?
-- **Missing elements**: What does the question demand that this answer doesn't
-  deliver, or delivers superficially?
-- **Approach weaknesses**: Where did the approach lead to a weaker result than
-  an alternative would have?
+What specific errors, gaps, or broken functionality exist in each answer?
+Be concrete — "login form has no error states" not "could be better."
 
-If an answer has no meaningful flaws, say so explicitly — but this should be
+For each answer, map failures to the evaluation criteria they violate:
+- **E1 (goal alignment)**: Requirements missing or only partially met?
+- **E2 (correctness)**: Broken behavior, wrong results, regressions?
+- **E3+ (remaining criteria)**: Quality gaps against each remaining criterion?
+
+Example format:
+- E1: Missing mobile navigation = core requirement unmet
+- E2: Search returns stale results after filter change = broken behavior
+- E3: No real images, placeholder text in hero section = depth gap
+
+If an answer has no meaningful failures, say so explicitly — but this should be
 rare. First attempts almost always have significant gaps.
+If you cannot find meaningful failures, your review is probably too generous.
 
-### Best Answer Identification
+### Success Patterns
 
-Which answer is strongest overall, and why?
+What works well and MUST be preserved in any revision? Regression on these is
+worse than not improving.
 
-### Unique Content Audit
+For each answer, identify strengths by criterion:
+- Which E-criteria are well-satisfied? What makes them strong?
+- **Unique contributions**: What does this answer do well that others don't?
+- **Preservation priority**: What would be most damaging to lose in a revision?
 
-This is the most important section. For each non-best answer:
-- Does it contain valuable content, insights, approaches, or coverage that the
-  best answer LACKS?
-- Be specific. Reference what you found.
-- "Worse overall" does not mean "has nothing to offer." Look carefully.
+This section exists to prevent the round-2-worse-than-round-1 problem. Any new
+answer must retain these strengths.
 
-If no answer has meaningful unique content beyond the best, say so explicitly.
+### Root Causes
+
+What underlying issues explain the failures you identified? Are you treating
+symptoms or causes?
+
+- Are failures connected by a common root (e.g., misunderstanding the requirements,
+  wrong architectural choice, insufficient depth in a key area)?
+- Which E-criteria are affected by each root cause? A single root cause often
+  drags down multiple criteria.
+- Would fixing surface-level symptoms actually improve the result, or does the
+  fundamental approach need to change?
+- What would prevent the same failures from recurring in the next iteration?
+
+### Goal Alignment
+
+Step back — does the output actually achieve what the user asked for? Map your
+assessment to E-criteria and hold it in mind when you score.
+
+- Re-read the original message. What did the user actually want?
+- Does the best answer deliver that, or has it drifted toward what was easier
+  to build or more interesting to work on?
+- For each E-criterion, how far is the current best from genuinely fulfilling it?
+  If the gap is large on any criterion, your score for that criterion must be low.
+- What would make the person who asked say "this is exactly what I needed" vs
+  "this is impressive but not what I asked for"?
+
+### Cross-Answer Synthesis
 
 *If there is only one answer, evaluate it on its own merits — consider whether a
 different approach or additional depth would meaningfully improve it.*
 
-### The Ideal Version
-
-Before evaluating whether the current answer is "good enough," first establish what
-**excellent** looks like. Step back from the existing answers entirely.
-
-Start from the **output** — what the user actually receives and experiences — not
-the code or implementation details. Given the original question, describe in concrete
-bullet points what the **best possible result** would deliver. Be ambitious:
-- What would make someone receiving this genuinely impressed — not just satisfied?
-- What would distinguish a *crafted* result from a *competent* one?
-- Think about richness, depth, surprise, and overall impact — not just correctness.
-- What would a user *wish* it included that they didn't think to ask for?
-
-Do not anchor to what already exists. Describe the ideal as if designing a spec from
-scratch for a result that would make someone say "this is exceptional."
-
-How far is the current best from this ideal? Hold this distance in mind when you score
-— if the gap is large, your scores must be low, regardless of whether the answer is
-"correct."
-
-### Gap Analysis
-
-Compare the current best answer against your ideal. List only problems — do not describe what works.
-
-- What specific elements from your ideal are missing or under-delivered?
-- Where is the quality gap between current and ideal — minor polish, or
-  meaningful substance?
-- What would a `new_answer` specifically need to add or change?
-
-Then check your critique against this analysis: do the flaws you found in
-Per-Answer Critique match the gaps you see here? If your critique was harsh
-but your gap analysis is mild, revisit both.
-
-If the current best genuinely matches your ideal with only cosmetic gaps,
-say so — but this should be rare and requires justification.
+For multiple answers: which specific elements from other answers would directly
+fix the failures you identified? Be targeted:
+- "Agent 2's retry logic fixes failure #1"
+- "Agent 1's data model is stronger but Agent 3's UI handles edge cases better"
+- Don't just say "combine the best of both" — specify exactly what to take and why.
 
 ### Fresh Approach Consideration
 
@@ -323,20 +311,33 @@ lead somewhere that incremental refinement never would.
 - Could a different structure, method, or creative direction for the core parts
   improve the result — even while keeping other parts that already work well?
 - Are all current answers converging on the same basic approach? If so, varying
-  has extra value — it explores paths that pure refinement misses.\""""
+  has extra value — it explores paths that pure refinement misses.
+
+### Pre-Score Audit
+
+Before you score, re-read your Failure Patterns section. For EACH criterion:
+- Name the single biggest remaining weakness. If you wrote "no meaningful failures"
+  for any criterion, reconsider — what would a harsh critic say?
+- Ask: "If I gave this to someone with high standards, what would they complain about?"
+- Your score for each criterion should reflect the severity of that biggest weakness,
+  not the average of strengths and weaknesses.\""""
 
 
 def _build_changedoc_checklist_analysis() -> str:
-    """Build changedoc-anchored analysis section for checklist modes.
+    """Build changedoc-anchored GEPA-style diagnostic analysis for checklist modes.
 
     Replaces the generic _build_checklist_analysis() when changedoc is enabled.
-    Grounds evaluation in the agent's decision journal rather than generic
-    quality assessment. 7 steps that map to the changedoc checklist items.
+    Combines GEPA diagnostic structure with changedoc-specific sections
+    (Decision Audit, Implementation Accuracy).
     """
-    return """## Changedoc-Anchored Analysis
+    return """## Changedoc-Anchored Diagnostic Analysis
 
 Complete your full analysis before reading the Decision section below. Do not let
 the decision criteria influence your assessment.
+
+**Anchor every finding to evaluation criteria.** For each failure, success, or root
+cause, reference the specific E-criterion it affects (E1, E2, E3, etc.). This
+prevents gaps from getting lost between analysis and scoring.
 
 ### Decision Audit
 
@@ -357,103 +358,74 @@ For each decision (DEC-*) in the changedoc:
 Then ask: **What decisions are MISSING?** What important choices were made implicitly
 in code but never recorded? What trade-offs were navigated without being articulated?
 
-### Per-Answer Critique
+### Failure Patterns
 
-Your role is adversarial reviewer. For each answer, find every flaw — in the
-output, the changedoc, and the alignment between them.
+What specific errors, gaps, or broken functionality exist — in the output, the
+changedoc, and the alignment between them? Map each failure to the E-criterion
+it violates.
 
-- **Output flaws**: What would a demanding user be disappointed by? What feels
-  generic, shallow, or rushed? What is merely functional where it should be
-  impressive?
-- **Changedoc weaknesses**: Which decisions have thin rationale? Which
-  alternatives are strawmen? Which Implementation fields are vague or incorrect?
-- **Alignment gaps**: Where did the code drift from documented decisions? What
-  was built but never decided? What was decided but poorly implemented?
-- **Missing decisions**: What important choices were made implicitly but never
-  recorded?
+For each answer:
+- **E1 (goal alignment)**: Output failures — what doesn't work? What produces wrong
+  results? What would a demanding user be disappointed by?
+- **E2 (correctness)**: Regression failures — does the deliverable actually work
+  end-to-end? Are features from earlier rounds still functioning? A working output
+  with fewer features beats a broken output with more.
+- **E3 (changedoc quality)**: Which decisions have thin rationale? Which alternatives
+  are strawmen? Which Implementation fields are vague, incorrect, or fabricated?
+- **E3 (alignment)**: Where did the code drift from documented decisions? What was
+  built but never decided? What was decided but poorly implemented?
+- **E4+ (remaining criteria)**: Quality gaps against each remaining criterion?
 
-If you cannot find meaningful flaws, your review is probably too generous.
+If you cannot find meaningful failures, your review is probably too generous.
 
-### Best Answer Identification
+### Success Patterns
 
-Which answer is strongest considering BOTH output quality AND decision quality?
-A polished output with a shallow changedoc is not better than a slightly rougher
-output backed by thorough, well-reasoned decisions — the decisions enable future
-iteration while polish is easily added.
+What works well and MUST be preserved in any revision? Regression on these is
+worse than not improving.
 
-### Unique Content Audit
+For each answer, identify strengths by criterion:
+- Which E-criteria are well-satisfied? What makes them strong?
+- **Decision quality**: Which changedoc decisions are well-reasoned with strong
+  rationale and real alternatives?
+- **Unique contributions**: What does this answer do well — in output or decisions —
+  that others don't?
 
-For each non-best answer:
-- Does its changedoc contain decisions or rationale worth preserving that the best
-  answer's changedoc LACKS?
-- Are there NEW-marked decisions that represent genuinely original thinking?
-- "Worse overall" does not mean "has nothing to offer." Look carefully at the
-  decision journal, not just the output.
-- What valuable elements from other answers should be incorporated into the best
-  answer? Be specific about what to adopt and how it would improve the result.
+Any new answer must retain these strengths. Identify what would be most damaging to lose.
 
-If no answer has meaningful unique content beyond the best, say so explicitly.
+### Root Causes
+
+What underlying issues explain the failures you identified?
+
+- Are output failures caused by wrong decisions, missing decisions, or correct
+  decisions poorly executed?
+- Which E-criteria are affected by each root cause? A single root cause often
+  drags down multiple criteria.
+- Would fixing surface-level symptoms actually improve the result, or does the
+  fundamental approach need to change?
+- Are changedoc weaknesses (thin rationale, missing decisions) causing output
+  problems, or are they independent issues?
+
+### Goal Alignment
+
+Step back — does the output actually achieve what the user asked for? Map your
+assessment to E-criteria.
+
+- Re-read the original message. What did the user actually want?
+- Does the best answer deliver that, or has it drifted toward what was easier
+  to build or more interesting to work on?
+- For each E-criterion, how far is the current best from genuinely fulfilling it?
+  Hold this distance in mind when you score.
+
+### Cross-Answer Synthesis
 
 *If there is only one answer, evaluate its changedoc on its own merits — consider
 what decisions are missing or under-reasoned.*
 
-### The Ideal Decision Set
-
-Before evaluating whether the current answer is "good enough," first establish what
-decisions this task **demands**. Step back from the existing changedocs entirely.
-
-Given the original question, describe in concrete bullet points:
-- What decisions **MUST** be made for any competent solution?
-- What additional decisions would distinguish a **crafted** result from a merely
-  **competent** one?
-- What decisions would a user *wish* were articulated that they didn't think to ask for?
-- Where would genuinely novel or ambitious thinking (NEW markers) add the most value?
-
-Do not anchor to what already exists. Describe the ideal decision set as if designing
-a spec from scratch.
-
-How many of these ideal decisions already exist across all answers? If there is high
-overlap — most answers already cover the same decisions — focus on execution depth and
-refinement quality rather than adding new decisions.
-
-How many of these ideal decisions already exist across all answers? How far
-is the strongest changedoc from this ideal set? Hold this distance in mind
-when you score — a large gap means low scores, even if existing decisions
-are individually solid.
-
-### Gap Analysis
-
-Now compare the current best answer against your ideal. Do not describe what works well.
-Focus exclusively on what is missing, weak, or falls short.
-
-- **Missing decisions**: What decisions from your ideal set are absent from the changedoc?
-- **Weak decisions**: Where is rationale thin, alternatives shallow, or implementation
-  fields inaccurate?
-- **Output gaps**: Where does the deliverable fall short of genuine quality, depth, or
-  polish? Be specific about what is lacking, not about what is adequate.
-- **Traceability gaps**: Are there code choices that lack corresponding changedoc entries?
-- **Output integrity**: Does the deliverable actually work end-to-end? Are features from
-  earlier rounds still functioning after new features were added? Adding features that
-  break existing functionality is regression, not improvement. A working output with fewer
-  features is better than a broken output with more.
-- **Ambition or craft deficit**: Is there at least one element showing creative ambition
-  or meaningful craft, or does everything take the safe, obvious path? Depth counts —
-  an existing element made significantly richer qualifies, not just novel additions.
-- **Gap prioritization**: Which gaps matter most to the end user? A critical functional
-  or performance problem outweighs adding new features. Rank your gaps by user impact.
-
-Do not confuse *correctness fixes* with *quality improvements*. An answer can be
-technically correct and still have a shallow decision journal.
-
-*If there is only one answer, the gap analysis is especially important — the first
-attempt rarely captures all important decisions.*
-
-If the current best genuinely matches your ideal with only cosmetic gaps remaining,
-say so explicitly and briefly — do not pad with praise.
-
-Then cross-check: do the flaws from your Per-Answer Critique align with
-the gaps you found here? If your critique was harsh but this analysis is
-mild, one of them is wrong — revisit both.
+For multiple answers: which specific elements from other answers would directly
+fix the failures you identified? Be targeted:
+- Does another answer's changedoc contain decisions or rationale worth preserving?
+- Are there NEW-marked decisions that represent genuinely original thinking?
+- What specific output elements from other answers should be adopted?
 
 ### Substantiveness Test
 
@@ -488,7 +460,16 @@ somewhere that incremental refinement of existing decisions never would?
   has extra value — it explores decision paths that pure refinement misses.
 - Could challenging a core assumption in the changedoc unlock a better outcome?
 - Could FEWER decisions produce a better result? Quality often comes from restraint —
-  removing weak decisions can strengthen the overall answer more than adding new ones.\""""
+  removing weak decisions can strengthen the overall answer more than adding new ones.
+
+### Pre-Score Audit
+
+Before you score, re-read your Failure Patterns section. For EACH criterion:
+- Name the single biggest remaining weakness. If you wrote "no meaningful failures"
+  for any criterion, reconsider — what would a harsh critic say?
+- Ask: "If I gave this to someone with high standards, what would they complain about?"
+- Your score for each criterion should reflect the severity of that biggest weakness,
+  not the average of strengths and weaknesses.\""""
 
 
 def _build_checklist_decision(
@@ -504,8 +485,8 @@ def _build_checklist_decision(
     required = _checklist_required_true(effective_t)
     budget = _checklist_budget_context(remaining, total)
 
-    # Build numbered checklist
-    numbered = "\n".join(f"  T{i+1}. {item}  → **TRUE** / **FALSE**" for i, item in enumerate(checklist_items))
+    # Build numbered checklist with E-prefix
+    numbered = "\n".join(f"  E{i+1}. {item}  → **TRUE** / **FALSE**" for i, item in enumerate(checklist_items))
 
     force_terminate = ""
     if remaining <= 0:
@@ -566,14 +547,14 @@ def _build_checklist_scored_decision(
     terminate_action: str = "vote",
     iterate_action: str = "new_answer",
 ) -> str:
-    """Build checklist_scored decision section (0-100% confidence, visible cutoff)."""
+    """Build checklist_scored decision section (0-10 confidence, visible cutoff)."""
     effective_t = _checklist_effective_threshold(threshold, remaining, total)
     required = _checklist_required_true(effective_t)
     cutoff = _checklist_confidence_cutoff(effective_t)
     budget = _checklist_budget_context(remaining, total)
 
-    # Build numbered checklist with confidence instructions
-    numbered = "\n".join(f"  T{i+1}. {item}  → **___% confidence**" for i, item in enumerate(checklist_items))
+    # Build numbered checklist with confidence instructions and E-prefix
+    numbered = "\n".join(f"  E{i+1}. {item}  → **___/10**" for i, item in enumerate(checklist_items))
 
     force_terminate = ""
     if remaining <= 0:
@@ -609,33 +590,40 @@ case for `{terminate_action}` must be:
 
 ### Confidence Assessment
 
-Based on your analysis, rate your confidence (0-100%) in each of the following
-statements. 0% = completely disagree, 100% = fully agree, no reservations.
+Based on your analysis, rate your confidence (0-10) in each of the following
+statements. 0 = completely disagree, 10 = fully agree, no reservations.
 
 Calibrate your scores against these anchors:
-- **90-100%**: Essentially perfect. A skilled expert would struggle to improve this.
-- **70-89%**: Strong but with clear gaps. Good work with room for meaningful improvement.
-- **50-69%**: Adequate. Meets basic requirements but falls short of impressive.
-- **30-49%**: Significant weaknesses. Important elements are missing or poorly executed.
-- **Below 30%**: Fundamental problems. Does not adequately address the requirement.
+- **9-10**: Near-flawless. An expert reviewer would find only cosmetic nitpicks.
+  This score is rare and must be justified by the absence of any meaningful gap.
+- **7-8**: Solid execution with notable gaps. A demanding user would identify
+  specific things they wish were better. Most good first attempts land here.
+- **5-6**: Functional but mediocre. Meets the literal request but lacks depth,
+  polish, or thoughtfulness. A user would say "okay, but I expected more."
+- **3-4**: Weak. Key requirements are missing or poorly handled. The output
+  needs significant rework, not just polish.
+- **1-2**: Broken or fundamentally off-target. Does not meaningfully address
+  the request.
 
-First attempts rarely score above 70%. A score above 80% requires that your
-critique (above) found only minor issues. If your critique identified significant
-flaws but your scores are above 80%, one of them is wrong.
+First attempts almost never deserve above 7. Subsequent iterations that address
+only incremental changes should not score higher than the previous round.
+A score of 8+ requires your diagnostic analysis found only minor polish issues.
+If your analysis identified ANY structural or significant gaps but your scores
+are 8+, your scores are inflated — lower them to match your analysis.
 
 {numbered}
 
 ### Decision Rule
 
 Effective threshold (budget-adjusted): **{effective_t}**
-Confidence cutoff: **{cutoff}%**
+Confidence cutoff: **{cutoff}**
 Required TRUE count to `{terminate_action}`: **{required}**
 
-A score >= {cutoff}% counts as TRUE.
+A score >= {cutoff} counts as TRUE.
 If TRUE count >= {required} → `{terminate_action}`.
 Otherwise → `{iterate_action}` (if budget remaining > 0).{force_terminate}
 
-Rate your confidence on each item, count how many meet the {cutoff}% cutoff,
+Rate your confidence on each item, count how many meet the {cutoff} cutoff,
 then apply the decision rule above."""
 
 
@@ -654,22 +642,39 @@ def _build_checklist_gated_decision(
 
     Args:
         gap_report_mode: Controls report instructions.
-            "changedoc": References changedoc Quality Assessment (no separate file).
-            "separate": Recommends writing a gap report file (informational, not gated).
+            "changedoc": Requires diagnostic report (separate from changedoc).
+            "separate": Requires diagnostic report file.
             "none": No report instructions.
     """
-    numbered = "\n".join(f"  T{i+1}. {item}  → **___% confidence**" for i, item in enumerate(checklist_items))
+    numbered = "\n".join(f"  E{i+1}. {item}  → **___/10**" for i, item in enumerate(checklist_items))
+    # Build dynamic example showing all E-items so agents know to score every criterion
+    _example_entries = []
+    for i in range(len(checklist_items)):
+        key = f'"E{i+1}"'
+        hint = "<why — cite specific evidence>" if i == 0 else "<why>"
+        _example_entries.append(f'{key}: {{"score": <0-10>, "reasoning": "{hint}"}}')
+    score_lines = ",\n      ".join(_example_entries)
+    # Diagnostic report is always required as a separate artifact
+    _diagnostic_report_section = (
+        "### Diagnostic Report (REQUIRED)\n\n"
+        "Before submitting scores, write a markdown diagnostic report in your workspace\n"
+        "(e.g., `tasks/diagnostic_report.md`). This is separate from your changedoc.\n\n"
+        "The report MUST cover, anchored to the E-criteria above:\n\n"
+        "1. **Failure Patterns** — map each failure to the E-criterion it violates\n"
+        '   (e.g., "E1: missing mobile nav = requirement unmet")\n'
+        "2. **Root Causes** — underlying issues and which E-criteria they drag down\n"
+        "3. **Goal Alignment** — per-criterion assessment of how far the output is\n"
+        "   from genuinely fulfilling each E-criterion\n\n"
+        "Optional but valuable: Success Patterns, Cross-Answer Synthesis.\n\n"
+        "Start with output quality from the user's perspective — experience the output\n"
+        "the way a user would before evaluating it.\n\n"
+        "Pass the file path via `report_path` when calling `submit_checklist`.\n"
+        "Submission will be rejected if no diagnostic report is provided.\n"
+    )
     if gap_report_mode == "changedoc":
-        report_requirement = "### Quality Assessment\n\n" "Your changedoc's Quality Assessment section serves as your gap analysis.\n" "Reference it when filling in your improvements summary below.\n"
+        report_requirement = _diagnostic_report_section
     elif gap_report_mode == "separate":
-        report_requirement = (
-            "### Gap Report (Recommended)\n\n"
-            "Write a markdown gap report in your workspace (for example:\n"
-            "`tasks/checklist_gap_report.md`). Start with output quality from the user's perspective —\n"
-            "experience the output the way a user would before evaluating it. Then cover other angles.\n"
-            "Include an `Already Good Enough` section listing only aspects that genuinely meet a high\n"
-            "bar. If you create one, pass it via `report_path`.\n"
-        )
+        report_requirement = _diagnostic_report_section
     else:
         # "none" — no report instructions
         report_requirement = ""
@@ -715,18 +720,25 @@ satisfy the bare requirements?" but "is this the best version we can produce?"
 Depth, features, polish, and richness all count — they are never "beyond scope" or
 "unnecessary." If the answer can be meaningfully better, it should be.
 
-Rate your confidence (0-100%) in each of the following statements.
-0% = completely disagree, 100% = fully agree, no reservations.
+Rate your confidence (0-10) in each of the following statements.
+0 = completely disagree, 10 = fully agree, no reservations.
 Calibrate your scores against these anchors:
-- **90-100%**: Essentially perfect. A skilled expert would struggle to improve this.
-- **70-89%**: Strong but with clear gaps. Good work with room for meaningful improvement.
-- **50-69%**: Adequate. Meets basic requirements but falls short of impressive.
-- **30-49%**: Significant weaknesses. Important elements are missing or poorly executed.
-- **Below 30%**: Fundamental problems. Does not adequately address the requirement.
+- **9-10**: Near-flawless. An expert reviewer would find only cosmetic nitpicks.
+  This score is rare and must be justified by the absence of any meaningful gap.
+- **7-8**: Solid execution with notable gaps. A demanding user would identify
+  specific things they wish were better. Most good first attempts land here.
+- **5-6**: Functional but mediocre. Meets the literal request but lacks depth,
+  polish, or thoughtfulness. A user would say "okay, but I expected more."
+- **3-4**: Weak. Key requirements are missing or poorly handled. The output
+  needs significant rework, not just polish.
+- **1-2**: Broken or fundamentally off-target. Does not meaningfully address
+  the request.
 
-First attempts rarely score above 70%. A score above 80% requires that your
-critique (above) found only minor issues. If your critique identified significant
-flaws but your scores are above 80%, one of them is wrong.
+First attempts almost never deserve above 7. Subsequent iterations that address
+only incremental changes should not score higher than the previous round.
+A score of 8+ requires your diagnostic analysis found only minor polish issues.
+If your analysis identified ANY structural or significant gaps but your scores
+are 8+, your scores are inflated — lower them to match your analysis.
 
 {numbered}
 
@@ -766,13 +778,10 @@ tells you to iterate, you are expected to implement what you identified.
 
   submit_checklist(
     scores={{
-      "T1": {{"score": <0-100>, "reasoning": "<why — cite specific evidence>"}},
-      "T2": {{"score": <0-100>, "reasoning": "<why>"}},
-      "T3": {{"score": <0-100>, "reasoning": "<why>"}},
-      "T4": {{"score": <0-100>, "reasoning": "<why>"}}
+      {score_lines}
     }},
     report_path="<path to your markdown gap report>",
-    improvements="<specific gaps from your Ideal Version / Gap Analysis that would make the answer substantially better>",
+    improvements="<specific failures and root causes from your diagnostic analysis that would make the answer substantially better>",
     substantiveness={{
       "transformative": ["<specific change description>", ...],
       "structural": ["<specific change description>", ...],
@@ -1150,7 +1159,9 @@ class SkillsSection(SystemPromptSection):
         parts.append("When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively.")
         parts.append("")
         parts.append("How to use skills:")
-        parts.append("- To load a skill's full instructions, read its SKILL.md file from the skills directory (.agent/skills/<skill-name>/SKILL.md)")
+        parts.append(
+            "- To load a skill's full instructions, read its SKILL.md file from .agent/skills/<skill-name>/SKILL.md (workspace-relative) or ~/.agent/skills/<skill-name>/SKILL.md (home/Docker path)",
+        )
         parts.append(
             "- Skills may be hierarchical: a single SKILL.md can contain multiple sections covering related sub-capabilities (e.g., a web-app-dev skill with frontend, backend, and testing sections)",
         )
@@ -2661,6 +2672,8 @@ class EvaluationSection(SystemPromptSection):
         checklist_require_gap_report: bool = True,
         gap_report_mode: str = "changedoc",
         has_changedoc: bool = False,
+        custom_checklist_items: list[str] | None = None,
+        item_categories: dict[str, str] | None = None,
     ):
         super().__init__(
             title="MassGen Coordination",
@@ -2677,6 +2690,8 @@ class EvaluationSection(SystemPromptSection):
         self.checklist_require_gap_report = checklist_require_gap_report
         self.gap_report_mode = gap_report_mode
         self.has_changedoc = has_changedoc
+        self.custom_checklist_items = custom_checklist_items
+        self.item_categories = item_categories
 
     def build_content(self) -> str:
         # Vote-only mode: agent has exhausted their answer limit
@@ -2772,7 +2787,7 @@ Your goal is to iteratively refine answers until they meet the quality bar.
             total = self.answer_cap or 5
             threshold = self.voting_threshold if self.voting_threshold is not None else 5
 
-            items = _CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS
+            items = self.custom_checklist_items if self.custom_checklist_items is not None else (_CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS)
             analysis = _build_changedoc_checklist_analysis() if self.has_changedoc else _build_checklist_analysis()
             if effective_sensitivity == "checklist":
                 decision = _build_checklist_decision(
@@ -2792,7 +2807,7 @@ Your goal is to iteratively refine answers until they meet the quality bar.
 
 {decision}"""
         elif effective_sensitivity == "checklist_gated":
-            items = _CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS
+            items = self.custom_checklist_items if self.custom_checklist_items is not None else (_CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS)
             analysis = _build_changedoc_checklist_analysis() if self.has_changedoc else _build_checklist_analysis()
             decision = _build_checklist_gated_decision(
                 items,
@@ -2947,6 +2962,8 @@ class DecompositionSection(SystemPromptSection):
         checklist_require_gap_report: bool = True,
         gap_report_mode: str = "changedoc",
         has_changedoc: bool = False,
+        custom_checklist_items: list[str] | None = None,
+        item_categories: dict[str, str] | None = None,
     ):
         super().__init__(
             title="MassGen Decomposition Coordination",
@@ -2961,6 +2978,8 @@ class DecompositionSection(SystemPromptSection):
         self.checklist_require_gap_report = checklist_require_gap_report
         self.gap_report_mode = gap_report_mode
         self.has_changedoc = has_changedoc
+        self.custom_checklist_items = custom_checklist_items
+        self.item_categories = item_categories
 
     def _build_decision_block(self) -> str:
         """Build the new_answer vs stop decision block, threshold-aware if set."""
@@ -2969,7 +2988,7 @@ class DecompositionSection(SystemPromptSection):
             total = self.answer_cap or 5
 
             if self.voting_sensitivity in ("checklist", "checklist_scored"):
-                items = _CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS
+                items = self.custom_checklist_items if self.custom_checklist_items is not None else (_CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS)
                 analysis = _build_changedoc_checklist_analysis() if self.has_changedoc else _build_checklist_analysis()
                 if self.voting_sensitivity == "checklist":
                     decision = _build_checklist_decision(
@@ -2996,7 +3015,7 @@ Both are terminal actions that end your round.
 
 {decision}"""
             elif self.voting_sensitivity == "checklist_gated":
-                items = _CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS
+                items = self.custom_checklist_items if self.custom_checklist_items is not None else (_CHECKLIST_ITEMS_CHANGEDOC if self.has_changedoc else _CHECKLIST_ITEMS)
                 analysis = _build_changedoc_checklist_analysis() if self.has_changedoc else _build_checklist_analysis()
                 decision = _build_checklist_gated_decision(
                     items,
@@ -3058,7 +3077,8 @@ Aim for similar effort bands across agents while maintaining a strong quality ba
 
 2. **Full awareness**: When you see other agents' work, READ and UNDERSTAND all of it. Maintain awareness of the entire project state, not just your subtask.
 
-3. **Selective integration**: Integrate parts that touch your subtask — adapt interfaces, align contracts, resolve conflicts. For parts outside your area, maintain awareness but don't redo their work.
+3. **Selective integration**: Integrate parts that touch your subtask — adapt interfaces, align contracts, resolve conflicts. \
+For parts outside your area, maintain awareness but don't redo their work.
 
 4. **Quality bar for `new_answer`**: When you submit `new_answer`, include concrete deliverables in your scope, validation evidence (tests/checks/manual verification), and boundary integration notes.
 
@@ -3580,7 +3600,7 @@ class SubagentSection(SystemPromptSection):
                     lines.append(f"- {item}")
             if t.name.lower() == "evaluator":
                 lines.append(
-                    "Use this when the task is mostly programmatic execution/reporting (batch tests, Playwright flows, screenshot sweeps, scripted validation).",
+                    "Use this when the task is mostly programmatic execution/reporting (batch tests, Playwright flows, evidence capture sweeps, scripted validation).",
                 )
             lines.append("")
 
@@ -3598,7 +3618,7 @@ class SubagentSection(SystemPromptSection):
 - What to run (tests, scripts, flows, URLs, targets)
 - How to set it up (install/build/start steps, ports, env vars, prerequisites)
 - Exact commands (copy-pastable command list in order)
-- What evidence to capture (screenshots, logs, timings, failing cases, artifact paths)
+- What evidence to capture (screenshots, video recordings, audio samples, logs, timings, failing cases, artifact paths)
 - Pass/fail format (explicit rubric or required report sections)
 """
             specialized_guidance = f"""
@@ -3641,7 +3661,7 @@ Task D: Build website (deps: A, B, C)       ← Sequential, do yourself after A/
 **IDEAL USE CASES:**
 - **Research and exploration** - gathering information, searching, analyzing sources
 - **Parallel data collection** - multiple independent lookups that can run simultaneously
-- **Programmatic evaluation at scale** - batch test runs, Playwright verification, screenshot sweeps, repetitive scripted checks
+- **Programmatic evaluation at scale** - batch test runs, Playwright verification, evidence capture sweeps, repetitive scripted checks
 - Complex subtasks that benefit from fresh context (avoid context pollution)
 - Experimental operations you want isolated from your main workspace
 
@@ -3661,7 +3681,7 @@ to a background subagent so you can keep working on implementation. Spawn with
 
 Subagent handles (procedural observations):
 - High-volume batch workflows where execution is mostly mechanical and repeatable
-- Serving a website and taking screenshots, running Playwright tests, using read_media
+- Serving a website and capturing evidence (screenshots, video recordings, etc.), running Playwright tests, using read_media
 - Executing test suites, linters, or validation scripts against generated code
 - Running benchmarks, profiling, or performance measurements
 - Checking file integrity, link resolution, or cross-references in documents
@@ -4176,7 +4196,7 @@ Python scripts you'll write. Document BEFORE writing them:
 ## Verification & Improvement
 How to verify and iterate on output (output-first approach):
 - For code: Run it, fix issues, rerun until working correctly
-- For websites: Screenshot and view, adjust layout/styling, re-screenshot until polished
+- For websites/UIs: Interact and capture evidence (screenshots for layout, recordings for behavior), adjust, re-verify until polished
 - For files: Open and inspect, refine content, re-check until quality meets bar
 - For data: Validate format/values, fix accuracy issues, re-validate until correct
 
@@ -4279,19 +4299,24 @@ This is an **improvement loop**, not just a verification step:
 
 ### Dynamic Verification: Think Like a User
 
-Static screenshots or a single code run are often not sufficient. Users don't just look at artifacts - they interact with them:
+A single static observation (screenshot, one test run) is often not sufficient. Users don't just look at artifacts - they interact with them:
 
-| Artifact Type | Static Check (incomplete) | Dynamic Check (required) |
+| Artifact Type | Shallow Check (incomplete) | Full Check (required) |
 |--------------|---------------------------|--------------------------|
 | Website/App | Screenshot looks good | Click all buttons, navigate all pages, test forms, verify links work |
 | Game | Screenshot shows UI | Play the game - test controls, scoring, game over states, restart |
+| Animation/transition | Single frame looks correct | Record and review the full motion sequence |
 | Interactive tool | Interface renders | Use every feature, test edge cases, verify all interactions |
 | Script/Code | No errors on run | Test with various inputs, edge cases, invalid data |
 | API | Single call works | Test all endpoints, error states, authentication flows |
+| Audio output | File exists | Listen/analyze the actual audio content |
 | Data pipeline | Output exists | Validate accuracy, test with edge case inputs |
 
 **For any artifact not listed above:** Apply the same principle - ask "How will a user actually USE this?" and test that way.
 The goal is always to verify the complete user experience, not just surface appearance.
+**Choose evidence that matches the artifact.** A screenshot proves static layout; a \
+video recording proves animation and interaction flow; audio analysis proves sound output. \
+Use `read_media` with the evidence format that actually demonstrates correctness.
 
 ### The User Experience Test
 
@@ -4333,29 +4358,31 @@ Before considering any interactive artifact complete, ask:
 
 class MultimodalToolsSection(SystemPromptSection):
     """
-    Guidance for using read_media to verify visual artifacts.
+    Guidance for using read_media to verify artifacts with appropriate evidence.
 
-    MEDIUM priority - extends output-first verification to visual content.
+    MEDIUM priority - extends output-first verification with evidence capture.
     Only included when multimodal tools are enabled.
     """
 
     def __init__(self):
         super().__init__(
-            title="Visual Verification Tools",
+            title="Evidence-Based Verification",
             priority=Priority.MEDIUM,
-            xml_tag="visual_verification_tools",
+            xml_tag="evidence_based_verification",
         )
 
     def build_content(self) -> str:
-        return """## Visual & Interactive Verification
+        return """## Evidence-Based Verification
 
-Use `read_media` for visual analysis, but remember: **interact first, screenshot second.**
+Use `read_media` to analyze evidence of your work, but remember: **interact first, capture evidence second.**
 
 ### Key Principle
-Screenshots verify appearance. Interaction verifies functionality. Do both:
+Choose the evidence format that actually proves correctness for your artifact:
 1. **Interact** with the artifact as a user would (click, navigate, play, input)
-2. **Screenshot** key states during/after interaction
+2. **Capture** evidence that demonstrates correctness — screenshots for layout, video recordings for animations/interactions, audio analysis for sound
 3. **Analyze** with read_media using **critical prompts**
+
+You can create any evidence you need: Playwright `recordVideo()`, `ffmpeg` screen/audio capture, VHS terminal recordings, or plain screenshots. `read_media` accepts images, video, and audio.
 
 ### CRITICAL: Be Skeptical, Not Charitable
 When evaluating your own or others' work, use prompts that look for **flaws**:
@@ -4374,7 +4401,7 @@ When evaluating your own or others' work, use prompts that look for **flaws**:
 - Audio: mp3, wav, m4a, ogg, flac, aac
 - Video: mp4, mov, avi, mkv, webm
 
-A beautiful screenshot means nothing if buttons don't work. Test functionality, then verify visuals with a critical eye.
+A beautiful screenshot means nothing if buttons don't work. A single frame cannot prove an animation is smooth. Test functionality, then verify with evidence that matches what you're proving.
 
 ### Image Sourcing Fallback
 If you encounter legal restrictions when trying to use or reference existing photographs

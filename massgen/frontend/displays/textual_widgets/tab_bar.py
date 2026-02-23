@@ -175,6 +175,7 @@ class AgentTab(Static):
         "done": "done",  # Dim checkmark - final presentation happening
         "error": "error",
         "cancelled": "cancelled",
+        "canceled": "cancelled",
         "idle": "waiting",
     }
 

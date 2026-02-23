@@ -111,7 +111,11 @@ def _is_explicit_foreground_request(arguments: dict[str, Any]) -> bool:
     return isinstance(mode, str) and mode.lower() in FOREGROUND_CONTROL_MODES
 
 
-def _should_auto_background_execution(tool_name: str, arguments: dict[str, Any]) -> bool:
+def _should_auto_background_execution(
+    tool_name: str,
+    arguments: dict[str, Any],
+    declared_control_args: set[str] | None = None,
+) -> bool:
     """Return True when args request automatic background scheduling."""
     if not isinstance(arguments, dict):
         return False
@@ -119,6 +123,8 @@ def _should_auto_background_execution(tool_name: str, arguments: dict[str, Any])
         return False
     if _is_default_media_background_tool(tool_name):
         return True
+    if declared_control_args and ("background" in declared_control_args or "run_in_background" in declared_control_args or "mode" in declared_control_args):
+        return False
     mode = arguments.get("mode")
     mode_is_background = isinstance(mode, str) and mode.lower() in BACKGROUND_CONTROL_MODES
     return arguments.get("background") is True or mode_is_background
@@ -184,6 +190,9 @@ class BackgroundToolManager:
         self._jobs: dict[str, BackgroundToolJob] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._wait_seen_job_ids: set[str] = set()
+        self._subagent_delegate = None
+        self._subagent_delegate_initialized = False
+        self._subagent_tool_name_cache: dict[str, str] = {}
         self._wait_interrupt_file: Path | None = Path(wait_interrupt_file) if wait_interrupt_file else None
 
     @staticmethod
@@ -254,6 +263,23 @@ class BackgroundToolManager:
             return ("mcp", normalized_mcp)
 
         return None
+
+    @staticmethod
+    def _is_subagent_spawn_target_tool(tool_name: str) -> bool:
+        """Return True when tool name represents subagent spawn."""
+        normalized = str(tool_name or "").strip().lower()
+        return "spawn_subagent" in normalized and "subagent" in normalized
+
+    @staticmethod
+    def _normalize_subagent_spawn_background_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+        """Force wrapper-routed subagent starts into direct background mode."""
+        normalized = dict(arguments)
+        normalized["background"] = True
+        normalized.pop("run_in_background", None)
+        mode = normalized.get("mode")
+        if not (isinstance(mode, str) and mode.lower() == "background"):
+            normalized.pop("mode", None)
+        return normalized
 
     def _validate_start_prerequisites(self, tool_name: str) -> str | None:
         """Return an error string when background start prerequisites are missing."""
@@ -386,6 +412,103 @@ class BackgroundToolManager:
             self._mcp_client = None
             return None
 
+    @staticmethod
+    def _parse_json_payload(raw_text: str) -> dict[str, Any] | None:
+        """Parse a JSON object payload from tool text, if possible."""
+        if not raw_text:
+            return None
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+
+    async def _resolve_subagent_mcp_tool_name(self, tool_name: str) -> str | None:
+        """Resolve list_subagents/cancel_subagent style names to concrete MCP names."""
+        cached = self._subagent_tool_name_cache.get(tool_name)
+        if cached is not None:
+            return cached or None
+
+        client = await self._get_mcp_client()
+        if client is None:
+            self._subagent_tool_name_cache[tool_name] = ""
+            return None
+
+        available_tools = getattr(client, "tools", None)
+        if not isinstance(available_tools, dict):
+            self._subagent_tool_name_cache[tool_name] = ""
+            return None
+
+        suffix = f"__{tool_name}"
+        candidates = [name for name in available_tools.keys() if isinstance(name, str) and name.startswith("mcp__subagent_") and name.endswith(suffix)]
+        resolved = sorted(candidates)[0] if candidates else ""
+        self._subagent_tool_name_cache[tool_name] = resolved
+        return resolved or None
+
+    async def _call_subagent_delegate_tool(
+        self,
+        tool_name: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Call a resolved subagent MCP tool and normalize to JSON dict."""
+        resolved_tool_name = await self._resolve_subagent_mcp_tool_name(tool_name)
+        if not resolved_tool_name:
+            return {
+                "success": False,
+                "error": f"Subagent MCP tool not available: {tool_name}",
+            }
+
+        client = await self._get_mcp_client()
+        if client is None:
+            return {
+                "success": False,
+                "error": "MCP client not available for subagent delegate",
+            }
+
+        try:
+            result = await client.call_tool(resolved_tool_name, params or {})
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "error": f"Subagent MCP call failed: {e}"}
+
+        parsed = self._parse_json_payload(
+            self._extract_text_from_mcp_content(getattr(result, "content", None)),
+        )
+        if parsed is not None:
+            return parsed
+        return {
+            "success": False,
+            "error": f"Unexpected response from subagent MCP tool: {resolved_tool_name}",
+        }
+
+    async def _get_subagent_delegate(self):
+        """Lazily initialize a subagent background delegate when MCP tools exist."""
+        if self._subagent_delegate_initialized:
+            return self._subagent_delegate
+
+        self._subagent_delegate_initialized = True
+        list_tool_name = await self._resolve_subagent_mcp_tool_name("list_subagents")
+        if not list_tool_name:
+            self._subagent_delegate = None
+            return None
+
+        try:
+            from massgen.subagent.background_delegate import SubagentBackgroundDelegate
+
+            self._subagent_delegate = SubagentBackgroundDelegate(
+                call_tool=self._call_subagent_delegate_tool,
+                agent_id=str(self._execution_context.get("agent_id", "unknown")),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Failed to initialize SubagentBackgroundDelegate",
+                exc_info=True,
+            )
+            self._subagent_delegate = None
+
+        return self._subagent_delegate
+
     async def _run_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         client = await self._get_mcp_client()
         if client is None:
@@ -438,6 +561,72 @@ class BackgroundToolManager:
             job.completed_at = time.time()
             self._tasks.pop(job_id, None)
 
+    async def _start_subagent_spawn_direct(
+        self,
+        tool_name: str,
+        target_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Treat start_background_tool(subagent spawn) as direct spawn_subagents(background=true)."""
+        normalized_args = self._normalize_subagent_spawn_background_arguments(target_args)
+        result_text, is_error = await self._run_mcp_tool(tool_name, normalized_args)
+        if is_error:
+            return {
+                "success": False,
+                "error": result_text.removeprefix("Error:").strip() or result_text,
+            }
+
+        payload = self._parse_json_payload(result_text)
+        if isinstance(payload, dict):
+            if payload.get("success") is True and "mode" not in payload:
+                payload["mode"] = "background"
+            return self._attach_subagent_background_ids(payload)
+
+        return {
+            "success": True,
+            "operation": "spawn_subagents",
+            "mode": "background",
+            "result": result_text,
+        }
+
+    @staticmethod
+    def _attach_subagent_background_ids(payload: dict[str, Any]) -> dict[str, Any]:
+        """Ensure subagent background payloads expose both job and subagent IDs."""
+        subagents_raw = payload.get("subagents")
+        if not isinstance(subagents_raw, list):
+            return payload
+
+        subagents: list[dict[str, Any]] = []
+        job_ids: list[str] = []
+        for item in subagents_raw:
+            if not isinstance(item, dict):
+                continue
+            entry = dict(item)
+            subagent_id = str(entry.get("subagent_id") or entry.get("id") or "").strip()
+            job_id = str(entry.get("job_id") or subagent_id).strip()
+            if subagent_id:
+                entry["subagent_id"] = subagent_id
+            if job_id:
+                entry["job_id"] = job_id
+                job_ids.append(job_id)
+            subagents.append(entry)
+
+        if subagents:
+            payload["subagents"] = subagents
+
+        if not job_ids:
+            return payload
+
+        unique_job_ids = list(dict.fromkeys(job_ids))
+        payload.setdefault("job_ids", unique_job_ids)
+
+        if len(unique_job_ids) == 1:
+            payload.setdefault("job_id", unique_job_ids[0])
+            first_subagent_id = str(subagents[0].get("subagent_id") or "").strip() if subagents else ""
+            if first_subagent_id:
+                payload.setdefault("subagent_id", first_subagent_id)
+
+        return payload
+
     async def start(self, tool_name: str, arguments: Any | None = None) -> dict[str, Any]:
         """Start background execution for a custom or MCP target tool."""
         from massgen.utils.tool_argument_normalization import (
@@ -471,6 +660,12 @@ class BackgroundToolManager:
         if prereq_error:
             return {"success": False, "error": prereq_error}
 
+        if tool_type == "mcp" and self._is_subagent_spawn_target_tool(effective_tool_name):
+            return await self._start_subagent_spawn_direct(
+                effective_tool_name,
+                target_args,
+            )
+
         job_id = f"bgtool_{uuid.uuid4().hex[:12]}"
         job = BackgroundToolJob(
             job_id=job_id,
@@ -495,45 +690,81 @@ class BackgroundToolManager:
         )
         return payload
 
-    def get_status(self, job_id: str) -> dict[str, Any]:
+    async def get_status(self, job_id: str) -> dict[str, Any]:
         job = self._jobs.get((job_id or "").strip())
-        if job is None:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
-        payload = self._serialize_job(job)
-        payload["success"] = True
-        return payload
+        if job is not None:
+            payload = self._serialize_job(job)
+            payload["success"] = True
+            return payload
 
-    def get_result(self, job_id: str) -> dict[str, Any]:
+        delegate = await self._get_subagent_delegate()
+        if delegate:
+            try:
+                normalized_job_id = (job_id or "").strip()
+                if await delegate.owns(normalized_job_id):
+                    return await delegate.get_status(normalized_job_id)
+            except Exception:  # noqa: BLE001
+                logger.debug("Subagent delegate get_status failed for %s", job_id, exc_info=True)
+
+        return {"success": False, "error": f"Background job not found: {job_id}"}
+
+    async def get_result(self, job_id: str) -> dict[str, Any]:
         job = self._jobs.get((job_id or "").strip())
-        if job is None:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
-        ready = job.status in BACKGROUND_TOOL_TERMINAL_STATUSES
-        payload = self._serialize_job(job, include_result=True)
-        payload.update({"success": True, "ready": ready})
-        if not ready:
-            payload["message"] = "Background tool still running"
-        return payload
+        if job is not None:
+            ready = job.status in BACKGROUND_TOOL_TERMINAL_STATUSES
+            payload = self._serialize_job(job, include_result=True)
+            payload.update({"success": True, "ready": ready})
+            if not ready:
+                payload["message"] = "Background tool still running"
+            return payload
 
-    def cancel(self, job_id: str) -> dict[str, Any]:
+        delegate = await self._get_subagent_delegate()
+        if delegate:
+            try:
+                normalized_job_id = (job_id or "").strip()
+                if await delegate.owns(normalized_job_id):
+                    return await delegate.get_result(normalized_job_id)
+            except Exception:  # noqa: BLE001
+                logger.debug("Subagent delegate get_result failed for %s", job_id, exc_info=True)
+
+        return {"success": False, "error": f"Background job not found: {job_id}"}
+
+    async def cancel(self, job_id: str) -> dict[str, Any]:
         normalized = (job_id or "").strip()
         if not normalized:
             return {"success": False, "error": "job_id is required"}
         job = self._jobs.get(normalized)
-        if job is None:
-            return {"success": False, "error": f"Background job not found: {normalized}"}
+        if job is not None:
+            task = self._tasks.get(normalized)
+            if task and not task.done():
+                job.status = "cancelled"
+                job.error = "Cancelled by user request"
+                task.cancel()
 
-        task = self._tasks.get(normalized)
-        if task and not task.done():
-            job.status = "cancelled"
-            job.error = "Cancelled by user request"
-            task.cancel()
+            payload = self._serialize_job(job)
+            payload["success"] = True
+            return payload
 
-        payload = self._serialize_job(job)
-        payload["success"] = True
-        return payload
+        delegate = await self._get_subagent_delegate()
+        if delegate:
+            try:
+                if await delegate.owns(normalized):
+                    return await delegate.cancel(normalized)
+            except Exception:  # noqa: BLE001
+                logger.debug("Subagent delegate cancel failed for %s", normalized, exc_info=True)
 
-    def list_jobs(self, include_all: bool = False) -> dict[str, Any]:
+        return {"success": False, "error": f"Background job not found: {normalized}"}
+
+    async def list_jobs(self, include_all: bool = False) -> dict[str, Any]:
         jobs = [self._serialize_job(job) for job in self._jobs.values() if include_all or job.status not in BACKGROUND_TOOL_TERMINAL_STATUSES]
+
+        delegate = await self._get_subagent_delegate()
+        if delegate:
+            try:
+                jobs.extend(await delegate.list_jobs(include_all=include_all))
+            except Exception:  # noqa: BLE001
+                logger.debug("Subagent delegate list_jobs failed", exc_info=True)
+
         jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
         return {
             "success": True,
@@ -891,7 +1122,7 @@ async def create_server() -> fastmcp.FastMCP:
         description="Get lightweight status for a background tool job.",
     )
     async def _get_background_tool_status(job_id: str) -> str:
-        payload = background_manager.get_status(job_id=job_id)
+        payload = await background_manager.get_status(job_id=job_id)
         return json.dumps(payload, default=str)
 
     @mcp.tool(
@@ -899,7 +1130,7 @@ async def create_server() -> fastmcp.FastMCP:
         description="Get the current or final result payload for a background tool job.",
     )
     async def _get_background_tool_result(job_id: str) -> str:
-        payload = background_manager.get_result(job_id=job_id)
+        payload = await background_manager.get_result(job_id=job_id)
         return json.dumps(payload, default=str)
 
     @mcp.tool(
@@ -907,7 +1138,7 @@ async def create_server() -> fastmcp.FastMCP:
         description="Cancel a running background tool job.",
     )
     async def _cancel_background_tool(job_id: str) -> str:
-        payload = background_manager.cancel(job_id=job_id)
+        payload = await background_manager.cancel(job_id=job_id)
         return json.dumps(payload, default=str)
 
     @mcp.tool(
@@ -915,7 +1146,7 @@ async def create_server() -> fastmcp.FastMCP:
         description=("List background tool jobs. By default returns only currently running jobs; " "set include_all=true to include completed/error/cancelled history."),
     )
     async def _list_background_tools(include_all: bool = False) -> str:
-        payload = background_manager.list_jobs(include_all=include_all)
+        payload = await background_manager.list_jobs(include_all=include_all)
         return json.dumps(payload, default=str)
 
     @mcp.tool(
@@ -991,6 +1222,7 @@ def _register_mcp_tool(
     # Build parameter list from schema properties
     properties = tool_params.get("properties", {})
     required = set(tool_params.get("required", []))
+    declared_control_args = {name for name in ("mode", "background", "run_in_background") if name in properties}
     signature_to_input_name: dict[str, str] = {}
     synthetic_control_input_names: set[str] = set()
 
@@ -1061,7 +1293,11 @@ def _register_mcp_tool(
             input_name = signature_to_input_name.get(signature_name, signature_name)
             input_kwargs[input_name] = value
 
-        if background_manager and _should_auto_background_execution(tool_name, input_kwargs):
+        if background_manager and _should_auto_background_execution(
+            tool_name,
+            input_kwargs,
+            declared_control_args=declared_control_args,
+        ):
             control_args_to_strip = set(synthetic_control_input_names)
             # Legacy control alias should never be forwarded unless a tool
             # explicitly declares it (rare).

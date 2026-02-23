@@ -2140,15 +2140,36 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                         warning=context_warning,
                     )
 
-            # Update state - use result.status directly for recovered states
-            # Status can be: completed, completed_but_timeout, partial, timeout, error
-            if result.success:
-                state.status = "completed"
-            elif result.status in ("timeout", "completed_but_timeout", "partial"):
-                state.status = result.status
+            # Preserve explicit cancellation if cancel_subagent() already marked the
+            # subagent terminal while this background task was still unwinding.
+            cancelled_statuses = {"cancelled", "canceled"}
+            if str(state.status).lower() in cancelled_statuses:
+                if state.result is None:
+                    elapsed = 0.0
+                    if state.started_at is not None:
+                        elapsed = max(
+                            0.0,
+                            (datetime.now() - state.started_at).total_seconds(),
+                        )
+                    state.result = SubagentResult.create_error(
+                        subagent_id=config.id,
+                        error="Subagent cancelled",
+                        workspace_path=str(workspace),
+                        execution_time_seconds=elapsed,
+                    )
+                result = state.result
             else:
-                state.status = "failed"
-            state.result = result
+                # Update state - use result.status directly for recovered states
+                # Status can be: completed, completed_but_timeout, partial, timeout, error
+                if result.success:
+                    state.status = "completed"
+                elif result.status in ("timeout", "completed_but_timeout", "partial"):
+                    state.status = result.status
+                else:
+                    state.status = "failed"
+                state.result = result
+
+            completion_status = "cancelled" if str(state.status).lower() in cancelled_statuses else result.status
 
             # Invoke registered completion callbacks to notify about background completion
             self._invoke_completion_callbacks(config.id, result)
@@ -2158,14 +2179,14 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 self._append_conversation(config.id, "assistant", result.answer)
 
             logger.info(
-                f"[SubagentManager] Background subagent {config.id} finished with status: {result.status}, " f"time: {result.execution_time_seconds:.2f}s",
+                f"[SubagentManager] Background subagent {config.id} finished with status: {completion_status}, " f"time: {result.execution_time_seconds:.2f}s",
             )
 
             # Log subagent completion event for structured logging
             log_subagent_complete(
                 subagent_id=config.id,
                 parent_agent_id=self.parent_agent_id,
-                status=result.status,
+                status=completion_status,
                 execution_time_seconds=result.execution_time_seconds,
                 success=result.success,
                 token_usage=result.token_usage,
@@ -2288,6 +2309,66 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 error=f"Subagent workspace not found: {workspace}",
             )
 
+        state = self._subagents.get(subagent_id)
+        if state is None:
+            resumed_task = str(subagent_entry.get("task") or "")
+            resumed_config = SubagentConfig(
+                id=subagent_id,
+                task=resumed_task,
+                parent_agent_id=self.parent_agent_id,
+                timeout_seconds=self._clamp_timeout(timeout_seconds),
+            )
+            state = SubagentState(
+                config=resumed_config,
+                status="running",
+                workspace_path=str(workspace),
+                started_at=datetime.now(),
+                finished_at=None,
+                result=None,
+            )
+            self._subagents[subagent_id] = state
+        else:
+            state.status = "running"
+            state.workspace_path = str(workspace)
+            state.started_at = datetime.now()
+            state.finished_at = None
+            state.result = None
+
+        def _state_status_from_result(result: SubagentResult) -> str:
+            if result.success:
+                return "completed"
+            if result.status in ("timeout", "completed_but_timeout", "partial"):
+                return result.status
+            return "failed"
+
+        def _persist_continuation_outcome(
+            result: SubagentResult,
+            *,
+            resumed_session_id: str | None = None,
+        ) -> None:
+            state.status = _state_status_from_result(result)
+            state.result = result
+            state.finished_at = datetime.now()
+
+            if resumed_session_id:
+                self._subagent_sessions[subagent_id] = resumed_session_id
+                subagent_entry["session_id"] = resumed_session_id
+            elif subagent_id not in self._subagent_sessions and subagent_entry.get("session_id"):
+                self._subagent_sessions[subagent_id] = str(subagent_entry.get("session_id"))
+
+            subagent_entry["status"] = state.status
+            subagent_entry["workspace"] = str(workspace)
+            subagent_entry["success"] = result.success
+            subagent_entry["execution_time_seconds"] = result.execution_time_seconds
+            subagent_entry["last_continued_at"] = datetime.now().isoformat()
+
+            try:
+                registry_file.write_text(json.dumps(registry, indent=2))
+            except Exception as exc:
+                logger.warning(
+                    f"[SubagentManager] Failed to persist continuation metadata for {subagent_id}: {exc}",
+                )
+
         logger.info(
             f"[SubagentManager] Continuing subagent {subagent_id} with session {session_id}, " f"message: {new_message[:100]}...",
         )
@@ -2360,7 +2441,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
 
                 execution_time = time.time() - start_time
                 log_dir = self._get_subagent_log_dir(subagent_id)
-                return SubagentResult.create_error(
+                timeout_result = SubagentResult.create_error(
                     subagent_id=subagent_id,
                     error=f"Continuation timed out after {timeout}s",
                     workspace_path=str(workspace),
@@ -2368,6 +2449,8 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                     log_path=str(log_dir) if log_dir else None,
                     warning=runtime_warning,
                 )
+                _persist_continuation_outcome(timeout_result)
+                return timeout_result
             finally:
                 # Remove from active processes
                 self._active_processes.pop(continuation_id, None)
@@ -2383,7 +2466,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 execution_time = time.time() - start_time
 
                 # Get token usage and log path from subprocess's status.json
-                token_usage, subprocess_log_dir, session_id = self._parse_subprocess_status(workspace)
+                token_usage, subprocess_log_dir, resumed_session_id = self._parse_subprocess_status(workspace)
 
                 # Write reference to subprocess log directory
                 self._write_subprocess_log_reference(subagent_id, subprocess_log_dir)
@@ -2391,12 +2474,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 # Get log directory path for the result
                 log_dir = self._get_subagent_log_dir(subagent_id)
 
-                # Update registry with new status
-                subagent_entry["status"] = "completed"
-                subagent_entry["last_continued_at"] = datetime.now().isoformat()
-                registry_file.write_text(json.dumps(registry, indent=2))
-
-                return SubagentResult.create_success(
+                result = SubagentResult.create_success(
                     subagent_id=subagent_id,
                     answer=answer,
                     workspace_path=str(workspace),
@@ -2405,6 +2483,8 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                     log_path=str(log_dir) if log_dir else None,
                     warning=runtime_warning,
                 )
+                _persist_continuation_outcome(result, resumed_session_id=resumed_session_id)
+                return result
             else:
                 stderr_text = stderr.decode() if stderr else ""
                 stdout_text = stdout.decode() if stdout else ""
@@ -2424,7 +2504,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 self._write_subprocess_log_reference(subagent_id, subprocess_log_dir, error=error_msg)
                 log_dir = self._get_subagent_log_dir(subagent_id)
 
-                return SubagentResult.create_error(
+                error_result = SubagentResult.create_error(
                     subagent_id=subagent_id,
                     error=error_msg,
                     workspace_path=str(workspace),
@@ -2432,17 +2512,21 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                     log_path=str(log_dir) if log_dir else None,
                     warning=runtime_warning,
                 )
+                _persist_continuation_outcome(error_result)
+                return error_result
 
         except Exception as e:
             execution_time = time.time() - start_time
             logger.error(f"[SubagentManager] Error continuing subagent {subagent_id}: {e}")
-            return SubagentResult.create_error(
+            error_result = SubagentResult.create_error(
                 subagent_id=subagent_id,
                 error=str(e),
                 workspace_path=str(workspace),
                 execution_time_seconds=execution_time,
                 warning=runtime_warning,
             )
+            _persist_continuation_outcome(error_result)
+            return error_result
 
     def get_subagent_status(self, subagent_id: str) -> dict[str, Any] | None:
         """
@@ -2499,10 +2583,20 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
         if not state:
             return None
 
-        # Calculate elapsed time and progress
+        # Calculate elapsed time and progress.
+        # For terminal subagents, freeze elapsed at finished time/result duration.
         elapsed = 0.0
+        terminal_statuses = {"completed", "completed_but_timeout", "partial", "failed", "timeout", "cancelled"}
         if state.started_at:
-            elapsed = (datetime.now() - state.started_at).total_seconds()
+            if state.finished_at is not None:
+                elapsed = (state.finished_at - state.started_at).total_seconds()
+            elif state.result and state.result.execution_time_seconds is not None and state.status in terminal_statuses:
+                elapsed = float(state.result.execution_time_seconds)
+            else:
+                elapsed = (datetime.now() - state.started_at).total_seconds()
+            elapsed = max(0.0, elapsed)
+        elif state.result and state.result.execution_time_seconds is not None:
+            elapsed = max(0.0, float(state.result.execution_time_seconds))
 
         timeout = state.config.timeout_seconds
         progress = min(100, int(elapsed / timeout * 100)) if timeout > 0 else 0
@@ -2600,9 +2694,12 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
         phase = coordination.get("phase")
         completion_pct = coordination.get("completion_percentage")
 
-        # Derive simple status from phase
-        # If state.result exists, use its status (for completed/timeout cases)
-        if state.result:
+        # Derive simple status from phase.
+        # Preserve explicit cancellation from in-memory state even when the
+        # result payload uses a generic error status.
+        if str(state.status).lower() in {"cancelled", "canceled"}:
+            derived_status = "cancelled"
+        elif state.result:
             derived_status = state.result.status
         elif phase in ("initial_answer", "enforcement", "presentation"):
             derived_status = "running"
@@ -2785,12 +2882,20 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
             # Include full result payload for completed in-memory subagents so callers
             # can retrieve answers from list_subagents without a second fetch tool.
             if state.result:
+                result_status = state.result.status
+                # Preserve explicit cancellation from in-memory state even when
+                # the result payload uses a generic error status.
+                if str(state.status).lower() in {"cancelled", "canceled"}:
+                    result_status = "cancelled"
+                result_payload = state.result.to_dict()
+                if result_status == "cancelled":
+                    result_payload["status"] = "cancelled"
                 current_entry.update(
                     {
-                        "status": state.result.status,
+                        "status": result_status,
                         "success": state.result.success,
                         "execution_time_seconds": state.result.execution_time_seconds,
-                        "result": state.result.to_dict(),
+                        "result": result_payload,
                     },
                 )
             else:
@@ -2907,6 +3012,82 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
         del self._subagents[subagent_id]
         return True
 
+    async def cancel_subagent(self, subagent_id: str) -> dict[str, Any]:
+        """
+        Cancel a single running subagent.
+
+        Internal method called by the background tool delegate — not exposed
+        as a model-facing MCP tool.
+
+        Args:
+            subagent_id: ID of the subagent to cancel
+
+        Returns:
+            Dict with success status and details
+        """
+        state = self._subagents.get(subagent_id)
+        if state is None:
+            return {"success": False, "error": f"Subagent not found: {subagent_id}"}
+
+        terminal_statuses = {
+            "completed",
+            "completed_but_timeout",
+            "partial",
+            "failed",
+            "timeout",
+            "cancelled",
+            "canceled",
+            "error",
+        }
+        if state.status in terminal_statuses:
+            return {
+                "success": False,
+                "error": f"Subagent {subagent_id} already in terminal state: {state.status}",
+            }
+
+        # Cancel asyncio background task if present
+        bg_task = self._background_tasks.get(subagent_id)
+        if bg_task and not bg_task.done():
+            bg_task.cancel()
+            logger.info(f"[SubagentManager] Cancelled background task for {subagent_id}")
+
+        # Terminate subprocess if present
+        process = self._active_processes.get(subagent_id)
+        if process and process.returncode is None:
+            try:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except TimeoutError:
+                    logger.warning(f"[SubagentManager] Force killing subagent {subagent_id}")
+                    process.kill()
+                    await process.wait()
+                logger.info(f"[SubagentManager] Terminated process for {subagent_id}")
+            except Exception as e:
+                logger.error(f"[SubagentManager] Error terminating {subagent_id}: {e}")
+
+        state.status = "cancelled"
+        if state.finished_at is None:
+            state.finished_at = datetime.now()
+        if state.result is None:
+            elapsed = 0.0
+            if state.started_at is not None:
+                elapsed = max(0.0, (state.finished_at - state.started_at).total_seconds())
+            state.result = SubagentResult.create_error(
+                subagent_id=subagent_id,
+                error="Subagent cancelled",
+                workspace_path=state.workspace_path or "",
+                execution_time_seconds=elapsed,
+            )
+        logger.info(f"[SubagentManager] Cancelled subagent {subagent_id}")
+
+        return {
+            "success": True,
+            "operation": "cancel_subagent",
+            "subagent_id": subagent_id,
+            "status": "cancelled",
+        }
+
     async def cancel_all_subagents(self) -> int:
         """
         Cancel all running subagent processes gracefully.
@@ -2918,6 +3099,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
             Number of subagents that were cancelled
         """
         cancelled_count = 0
+        cancelled_subagent_ids: set[str] = set()
         for subagent_id, process in list(self._active_processes.items()):
             if process.returncode is None:  # Still running
                 logger.warning(f"[SubagentManager] Cancelling subagent {subagent_id}...")
@@ -2930,6 +3112,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                         process.kill()
                         await process.wait()
                     cancelled_count += 1
+                    cancelled_subagent_ids.add(subagent_id)
                 except Exception as e:
                     logger.error(f"[SubagentManager] Error cancelling {subagent_id}: {e}")
 
@@ -2941,6 +3124,42 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 logger.warning(f"[SubagentManager] Cancelling background task {task_id}...")
                 task.cancel()
                 cancelled_count += 1
+                cancelled_subagent_ids.add(task_id)
+
+        self._background_tasks.clear()
+
+        # Keep in-memory subagent states consistent with cancellation so list/status
+        # surfaces (including TUI cards) do not continue to show stale "running".
+        terminal_statuses = {
+            "completed",
+            "completed_but_timeout",
+            "partial",
+            "failed",
+            "timeout",
+            "cancelled",
+            "canceled",
+            "error",
+        }
+        for subagent_id, state in self._subagents.items():
+            if str(state.status).lower() in terminal_statuses:
+                continue
+            if cancelled_subagent_ids and subagent_id not in cancelled_subagent_ids:
+                # cancel_all_subagents is called during global shutdown/cleanup;
+                # any remaining non-terminal subagent should be treated as cancelled.
+                cancelled_subagent_ids.add(subagent_id)
+            state.status = "cancelled"
+            if state.finished_at is None:
+                state.finished_at = datetime.now()
+            if state.result is None:
+                elapsed = 0.0
+                if state.started_at is not None:
+                    elapsed = max(0.0, (state.finished_at - state.started_at).total_seconds())
+                state.result = SubagentResult.create_error(
+                    subagent_id=subagent_id,
+                    error="Subagent cancelled",
+                    workspace_path=state.workspace_path or "",
+                    execution_time_seconds=elapsed,
+                )
 
         return cancelled_count
 

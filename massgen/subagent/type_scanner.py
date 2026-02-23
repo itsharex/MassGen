@@ -12,10 +12,13 @@ from massgen.subagent.models import SpecializedSubagentConfig
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SUBAGENT_TYPES: list[str] = ["evaluator", "explorer", "researcher"]
+
 
 def scan_subagent_types(
     builtin_dir: Path = Path("massgen/subagent_types"),
     project_dir: Path = Path(".agent/subagent_types"),
+    allowed_types: list[str] | None = None,
 ) -> list[SpecializedSubagentConfig]:
     """Scan directories for SUBAGENT.md files and parse into configs.
 
@@ -49,6 +52,13 @@ def scan_subagent_types(
         if key not in seen:
             seen.add(key)
             result.append(t)
+
+    if allowed_types is not None:
+        allowed_lower = {t.lower() for t in allowed_types}
+        found_names = {t.name.lower() for t in result}
+        for requested in sorted(allowed_lower - found_names):
+            logger.warning(f"Requested subagent type '{requested}' not found on disk")
+        result = [t for t in result if t.name.lower() in allowed_lower]
 
     return result
 

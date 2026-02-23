@@ -31,6 +31,7 @@ Features:
 - Keyboard shortcuts (Esc to close, Tab for agent switching)
 """
 
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -42,7 +43,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
 
 from massgen.events import EventReader, MassGenEvent
 from massgen.subagent.models import SubagentDisplayData, SubagentResult
@@ -306,6 +307,95 @@ class ReturnToMainPromptModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ContinueSubagentModal(ModalScreen[str | None]):
+    """Prompt for a continuation message for a completed/failed subagent."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    DEFAULT_CSS = """
+    ContinueSubagentModal {
+        align: center middle;
+    }
+
+    ContinueSubagentModal #continue_subagent_container {
+        width: 78;
+        max-width: 96%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    ContinueSubagentModal #continue_subagent_title {
+        color: $primary;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    ContinueSubagentModal #continue_subagent_hint {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    ContinueSubagentModal #continue_subagent_input {
+        margin-bottom: 1;
+    }
+
+    ContinueSubagentModal #continue_subagent_actions {
+        height: auto;
+    }
+
+    ContinueSubagentModal #continue_subagent_actions Button {
+        margin-right: 1;
+    }
+    """
+
+    def __init__(self, subagent_id: str) -> None:
+        super().__init__()
+        self._subagent_id = subagent_id
+
+    def compose(self) -> ComposeResult:
+        with Container(id="continue_subagent_container"):
+            yield Static(f"Continue subagent `{self._subagent_id}`", id="continue_subagent_title")
+            yield Static("Add instructions for the next continuation turn.", id="continue_subagent_hint")
+            yield Input(
+                placeholder="e.g. Continue and focus on edge cases...",
+                id="continue_subagent_input",
+            )
+            with Horizontal(id="continue_subagent_actions"):
+                yield Button("Continue", id="continue_subagent_confirm", variant="primary")
+                yield Button("Cancel", id="continue_subagent_cancel")
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("#continue_subagent_input", Input).focus()
+        except Exception as e:
+            tui_log(f"[SubagentScreen] {e}")
+
+    def _submit(self) -> None:
+        try:
+            content = self.query_one("#continue_subagent_input", Input).value.strip()
+        except Exception:
+            content = ""
+        if not content:
+            return
+        self.dismiss(content)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "continue_subagent_input":
+            self._submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "continue_subagent_confirm":
+            self._submit()
+            return
+        if event.button.id == "continue_subagent_cancel":
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class _FooterAction(Static, can_focus=True):
     """A single-line clickable text action for the footer."""
 
@@ -375,17 +465,80 @@ class SubagentStatusLine(Static):
         "error": "✗",
         "failed": "✗",
         "timeout": "⏱",
+        "canceled": "⊘",
+        "cancelled": "⊘",
+        "stopped": "⊘",
         "pending": "○",
         "success": "✓",
     }
+    _STATUS_STYLE_CLASSES = (
+        "running",
+        "completed",
+        "error",
+        "canceled",
+        "cancelled",
+    )
+
+    @staticmethod
+    def _normalize_status(status: str) -> str:
+        normalized = str(status or "").lower().strip()
+        if normalized in {"cancelled", "canceled", "stopped"}:
+            return "canceled"
+        return normalized or "running"
+
+    @staticmethod
+    def _format_status_label(status: str) -> str:
+        if status == "canceled":
+            return "Canceled"
+        if status == "error":
+            return "Error"
+        return status.capitalize()
+
+    @staticmethod
+    def _is_redundant_reason(status: str, reason: str) -> bool:
+        """Suppress reason text that just repeats the status label."""
+        if status != "canceled":
+            return False
+        normalized_reason = " ".join(
+            reason.lower().replace(".", " ").replace(":", " ").replace("_", " ").split(),
+        )
+        redundant_cancel_reasons = {
+            "canceled",
+            "cancelled",
+            "stopped",
+            "subagent canceled",
+            "subagent cancelled",
+            "subagent stopped",
+        }
+        return normalized_reason in redundant_cancel_reasons
 
     def __init__(self, status: str = "running", **kwargs) -> None:
         super().__init__(**kwargs)
-        self._status = status
+        self._status = self._normalize_status(status)
         self._elapsed = 0
+        self._reason = ""
         self._agent_order: list[str] = []
         self._agent_letters: dict[str, str] = {}
         self._agent_active: dict[str, bool] = {}
+        self._update_status_class()
+
+    def _update_status_class(self) -> None:
+        """Apply a stable status class so themes can style terminal states."""
+        for status_class in self._STATUS_STYLE_CLASSES:
+            self.remove_class(status_class)
+
+        normalized = self._normalize_status(self._status)
+        if normalized in {"completed", "success"}:
+            self.add_class("completed")
+            return
+        if normalized == "canceled":
+            self.add_class("canceled")
+            self.add_class("cancelled")
+            return
+        if normalized in {"failed", "error", "timeout"}:
+            self.add_class("error")
+            return
+        self.add_class("running")
 
     def set_agents(self, agent_ids: list[str]) -> None:
         """Register the inner agents for activity display."""
@@ -406,6 +559,7 @@ class SubagentStatusLine(Static):
     def render(self) -> Text:
         """Render agent dots + status."""
         text = Text()
+        normalized_status = self._normalize_status(self._status)
 
         # Agent activity dots: A ● B ○
         if self._agent_order:
@@ -421,11 +575,17 @@ class SubagentStatusLine(Static):
             text.append("  ")
 
         # Status
-        icon = self.STATUS_ICONS.get(self._status, "●")
+        icon = self.STATUS_ICONS.get(normalized_status, "●")
         text.append(f"{icon} ", style="bold")
-        text.append(self._status.capitalize())
-        if self._status == "running":
+        text.append(self._format_status_label(normalized_status))
+        if normalized_status == "running":
             text.append(f" ({self._elapsed}s)")
+        elif self._reason and normalized_status in {"failed", "error", "timeout", "canceled"}:
+            reason = self._reason.replace("\n", " ").strip()
+            if len(reason) > 72:
+                reason = reason[:69] + "..."
+            if not self._is_redundant_reason(normalized_status, reason):
+                text.append(f": {reason}")
 
         # Hints
         text.append("  ")
@@ -433,10 +593,15 @@ class SubagentStatusLine(Static):
 
         return text
 
-    def update_status(self, status: str, elapsed: int = 0) -> None:
+    def update_status(self, status: str, elapsed: int = 0, reason: str | None = None) -> None:
         """Update the status display."""
-        self._status = status
+        self._status = self._normalize_status(status)
         self._elapsed = elapsed
+        if reason is not None:
+            self._reason = reason
+        elif self._status == "running":
+            self._reason = ""
+        self._update_status_class()
         self.refresh()
 
 
@@ -763,6 +928,18 @@ class SubagentView(Container):
     SubagentView #subagent-queue-spacer {
         height: 1;
     }
+
+    SubagentView #subagent-continue-row {
+        height: auto;
+        width: 100%;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
+
+    SubagentView #continue_subagent_button {
+        width: auto;
+        min-width: 14;
+    }
     """
 
     # Polling interval for live updates
@@ -777,6 +954,7 @@ class SubagentView(Container):
         auto_return_prompt_delay_seconds: float = 2.0,
         auto_return_timeout_seconds: int = 8,
         send_message_callback: Callable[..., bool] | None = None,
+        continue_subagent_callback: Callable[..., bool] | None = None,
         id: str | None = None,
     ) -> None:
         """Initialize the subagent screen.
@@ -787,6 +965,8 @@ class SubagentView(Container):
             status_callback: Callback to get updated status
             send_message_callback: Callback(subagent_id, content, target_agents=...) to send a message
                 to a running subagent
+            continue_subagent_callback: Callback(subagent_id, message) to continue
+                a completed/failed subagent
         """
         super().__init__(id=id)
         self._subagent = subagent
@@ -801,6 +981,7 @@ class SubagentView(Container):
 
         self._status_callback = status_callback
         self._send_message_callback = send_message_callback
+        self._continue_subagent_callback = continue_subagent_callback
         self._poll_timer: Timer | None = None
         self._event_reader: EventReader | None = None
         self._round_number = 1
@@ -826,6 +1007,7 @@ class SubagentView(Container):
         self._inner_agent_models: dict[str, str] = {}
         self._current_inner_agent: str | None = None
         self._tool_call_agent_map: dict[str, str] = {}
+        self._terminal_status_notes: set[str] = set()
         self._auto_return_on_completion = auto_return_on_completion
         self._auto_return_prompt_delay_seconds = max(0.0, float(auto_return_prompt_delay_seconds))
         self._auto_return_timeout_seconds = max(1, int(auto_return_timeout_seconds))
@@ -841,10 +1023,27 @@ class SubagentView(Container):
         self._queued_runtime_messages: list[dict[str, Any]] = []
         self._queued_runtime_pending_by_agent: dict[str, int] = {}
         self._next_runtime_message_id: int = 1
+        self._runtime_inbox_dir: Path | None = None
+        self._runtime_inbox_seen_files: set[str] = set()
+        self._continue_subagent_button: Button | None = None
+
+    def _build_unique_tab_ids(self) -> list[str]:
+        """Build unique tab IDs from subagent list, disambiguating duplicates."""
+        seen: dict[str, int] = {}
+        tab_ids: list[str] = []
+        self._tab_id_to_index: dict[str, int] = {}
+        for idx, sa in enumerate(self._all_subagents):
+            count = seen.get(sa.id, 0)
+            seen[sa.id] = count + 1
+            tab_id = f"{sa.id}_{count}" if count > 0 else sa.id
+            tab_ids.append(tab_id)
+            self._tab_id_to_index[tab_id] = idx
+        return tab_ids
 
     def compose(self) -> ComposeResult:
-        # Build agent IDs and models for tab bar
-        agent_ids = [sa.id for sa in self._all_subagents]
+        # Build agent IDs and models for tab bar.
+        # Disambiguate duplicate subagent IDs to avoid widget ID collisions.
+        agent_ids = self._build_unique_tab_ids()
         agent_models: dict[str, str] = {}  # Would come from config
 
         # Header with back button
@@ -940,7 +1139,10 @@ class SubagentView(Container):
         try:
             self._tab_bar = self.query_one("#subagent-tab-bar", AgentTabBar)
             if self._tab_bar:
-                self._tab_bar.set_active(self._subagent.id)
+                # Use disambiguated tab ID for correct activation
+                index_to_tab = {v: k for k, v in self._tab_id_to_index.items()} if hasattr(self, "_tab_id_to_index") else {}
+                active_tab_id = index_to_tab.get(self._current_index, self._subagent.id)
+                self._tab_bar.set_active(active_tab_id)
         except Exception as e:
             tui_log(f"[SubagentScreen] {e}")
 
@@ -1003,6 +1205,16 @@ class SubagentView(Container):
             except Exception:
                 self._queue_clear_button = None
             self._refresh_runtime_queue_banner()
+            self._runtime_inbox_dir = self._resolve_runtime_inbox_dir()
+            self._runtime_inbox_seen_files = set()
+            self._sync_runtime_queue_from_inbox()
+
+        if self._continue_subagent_callback:
+            try:
+                self._continue_subagent_button = self.query_one("#continue_subagent_button", Button)
+            except Exception:
+                self._continue_subagent_button = None
+            self._refresh_continue_button_visibility()
 
         # Mount one timeline per inner agent
         if self._panel:
@@ -1012,6 +1224,9 @@ class SubagentView(Container):
         if self._current_inner_agent:
             self._load_events_for_agent(self._current_inner_agent)
             self._agents_loaded.add(self._current_inner_agent)
+
+        # Ensure status classes/reason are applied even for terminal states on first paint.
+        self._update_status_display()
 
         # Start polling if subagent is running
         if self._subagent.status in ("running", "pending"):
@@ -1309,6 +1524,113 @@ class SubagentView(Container):
         if self._inner_winner and self._inner_tab_bar:
             self._inner_tab_bar.set_winner(self._inner_winner)
 
+    @staticmethod
+    def _normalize_subagent_status(status: str | None) -> str:
+        normalized = str(status or "").lower().strip()
+        if normalized in {"cancelled", "canceled", "stopped"}:
+            return "canceled"
+        return normalized or "running"
+
+    @staticmethod
+    def _tab_status(status: str | None) -> str:
+        normalized = SubagentView._normalize_subagent_status(status)
+        if normalized == "canceled":
+            return "cancelled"
+        return normalized
+
+    @staticmethod
+    def _is_redundant_terminal_reason(status: str, reason: str) -> bool:
+        """Return True when reason only repeats the terminal status message."""
+        normalized_reason = " ".join(
+            reason.lower().replace(".", " ").replace(":", " ").replace("_", " ").split(),
+        )
+        if not normalized_reason:
+            return True
+
+        redundant_reasons = {
+            "completed": {"completed", "subagent completed"},
+            "timeout": {"timeout", "timed out", "subagent timeout", "subagent timed out"},
+            "canceled": {
+                "canceled",
+                "cancelled",
+                "stopped",
+                "subagent canceled",
+                "subagent cancelled",
+                "subagent stopped",
+            },
+            "failed": {"failed", "error", "subagent failed", "subagent error"},
+            "error": {"failed", "error", "subagent failed", "subagent error"},
+        }
+        return normalized_reason in redundant_reasons.get(status, set())
+
+    def _build_terminal_status_note(self) -> tuple[str, str] | None:
+        status = self._normalize_subagent_status(self._subagent.status)
+        if status in {"running", "pending"}:
+            return None
+
+        reason = str(self._subagent.error or "").strip()
+        if status == "completed":
+            message = "Subagent completed."
+            style = "#7ee787"
+        elif status == "timeout":
+            message = "Subagent timed out."
+            style = "#d29922"
+        elif status == "canceled":
+            message = "Subagent canceled."
+            style = "#d29922"
+        elif status in {"failed", "error"}:
+            message = "Subagent failed."
+            style = "#f85149"
+        else:
+            message = f"Subagent {status}."
+            style = "#8b949e"
+
+        if reason and not self._is_redundant_terminal_reason(status, reason):
+            if message.endswith("."):
+                message = message[:-1]
+            message = f"{message}: {reason}"
+        return message, style
+
+    def _ensure_terminal_status_note(self, agent_id: str, event_count: int = 0) -> None:
+        """Add a one-line terminal status note when no events were rendered."""
+        if event_count > 0 or not self._panel:
+            return
+
+        status = self._normalize_subagent_status(self._subagent.status)
+        if status in {"running", "pending"}:
+            return
+        if agent_id in self._terminal_status_notes:
+            return
+
+        note = self._build_terminal_status_note()
+        if note is None:
+            return
+        message, style = note
+
+        try:
+            timeline = self._panel.query_one(
+                f"#subagent-timeline-{agent_id}",
+                TimelineSection,
+            )
+        except Exception:
+            return
+
+        try:
+            round_number = max(1, int(self._round_number or 1))
+        except Exception:
+            round_number = 1
+
+        try:
+            timeline.add_text(
+                message,
+                style=style,
+                text_class="status",
+                round_number=round_number,
+            )
+            self._terminal_status_notes.add(agent_id)
+        except Exception as e:
+            tui_log(f"[SubagentScreen] Failed to add terminal status note: {e}")
+
     def _poll_updates(self) -> None:
         """Poll for status and event updates."""
         # Update status if callback available
@@ -1323,10 +1645,15 @@ class SubagentView(Container):
             self._init_event_reader()
             if self._event_reader:
                 self._load_initial_events()
+            elif self._current_inner_agent:
+                self._ensure_terminal_status_note(self._current_inner_agent, event_count=0)
 
         # Read new events and route to all loaded adapters
         if self._event_reader:
             new_events = self._event_reader.get_new_events()
+            # Parent runtime messages are file-backed and can arrive between
+            # event batches, so poll inbox every tick (not only when events arrive).
+            self._sync_runtime_queue_from_inbox()
             if new_events:
                 self._update_tool_call_agent_map(new_events)
                 self._update_activity_dots(new_events)
@@ -1383,23 +1710,35 @@ class SubagentView(Container):
         agent_id = self._current_inner_agent
         adapter = self._event_adapters.get(agent_id) if agent_id else None
         current_round = adapter.round_number if adapter else self._round_number
+        status = self._normalize_subagent_status(self._subagent.status)
+        self._set_cancelled_state_class(status)
 
         if self._header:
             self._header.update_subagent(self._subagent)
 
         if self._status_line:
             self._status_line.update_status(
-                self._subagent.status,
+                status,
                 int(self._subagent.elapsed_seconds),
+                reason=self._subagent.error,
             )
 
         # Update ribbon
         if self._ribbon:
             self._ribbon.set_round(self._subagent.id, current_round, False)
 
-        # Update tab bar status
+        # Update tab bar status (use disambiguated tab ID)
         if self._tab_bar:
-            self._tab_bar.update_agent_status(self._subagent.id, self._subagent.status)
+            index_to_tab = {v: k for k, v in self._tab_id_to_index.items()} if hasattr(self, "_tab_id_to_index") else {}
+            tab_id = index_to_tab.get(self._current_index, self._subagent.id)
+            self._tab_bar.update_agent_status(tab_id, self._tab_status(status))
+        self._refresh_continue_button_visibility()
+
+    def _set_cancelled_state_class(self, normalized_status: str) -> None:
+        """Mirror main-screen cancelled treatment for subagent full-screen view."""
+        is_cancelled = normalized_status == "canceled"
+        self.set_class(is_cancelled, "cancelled-state")
+        self.set_class(is_cancelled, "canceled-state")
 
     def _update_activity_dots(self, events: list[MassGenEvent]) -> None:
         """Update agent activity dots based on new events."""
@@ -1435,9 +1774,12 @@ class SubagentView(Container):
             self._agents_loaded.clear()
             self._final_answer_locked.clear()
             self._tool_call_agent_map.clear()
+            self._terminal_status_notes.clear()
             self._inner_winner = None
             self._queued_runtime_messages = []
             self._queued_runtime_pending_by_agent = {}
+            self._runtime_inbox_dir = self._resolve_runtime_inbox_dir()
+            self._runtime_inbox_seen_files = set()
             self._refresh_runtime_queue_banner()
 
             # Remove old timelines
@@ -1464,6 +1806,16 @@ class SubagentView(Container):
             if self._status_line and self._inner_agents:
                 self._status_line.set_agents(self._inner_agents)
 
+            # Update message input bar targets for the new subagent's agents
+            if self._send_message_callback and self._inner_agents:
+                try:
+                    from .message_input_bar import MessageInputBar
+
+                    input_bar = self.query_one("#subagent-input-bar", MessageInputBar)
+                    input_bar.set_targets(self._inner_agents)
+                except Exception:
+                    pass
+
             # Mount new timelines and load first agent
             if self._panel:
                 self._panel.mount_agent_timelines(self._inner_agents)
@@ -1477,10 +1829,16 @@ class SubagentView(Container):
 
             # Update tab bar and sync completed subagent statuses
             if self._tab_bar:
-                self._tab_bar.set_active(self._subagent.id)
-                for sa in self._all_subagents:
-                    if sa.status not in ("running", "pending"):
-                        self._tab_bar.update_agent_status(sa.id, "completed")
+                # Use index-to-tab-id mapping for correct activation
+                index_to_tab = {v: k for k, v in self._tab_id_to_index.items()} if hasattr(self, "_tab_id_to_index") else {}
+                active_tab_id = index_to_tab.get(self._current_index, self._subagent.id)
+                self._tab_bar.set_active(active_tab_id)
+                for idx, sa in enumerate(self._all_subagents):
+                    tab_id = index_to_tab.get(idx, sa.id)
+                    self._tab_bar.update_agent_status(
+                        tab_id,
+                        self._tab_status(sa.status),
+                    )
 
             # Update ribbon agent
             if self._ribbon:
@@ -1529,10 +1887,14 @@ class SubagentView(Container):
         Args:
             agent_id: The agent ID to filter by, or None for all events
         """
-        if not self._event_reader or not self._panel:
+        if not self._panel:
             return
 
         aid = agent_id or self._subagent.id
+        if not self._event_reader:
+            self._ensure_terminal_status_note(aid, event_count=0)
+            self._update_status_display()
+            return
 
         # Create adapter for this agent if needed
         if aid not in self._event_adapters:
@@ -1547,6 +1909,8 @@ class SubagentView(Container):
         events = self._filter_events_for_agent(all_events, agent_id) if agent_id else all_events
 
         logger.info(f"[SubagentScreen] Loading {len(events)} events for agent {aid}")
+        if not events:
+            self._ensure_terminal_status_note(aid, event_count=0)
         for event in events:
             adapter.handle_event(self._display_round(event))
         adapter.flush()
@@ -1740,6 +2104,9 @@ class SubagentView(Container):
         elif event.button.id == "queue_clear_button":
             event.stop()
             self._clear_runtime_queue_messages()
+        elif event.button.id == "continue_subagent_button":
+            event.stop()
+            self._open_continue_subagent_modal()
 
     def _set_runtime_queue_region_visible(self, visible: bool) -> None:
         if self._queued_runtime_region is None:
@@ -1801,7 +2168,7 @@ class SubagentView(Container):
                 tui_log(f"[SubagentScreen] Failed to update runtime queue banner: {e}")
         self._set_runtime_queue_region_visible(bool(self._queued_runtime_messages))
 
-    def _queue_runtime_message(self, content: str, target: str) -> None:
+    def _queue_runtime_message(self, content: str, target: str, source_label: str = "parent") -> None:
         if target == "all":
             pending_agents = list(self._inner_agents)
             if not pending_agents:
@@ -1817,11 +2184,182 @@ class SubagentView(Container):
             "id": self._next_runtime_message_id,
             "content": content,
             "target_label": target_label,
+            "source_label": source_label,
             "pending_agents": unique_pending,
         }
         self._next_runtime_message_id += 1
         self._queued_runtime_messages.append(message)
         self._refresh_runtime_queue_banner()
+
+    def _append_runtime_queue_status_note(
+        self,
+        content: str,
+        target: str,
+        source_label: str = "parent",
+        pending_agents: list[str] | None = None,
+        target_label_override: str | None = None,
+    ) -> None:
+        """Render an immediate timeline note when runtime input is queued.
+
+        Delivery still occurs at the next hook/checkpoint; this note confirms
+        the queue action in the subagent timeline right away.
+        """
+        if not self._panel:
+            return
+
+        payload = self._normalize_runtime_message_text(content)
+        if not payload:
+            return
+        if len(payload) > 180:
+            payload = payload[:177] + "..."
+
+        if pending_agents is not None:
+            target_agents = [aid for aid in pending_agents if aid]
+            target_label = target_label_override or (target if target else "selected agents")
+        elif target == "all":
+            target_agents = [aid for aid in self._inner_agents if aid]
+            if not target_agents:
+                fallback_agent = self._current_inner_agent or self._subagent.id
+                target_agents = [fallback_agent] if fallback_agent else []
+            target_label = target_label_override or "all agents"
+        else:
+            fallback_agent = self._current_inner_agent or self._subagent.id
+            target_agents = [target] if target else ([fallback_agent] if fallback_agent else [])
+            target_label = target_label_override or (target or "selected agent")
+
+        unique_agents = list(dict.fromkeys(target_agents))
+        if not unique_agents:
+            return
+
+        normalized_source = " ".join((source_label or "parent").split()) or "parent"
+        note = f"Runtime Injection -> Queued from {normalized_source} to {target_label}: {payload}"
+
+        try:
+            round_number = max(1, int(self._round_number or 1))
+        except Exception:
+            round_number = 1
+
+        for agent_id in unique_agents:
+            try:
+                timeline = self._panel.query_one(
+                    f"#subagent-timeline-{agent_id}",
+                    TimelineSection,
+                )
+            except Exception:
+                continue
+
+            try:
+                timeline.add_text(
+                    note,
+                    style="dim cyan",
+                    text_class="status runtime-injection",
+                    round_number=round_number,
+                )
+            except Exception as e:
+                tui_log(f"[SubagentScreen] Failed to add runtime queue status note: {e}")
+
+    def _resolve_runtime_inbox_dir(self) -> Path | None:
+        """Resolve this subagent's runtime inbox directory, if available."""
+        workspace_path = str(getattr(self._subagent, "workspace_path", "") or "").strip()
+        if not workspace_path:
+            return None
+
+        workspace = Path(workspace_path).expanduser()
+        if not workspace.is_absolute():
+            workspace = (Path.cwd() / workspace).resolve()
+        return workspace / ".massgen" / "runtime_inbox"
+
+    def _normalize_runtime_targets_from_inbox(self, target_agents: Any) -> tuple[list[str], str]:
+        """Convert runtime inbox target payload into pending agent IDs + label."""
+        parsed_targets: list[str] = []
+        if isinstance(target_agents, list):
+            for raw in target_agents:
+                value = str(raw or "").strip()
+                if value:
+                    parsed_targets.append(value)
+
+        if parsed_targets:
+            unique_targets = list(dict.fromkeys(parsed_targets))
+            return unique_targets, ", ".join(unique_targets)
+
+        broadcast_targets = [aid for aid in self._inner_agents if aid]
+        if not broadcast_targets:
+            fallback_agent = self._current_inner_agent or self._subagent.id
+            broadcast_targets = [fallback_agent] if fallback_agent else []
+        return list(dict.fromkeys(broadcast_targets)), "all agents"
+
+    def _sync_runtime_queue_from_inbox(self) -> None:
+        """Mirror pending runtime inbox files into queued banner/timeline state."""
+        if not self._send_message_callback:
+            return
+
+        if self._runtime_inbox_dir is None:
+            self._runtime_inbox_dir = self._resolve_runtime_inbox_dir()
+        inbox_dir = self._runtime_inbox_dir
+        if inbox_dir is None or not inbox_dir.exists() or not inbox_dir.is_dir():
+            return
+
+        changed = False
+        try:
+            inbox_files = sorted(inbox_dir.glob("msg_*.json"))
+        except Exception:
+            return
+
+        for message_file in inbox_files:
+            file_key = str(message_file.resolve())
+            if file_key in self._runtime_inbox_seen_files:
+                continue
+            self._runtime_inbox_seen_files.add(file_key)
+
+            try:
+                payload = json.loads(message_file.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+
+            content = str(payload.get("content", "")).strip()
+            if not content:
+                continue
+
+            source_label = str(payload.get("source", "parent") or "parent").strip().lower() or "parent"
+            pending_agents, target_label = self._normalize_runtime_targets_from_inbox(payload.get("target_agents"))
+            if not pending_agents:
+                continue
+
+            normalized_content = self._normalize_runtime_message_text(content)
+            pending_set = set(pending_agents)
+            duplicate = False
+            for queued in self._queued_runtime_messages:
+                queued_content = self._normalize_runtime_message_text(str(queued.get("content", "")))
+                queued_source = str(queued.get("source_label", "human"))
+                queued_target_label = str(queued.get("target_label", ""))
+                queued_pending = {str(aid) for aid in queued.get("pending_agents", []) if str(aid)}
+                if queued_content == normalized_content and queued_source == source_label and queued_target_label == target_label and queued_pending == pending_set:
+                    duplicate = True
+                    break
+
+            if duplicate:
+                continue
+
+            self._queued_runtime_messages.append(
+                {
+                    "id": message_file.stem,
+                    "content": content,
+                    "target_label": target_label,
+                    "source_label": source_label,
+                    "pending_agents": pending_agents,
+                },
+            )
+            self._append_runtime_queue_status_note(
+                content,
+                target="all" if target_label == "all agents" else (pending_agents[0] if pending_agents else "all"),
+                source_label=source_label,
+                pending_agents=pending_agents,
+                target_label_override=target_label,
+            )
+            changed = True
+
+        if changed:
+            self._refresh_runtime_queue_banner()
 
     def _cancel_latest_runtime_queue_message(self) -> None:
         if not self._queued_runtime_messages:
@@ -1840,6 +2378,70 @@ class SubagentView(Container):
         self._queued_runtime_pending_by_agent = {}
         self._refresh_runtime_queue_banner()
         self.notify("Cleared queued runtime messages", timeout=2)
+
+    def _refresh_continue_button_visibility(self) -> None:
+        """Show continue control only when subagent is not actively running."""
+        if self._continue_subagent_button is None:
+            return
+        is_running = self._subagent.status in ("running", "pending")
+        self._continue_subagent_button.display = not is_running
+        self._continue_subagent_button.disabled = is_running
+
+    def _open_continue_subagent_modal(self) -> None:
+        """Open modal prompt for continuation message."""
+        if not self._continue_subagent_callback:
+            return
+
+        def _on_dismiss(message: str | None) -> None:
+            if not message:
+                return
+            self._continue_subagent_with_message(message)
+
+        try:
+            self.app.push_screen(
+                ContinueSubagentModal(self._subagent.id),
+                _on_dismiss,
+            )
+        except Exception as e:
+            self.notify(f"Cannot open continue prompt: {e}", severity="error", timeout=3)
+
+    def _continue_subagent_with_message(self, message: str) -> bool:
+        """Continue this subagent with a user-provided message."""
+        normalized = (message or "").strip()
+        if not normalized:
+            self.notify("Continue message cannot be empty", severity="warning", timeout=2)
+            return False
+        if not self._continue_subagent_callback:
+            self.notify("Continue callback unavailable", severity="warning", timeout=2)
+            return False
+
+        try:
+            success = bool(self._continue_subagent_callback(self._subagent.id, normalized))
+        except Exception as e:
+            self.notify(f"Failed to continue subagent: {e}", severity="warning", timeout=3)
+            return False
+
+        if not success:
+            self.notify("Failed to continue subagent", severity="warning", timeout=3)
+            return False
+
+        self._subagent.status = "running"
+        self._subagent.error = None
+        self._subagent.elapsed_seconds = 0.0
+        self._terminal_status_notes.clear()
+        self._update_status_display()
+
+        try:
+            input_bar = self.query_one("#subagent-input-bar")
+            input_bar.display = True
+        except Exception:
+            pass
+
+        if self._poll_timer is None:
+            self._poll_timer = self.set_interval(self.POLL_INTERVAL, self._poll_updates)
+
+        self.notify("Continuing subagent...", timeout=2)
+        return True
 
     @staticmethod
     def _normalize_runtime_message_text(raw: str) -> str:
@@ -1901,19 +2503,26 @@ class SubagentView(Container):
 
     def _update_runtime_queue_from_events(self, events: list[MassGenEvent]) -> None:
         for event in events:
-            if event.event_type != "hook_execution":
+            if event.event_type == "hook_execution":
+                hook_info = event.data.get("hook_info", {}) if isinstance(event.data, dict) else {}
+                if hook_info.get("hook_name") != "human_input_hook":
+                    continue
+                injection_content = hook_info.get("injection_content")
+                if not injection_content:
+                    continue
+                if event.agent_id:
+                    self._mark_runtime_messages_delivered_for_agent(
+                        event.agent_id,
+                        injection_content=str(injection_content),
+                    )
                 continue
-            hook_info = event.data.get("hook_info", {}) if isinstance(event.data, dict) else {}
-            if hook_info.get("hook_name") != "human_input_hook":
-                continue
-            injection_content = hook_info.get("injection_content")
-            if not injection_content:
-                continue
-            if event.agent_id:
-                self._mark_runtime_messages_delivered_for_agent(
-                    event.agent_id,
-                    injection_content=str(injection_content),
-                )
+
+            if event.event_type == "injection_received" and event.agent_id:
+                event_data = event.data if isinstance(event.data, dict) else {}
+                injection_type = str(event_data.get("injection_type", "")).strip().lower()
+                source_agents = [str(source).strip().lower() for source in event_data.get("source_agents", []) or [] if str(source).strip()]
+                if injection_type in {"runtime_inbox_input", "hookless_human_input"} or "parent" in source_agents or "human" in source_agents:
+                    self._mark_runtime_messages_delivered_for_agent(event.agent_id)
 
     def on_message_input_bar_submitted(self, event: Any) -> None:
         """Handle message submission from the MessageInputBar."""
@@ -1927,7 +2536,13 @@ class SubagentView(Container):
         else:
             success = self._send_message_callback(subagent_id, event.value, target_agents=[target])
         if success:
-            self._queue_runtime_message(event.value, target=target)
+            source_label = "parent"
+            self._queue_runtime_message(event.value, target=target, source_label=source_label)
+            self._append_runtime_queue_status_note(
+                event.value,
+                target=target,
+                source_label=source_label,
+            )
             label = "all agents" if target == "all" else target
             self.notify(f"Message sent to {label}", timeout=2)
         else:
@@ -1968,23 +2583,32 @@ class SubagentView(Container):
         control_id = event.control.id if event.control else None
 
         if control_id == "subagent-tab-bar":
-            # Top-level subagent selector - switch to different subagent
-            for i, sa in enumerate(self._all_subagents):
-                if sa.id == event.agent_id:
-                    self._switch_subagent(i)
-                    break
+            # Top-level subagent selector - use tab_id_to_index for safe lookup
+            # (handles duplicate subagent IDs correctly)
+            idx = getattr(self, "_tab_id_to_index", {}).get(event.agent_id)
+            if idx is not None:
+                self._switch_subagent(idx)
+            else:
+                # Fallback: linear scan by sa.id
+                for i, sa in enumerate(self._all_subagents):
+                    if sa.id == event.agent_id:
+                        self._switch_subagent(i)
+                        break
         elif control_id == "inner-agent-tabs":
             # Inner agent tabs - switch to different inner agent within same subagent
             self._switch_inner_agent(event.agent_id)
         else:
-            # Fallback: try to determine by checking if agent_id matches a subagent
-            for i, sa in enumerate(self._all_subagents):
-                if sa.id == event.agent_id:
-                    self._switch_subagent(i)
-                    return
-            # Otherwise assume it's an inner agent
-            if event.agent_id in self._inner_agents:
+            # Fallback: check tab_id_to_index first, then linear scan
+            idx = getattr(self, "_tab_id_to_index", {}).get(event.agent_id)
+            if idx is not None:
+                self._switch_subagent(idx)
+            elif event.agent_id in self._inner_agents:
                 self._switch_inner_agent(event.agent_id)
+            else:
+                for i, sa in enumerate(self._all_subagents):
+                    if sa.id == event.agent_id:
+                        self._switch_subagent(i)
+                        return
 
     def action_close(self) -> None:
         """Close the screen and return to main view."""
@@ -2245,6 +2869,7 @@ class SubagentScreen(Screen):
         status_callback: Callable[[str], SubagentDisplayData | None] | None = None,
         auto_return_on_completion: bool = False,
         send_message_callback: Callable[..., bool] | None = None,
+        continue_subagent_callback: Callable[..., bool] | None = None,
     ) -> None:
         super().__init__()
         self._subagent = subagent
@@ -2252,6 +2877,7 @@ class SubagentScreen(Screen):
         self._status_callback = status_callback
         self._auto_return_on_completion = auto_return_on_completion
         self._send_message_callback = send_message_callback
+        self._continue_subagent_callback = continue_subagent_callback
 
     def compose(self) -> ComposeResult:
         yield SubagentView(
@@ -2260,6 +2886,7 @@ class SubagentScreen(Screen):
             status_callback=self._status_callback,
             auto_return_on_completion=self._auto_return_on_completion,
             send_message_callback=self._send_message_callback,
+            continue_subagent_callback=self._continue_subagent_callback,
             id="subagent-view",
         )
 

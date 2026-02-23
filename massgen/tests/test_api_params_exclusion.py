@@ -133,6 +133,7 @@ class TestKnownInternalParamsExcluded:
         "direct_mcp_servers",
         "shared_tools_directory",
         "enable_multimodal_tools",
+        "subagent_types",
     ]
 
     @pytest.mark.parametrize("param", KNOWN_INTERNAL_PARAMS)

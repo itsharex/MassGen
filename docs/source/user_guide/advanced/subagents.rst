@@ -245,9 +245,40 @@ Built-in specialized types:
    * - ``evaluator``
      - Procedural verification and execution-heavy checks (tests, scripts, UI checks, reproducible validation)
      - Environment/setup steps, exact commands to run, pass/fail rubric, and required report format (what passed, what failed, logs/artifacts)
+   * - ``novelty``
+     - Breaking refinement plateaus by proposing fundamentally different directions when agents are stuck in incremental changes
+     - Current work/answer, diagnostic analysis of what's been tried, evaluation findings showing zero transformative changes. The subagent returns 2-3 alternative approaches, not evaluations.
 
 If you want additional roles (for example ``reasoner``), add a custom profile in
 ``.agent/subagent_types/<type-name>/SUBAGENT.md`` and call it via ``subagent_type``.
+
+Configuring Active Subagent Types
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, only the core types (``explorer``, ``researcher``, ``evaluator``) are active.
+The ``novelty`` type is opt-in because it changes agent behavior during checklist evaluation.
+
+Use ``subagent_types`` under ``orchestrator.coordination`` to control which types are available:
+
+.. code-block:: yaml
+
+   orchestrator:
+     coordination:
+       enable_subagents: true
+       # Default (when omitted or null): [evaluator, explorer, researcher]
+       subagent_types: [evaluator, explorer, researcher, novelty]
+
+When ``subagent_types`` is set:
+
+* Only the listed types are exposed to agents via the ``spawn_subagents`` tool and system prompts.
+* Unknown type names in the list produce a warning but don't fail.
+* An empty list ``[]`` disables all specialized types (agents can still spawn generic subagents).
+* ``null`` or omitted uses the default set (excludes ``novelty``).
+
+When ``novelty`` is included in the active types, the checklist evaluation system will
+automatically suggest spawning a novelty subagent when it detects zero transformative
+changes in an agent's work — helping break through refinement plateaus where agents
+are stuck making only incremental improvements.
 
 Parent Briefing Template (Recommended)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

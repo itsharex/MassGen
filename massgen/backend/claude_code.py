@@ -45,6 +45,7 @@ TODO:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import atexit
 import json
@@ -217,6 +218,7 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
         )
         self._background_mcp_client = None
         self._background_mcp_initialized = False
+        self._background_tool_delegate: Any | None = None
 
         # Custom tools support - initialize ToolManager if custom_tools are provided
         self._custom_tool_manager: ToolManager | None = None
@@ -1520,6 +1522,12 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
         if self._is_default_media_background_tool(tool_name):
             return True
 
+        # If the target MCP tool natively defines background controls, keep
+        # execution in foreground and let that tool own the behavior (for
+        # example spawn_subagents(background=True)).
+        if self._mcp_tool_declares_argument(tool_name, "background") or self._mcp_tool_declares_argument(tool_name, "run_in_background") or self._mcp_tool_declares_argument(tool_name, "mode"):
+            return False
+
         mode = arguments.get("mode")
         mode_is_background = isinstance(mode, str) and mode.lower() in {"background"}
         return arguments.get("background") is True or mode_is_background
@@ -1563,6 +1571,43 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
         return None
 
     @staticmethod
+    def _is_subagent_spawn_target_tool(tool_name: str) -> bool:
+        """Return True when tool_name resolves to subagent spawn MCP tool."""
+        normalized = ClaudeCodeBackend._normalize_background_target_tool_name(
+            str(tool_name or "").strip(),
+        ).lower()
+        return "spawn_subagent" in normalized and "subagent" in normalized
+
+    @staticmethod
+    def _normalize_subagent_spawn_background_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+        """Force wrapped subagent spawn requests into direct background mode."""
+        normalized = dict(arguments)
+        normalized["background"] = True
+        normalized.pop("run_in_background", None)
+        mode = normalized.get("mode")
+        if not (isinstance(mode, str) and mode.lower() == "background"):
+            normalized.pop("mode", None)
+        return normalized
+
+    @staticmethod
+    def _parse_json_or_python_dict(raw_text: str) -> dict[str, Any] | None:
+        """Parse dict payloads from JSON or Python repr text."""
+        if not isinstance(raw_text, str):
+            return None
+        text = raw_text.strip()
+        if not text:
+            return None
+
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(text)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    @staticmethod
     def _format_unix_timestamp(timestamp: float | None) -> str | None:
         """Convert unix timestamp to ISO-8601 string."""
         if timestamp is None:
@@ -1602,6 +1647,10 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
         pending = list(self._pending_background_tool_results)
         self._pending_background_tool_results.clear()
         return pending
+
+    def register_background_delegate(self, delegate: Any) -> None:
+        """Register a delegate that extends background lifecycle APIs (e.g., subagents)."""
+        self._background_tool_delegate = delegate
 
     def _pop_next_pending_background_tool_result(self) -> dict[str, Any] | None:
         """Pop one completed background job payload from the shared delivery queue."""
@@ -1862,11 +1911,102 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
         )
         return job
 
+    async def _start_background_subagent_spawn(
+        self,
+        tool_name: str,
+        target_arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Treat wrapped subagent spawn starts like direct spawn_subagents(background=true)."""
+        normalized_arguments = self._normalize_subagent_spawn_background_arguments(
+            target_arguments,
+        )
+        mcp_client = await self._get_background_mcp_client()
+        if not mcp_client:
+            return {
+                "success": False,
+                "error": "MCP client not available for subagent background spawn",
+            }
+
+        try:
+            result = await mcp_client.call_tool(
+                name=tool_name,
+                arguments=normalized_arguments,
+            )
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "error": str(e)}
+
+        extracted = self._extract_text_from_mcp_content(
+            getattr(result, "content", None),
+        )
+        payload = self._parse_json_or_python_dict(extracted)
+        if isinstance(payload, dict):
+            if payload.get("success") is True and "mode" not in payload:
+                payload["mode"] = "background"
+            return self._attach_subagent_background_ids(payload)
+
+        if extracted.startswith("Error:"):
+            return {
+                "success": False,
+                "error": extracted.removeprefix("Error:").strip() or extracted,
+            }
+
+        return {
+            "success": True,
+            "operation": "spawn_subagents",
+            "mode": "background",
+            "result": extracted or str(result),
+        }
+
+    @staticmethod
+    def _attach_subagent_background_ids(payload: dict[str, Any]) -> dict[str, Any]:
+        """Ensure subagent background payloads expose both job and subagent IDs."""
+        subagents_raw = payload.get("subagents")
+        if not isinstance(subagents_raw, list):
+            return payload
+
+        subagents: list[dict[str, Any]] = []
+        job_ids: list[str] = []
+        for item in subagents_raw:
+            if not isinstance(item, dict):
+                continue
+            entry = dict(item)
+            subagent_id = str(entry.get("subagent_id") or entry.get("id") or "").strip()
+            job_id = str(entry.get("job_id") or subagent_id).strip()
+            if subagent_id:
+                entry["subagent_id"] = subagent_id
+            if job_id:
+                entry["job_id"] = job_id
+                job_ids.append(job_id)
+            subagents.append(entry)
+
+        if subagents:
+            payload["subagents"] = subagents
+
+        if not job_ids:
+            return payload
+
+        unique_job_ids = list(dict.fromkeys(job_ids))
+        payload.setdefault("job_ids", unique_job_ids)
+
+        if len(unique_job_ids) == 1:
+            payload.setdefault("job_id", unique_job_ids[0])
+            first_subagent_id = str(subagents[0].get("subagent_id") or "").strip() if subagents else ""
+            if first_subagent_id:
+                payload.setdefault("subagent_id", first_subagent_id)
+
+        return payload
+
     async def _start_background_tool_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__start_background_tool."""
         tool_name, target_arguments, parse_error = self._extract_background_start_request(arguments)
         if parse_error:
             return {"success": False, "error": parse_error}
+
+        if self._is_subagent_spawn_target_tool(tool_name):
+            return await self._start_background_subagent_spawn(
+                tool_name,
+                target_arguments,
+            )
 
         try:
             job = await self._start_background_tool_job(tool_name, target_arguments)
@@ -1924,36 +2064,60 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
 
         return (tool_name, target_arguments, None)
 
-    def _get_background_tool_status_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _get_background_tool_status_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__get_background_tool_status."""
         job_id = str(arguments.get("job_id", "")).strip()
         if not job_id:
             return {"success": False, "error": "job_id is required"}
 
         job = self._background_tool_jobs.get(job_id)
-        if not job:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
+        if job:
+            payload = self._serialize_background_job(job)
+            payload["success"] = True
+            return payload
 
-        payload = self._serialize_background_job(job)
-        payload["success"] = True
-        return payload
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                if await delegate.owns(job_id):
+                    return await delegate.get_status(job_id)
+            except Exception:
+                logger.debug(
+                    "[ClaudeCodeBackend] Delegate get_status failed for %s",
+                    job_id,
+                    exc_info=True,
+                )
 
-    def _get_background_tool_result_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"success": False, "error": f"Background job not found: {job_id}"}
+
+    async def _get_background_tool_result_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__get_background_tool_result."""
         job_id = str(arguments.get("job_id", "")).strip()
         if not job_id:
             return {"success": False, "error": "job_id is required"}
 
         job = self._background_tool_jobs.get(job_id)
-        if not job:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
+        if job:
+            ready = job.status in BACKGROUND_TOOL_TERMINAL_STATUSES
+            payload = self._serialize_background_job(job, include_result=True)
+            payload.update({"success": True, "ready": ready})
+            if not ready:
+                payload["message"] = "Background tool still running"
+            return payload
 
-        ready = job.status in BACKGROUND_TOOL_TERMINAL_STATUSES
-        payload = self._serialize_background_job(job, include_result=True)
-        payload.update({"success": True, "ready": ready})
-        if not ready:
-            payload["message"] = "Background tool still running"
-        return payload
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                if await delegate.owns(job_id):
+                    return await delegate.get_result(job_id)
+            except Exception:
+                logger.debug(
+                    "[ClaudeCodeBackend] Delegate get_result failed for %s",
+                    job_id,
+                    exc_info=True,
+                )
+
+        return {"success": False, "error": f"Background job not found: {job_id}"}
 
     @staticmethod
     def _coerce_background_wait_timeout(arguments: dict[str, Any]) -> float:
@@ -2034,25 +2198,37 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
             else:
                 await asyncio.sleep(sleep_seconds)
 
-    def _cancel_background_tool_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _cancel_background_tool_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__cancel_background_tool."""
         job_id = str(arguments.get("job_id", "")).strip()
         if not job_id:
             return {"success": False, "error": "job_id is required"}
 
         job = self._background_tool_jobs.get(job_id)
-        if not job:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
+        if job:
+            task = self._background_tool_tasks.get(job_id)
+            if task and not task.done():
+                job.status = "cancelled"
+                job.error = "Cancelled by user request"
+                task.cancel()
 
-        task = self._background_tool_tasks.get(job_id)
-        if task and not task.done():
-            job.status = "cancelled"
-            job.error = "Cancelled by user request"
-            task.cancel()
+            payload = self._serialize_background_job(job)
+            payload["success"] = True
+            return payload
 
-        payload = self._serialize_background_job(job)
-        payload["success"] = True
-        return payload
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                if await delegate.owns(job_id):
+                    return await delegate.cancel(job_id)
+            except Exception:
+                logger.debug(
+                    "[ClaudeCodeBackend] Delegate cancel failed for %s",
+                    job_id,
+                    exc_info=True,
+                )
+
+        return {"success": False, "error": f"Background job not found: {job_id}"}
 
     @staticmethod
     def _coerce_include_all_background_jobs(arguments: dict[str, Any] | None) -> bool:
@@ -2067,10 +2243,22 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
             return raw_include_all.strip().lower() in {"1", "true", "yes", "on", "all"}
         return False
 
-    def _list_background_tools_from_request(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def _list_background_tools_from_request(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Handle custom_tool__list_background_tools."""
         include_all = self._coerce_include_all_background_jobs(arguments)
         jobs = [self._serialize_background_job(job) for job in self._background_tool_jobs.values() if include_all or job.status not in BACKGROUND_TOOL_TERMINAL_STATUSES]
+
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                delegate_jobs = await delegate.list_jobs(include_all=include_all)
+                jobs.extend(delegate_jobs)
+            except Exception:
+                logger.debug(
+                    "[ClaudeCodeBackend] Delegate list_jobs failed",
+                    exc_info=True,
+                )
+
         jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
         return {
             "success": True,
@@ -2088,15 +2276,15 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
         if tool_name == BACKGROUND_TOOL_START_NAME:
             return await self._start_background_tool_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_STATUS_NAME:
-            return self._get_background_tool_status_from_request(arguments)
+            return await self._get_background_tool_status_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_RESULT_NAME:
-            return self._get_background_tool_result_from_request(arguments)
+            return await self._get_background_tool_result_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_WAIT_NAME:
             return await self._wait_for_background_tool_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_CANCEL_NAME:
-            return self._cancel_background_tool_from_request(arguments)
+            return await self._cancel_background_tool_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_LIST_NAME:
-            return self._list_background_tools_from_request(arguments)
+            return await self._list_background_tools_from_request(arguments)
 
         return {"success": False, "error": f"Unknown background management tool: {tool_name}"}
 

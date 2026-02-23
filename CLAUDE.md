@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 <!-- OPENSPEC:START -->
-# OpenSpec Instructions
+## OpenSpec Instructions
 
 These instructions are for AI assistants working in this project.
 
@@ -24,6 +24,8 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 ## Planning
 When planning or creating specs, use AskUserQuestions to ensure you align with the user before creating full planning files.
 
+Also, please add a 'What's Next' section at the end of each plan. This will let us chain plans and clear context in a smart manner.
+
 ## Instruction File Parity
 
 `CLAUDE.md` and `AGENTS.md` are required to stay identical in this repo.
@@ -40,6 +42,8 @@ When planning or creating specs, use AskUserQuestions to ensure you align with t
 After implementing any feature that involves passing parameters through multiple layers (e.g., backend -> manager -> component), always verify the full wiring chain end-to-end by tracing the parameter from its origin to its final usage site. Do not rely solely on unit tests passing -- add an integration smoke test or assertion that the parameter actually arrives at its destination, not just that the downstream logic works when the parameter is provided.
 
 For cross-backend tool-calling behavior (OpenAI-compatible, Claude, Gemini, Codex/Claude Code via MCP, etc.), treat backend-side argument normalization and schema validation as the source of truth. Prompt guidance can encourage correct argument shape, but correctness must not depend on prompt compliance alone (e.g., tolerate/detect accidentally stringified JSON argument payloads in adapters and tool gateways).
+
+When fixing `E501` in prompt text (especially triple-quoted system prompts), preserve the rendered prompt exactly. Wrap long source lines using escaped line continuation (`\` at end-of-line) so lint passes without introducing extra newline characters or changing prompt behavior.
 
 ## Anti-Patterns
 
@@ -295,6 +299,7 @@ Detailed documentation for specific modules lives in `docs/modules/`. **Always c
 - `docs/modules/subagents.md` - Subagent spawning, logging architecture, TUI integration
 - `docs/modules/interactive_mode.md` - Interactive mode architecture, launch_run MCP, system prompts, project workspace
 - `docs/modules/worktrees.md` - Worktree lifecycle, branch naming, scratch archives, system prompt integration
+- `docs/modules/composition.md` - **Composable primitives, phase architecture, domain-specific checklist gates** — how personas, eval criteria, decomposition, and planning compose for maximum quality
 
 ## MassGen Skills
 

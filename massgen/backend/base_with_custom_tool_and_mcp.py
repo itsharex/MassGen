@@ -6,6 +6,7 @@ Inherits from LLMBackend and adds MCP-specific features.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import json
@@ -19,9 +20,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     NamedTuple,
 )
+
+if TYPE_CHECKING:
+    from massgen.subagent.background_delegate import BackgroundToolDelegate
 
 import httpx
 
@@ -373,6 +378,7 @@ class CustomToolAndMCPBackend(LLMBackend):
         self._pending_background_tool_results: list[dict[str, Any]] = []
         self._background_tool_wait_seen_ids: set[str] = set()
         self._background_wait_interrupt_provider: Callable[[str], Any] | None = None
+        self._background_tool_delegate: BackgroundToolDelegate | None = None
         self._background_tool_management_names: set[str] = set(
             BACKGROUND_TOOL_MANAGEMENT_NAMES,
         )
@@ -1166,7 +1172,12 @@ class CustomToolAndMCPBackend(LLMBackend):
 
         # Internal background-management tools are handled directly here
         # (they are schemas-only and not registered in ToolManager).
+        # Normalize MCP-prefixed names so the dispatcher matches correctly.
         if self._is_background_management_tool(tool_name):
+            bg_tool_name = tool_name
+            _massgen_prefix = "mcp__massgen_custom_tools__"
+            if bg_tool_name.startswith(_massgen_prefix):
+                bg_tool_name = bg_tool_name[len(_massgen_prefix) :]
             try:
                 parsed_arguments = self._parse_tool_arguments(call.get("arguments", "{}"))
             except Exception as e:  # noqa: BLE001
@@ -1176,8 +1187,9 @@ class CustomToolAndMCPBackend(LLMBackend):
                 }
             else:
                 result_payload = await self._execute_background_management_tool(
-                    tool_name,
+                    bg_tool_name,
                     parsed_arguments,
+                    source_call_id=str(call.get("call_id", "") or ""),
                 )
 
             result_text = json.dumps(result_payload, ensure_ascii=False)
@@ -1430,8 +1442,19 @@ class CustomToolAndMCPBackend(LLMBackend):
         return parsed
 
     def _is_background_management_tool(self, tool_name: str) -> bool:
-        """Return whether a tool name is one of the internal background helpers."""
-        return tool_name in self._background_tool_management_names
+        """Return whether a tool name is one of the internal background helpers.
+
+        Handles both direct names (``custom_tool__list_background_tools``) and
+        MCP-prefixed variants
+        (``mcp__massgen_custom_tools__custom_tool__list_background_tools``) so
+        the backend intercepts background management calls regardless of whether
+        ``enable_code_based_tools`` is on.
+        """
+        normalized = (tool_name or "").strip()
+        massgen_prefix = "mcp__massgen_custom_tools__"
+        if normalized.startswith(massgen_prefix):
+            normalized = normalized[len(massgen_prefix) :]
+        return normalized in self._background_tool_management_names
 
     def _resolve_background_tool_type(self, tool_name: str) -> str | None:
         """Resolve the execution type for a background target tool."""
@@ -1445,6 +1468,41 @@ class CustomToolAndMCPBackend(LLMBackend):
             return "custom"
         if tool_name in self._mcp_functions:
             return "mcp"
+        return None
+
+    @staticmethod
+    def _is_subagent_spawn_target_tool(tool_name: str) -> bool:
+        """Return True when target tool resolves to subagent spawning."""
+        normalized = str(tool_name or "").strip().lower()
+        return "spawn_subagent" in normalized and "subagent" in normalized
+
+    @staticmethod
+    def _normalize_subagent_spawn_background_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+        """Force wrapped subagent spawn arguments into background mode."""
+        normalized = dict(arguments)
+        normalized["background"] = True
+        normalized.pop("run_in_background", None)
+        mode = normalized.get("mode")
+        if not (isinstance(mode, str) and mode.lower() == "background"):
+            normalized.pop("mode", None)
+        return normalized
+
+    @staticmethod
+    def _parse_json_or_python_dict(raw_text: str) -> dict[str, Any] | None:
+        """Parse dictionary payloads from JSON or Python repr text."""
+        if not isinstance(raw_text, str):
+            return None
+        text = raw_text.strip()
+        if not text:
+            return None
+
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(text)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(parsed, dict):
+                return parsed
         return None
 
     def _mcp_tool_declares_argument(self, tool_name: str, argument_name: str) -> bool:
@@ -1522,6 +1580,12 @@ class CustomToolAndMCPBackend(LLMBackend):
         if self._is_default_media_background_tool(tool_name):
             return True
 
+        # If the target MCP tool natively defines background controls, let that
+        # tool own the semantics instead of wrapping it as a framework background
+        # job (for example spawn_subagents(background=True)).
+        if self._mcp_tool_declares_argument(tool_name, "background") or self._mcp_tool_declares_argument(tool_name, "run_in_background") or self._mcp_tool_declares_argument(tool_name, "mode"):
+            return False
+
         mode = arguments.get("mode")
         mode_is_background = isinstance(mode, str) and mode.lower() in {"background"}
         return arguments.get("background") is True or mode_is_background
@@ -1590,6 +1654,14 @@ class CustomToolAndMCPBackend(LLMBackend):
         if not self._pending_background_tool_results:
             return None
         return self._pending_background_tool_results.pop(0)
+
+    def register_background_delegate(self, delegate: BackgroundToolDelegate) -> None:
+        """Register a delegate that extends background tool management with external job types.
+
+        The delegate is consulted by the 6 background tool handler methods for IDs
+        that are not native background tool jobs (e.g., subagent IDs).
+        """
+        self._background_tool_delegate = delegate
 
     def set_background_wait_interrupt_provider(
         self,
@@ -1737,14 +1809,142 @@ class CustomToolAndMCPBackend(LLMBackend):
         )
         return job
 
-    async def _start_background_tool_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _trigger_subagent_spawn_callback(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        source_call_id: str | None = None,
+    ) -> None:
+        """Trigger immediate subagent-card callback for spawn requests."""
+        if not self._is_subagent_spawn_target_tool(tool_name):
+            return
+        callback = getattr(self, "_subagent_spawn_callback", None)
+        if callback is None:
+            return
+
+        import threading
+
+        safe_call_id = str(source_call_id or f"spawn_subagent_{uuid.uuid4().hex[:8]}")
+        try:
+            thread = threading.Thread(
+                target=callback,
+                args=(tool_name, dict(arguments), safe_call_id),
+                daemon=True,
+            )
+            thread.start()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Subagent spawn callback failed: %s", e)
+
+    async def _start_background_subagent_spawn(
+        self,
+        tool_name: str,
+        target_arguments: dict[str, Any],
+        source_call_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Treat wrapped subagent spawns like direct spawn_subagents(background=true)."""
+        normalized_arguments = self._normalize_subagent_spawn_background_arguments(
+            target_arguments,
+        )
+        self._trigger_subagent_spawn_callback(
+            tool_name,
+            normalized_arguments,
+            source_call_id=source_call_id,
+        )
+
+        result_str, result_obj = await self._execute_mcp_function_with_retry(
+            tool_name,
+            json.dumps(normalized_arguments),
+        )
+        if result_str.startswith("Error:"):
+            return {
+                "success": False,
+                "error": result_str.removeprefix("Error:").strip() or result_str,
+            }
+
+        display_result = result_str
+        if result_obj is not None and hasattr(result_obj, "content"):
+            extracted = self._extract_text_from_content(result_obj.content)
+            if extracted:
+                display_result = extracted
+
+        payload = self._parse_json_or_python_dict(display_result)
+        if isinstance(payload, dict):
+            if payload.get("success") is True and "mode" not in payload:
+                payload["mode"] = "background"
+            return self._attach_subagent_background_ids(payload)
+
+        return {
+            "success": True,
+            "operation": "spawn_subagents",
+            "mode": "background",
+            "result": display_result,
+        }
+
+    @staticmethod
+    def _attach_subagent_background_ids(payload: dict[str, Any]) -> dict[str, Any]:
+        """Ensure subagent background payloads expose both job and subagent IDs."""
+        subagents_raw = payload.get("subagents")
+        if not isinstance(subagents_raw, list):
+            return payload
+
+        subagents: list[dict[str, Any]] = []
+        job_ids: list[str] = []
+        for item in subagents_raw:
+            if not isinstance(item, dict):
+                continue
+            entry = dict(item)
+            subagent_id = str(entry.get("subagent_id") or entry.get("id") or "").strip()
+            job_id = str(entry.get("job_id") or subagent_id).strip()
+            if subagent_id:
+                entry["subagent_id"] = subagent_id
+            if job_id:
+                entry["job_id"] = job_id
+                job_ids.append(job_id)
+            subagents.append(entry)
+
+        if subagents:
+            payload["subagents"] = subagents
+
+        if not job_ids:
+            return payload
+
+        unique_job_ids = list(dict.fromkeys(job_ids))
+        payload.setdefault("job_ids", unique_job_ids)
+
+        if len(unique_job_ids) == 1:
+            payload.setdefault("job_id", unique_job_ids[0])
+            first_subagent_id = str(subagents[0].get("subagent_id") or "").strip() if subagents else ""
+            if first_subagent_id:
+                payload.setdefault("subagent_id", first_subagent_id)
+
+        return payload
+
+    async def _start_background_tool_from_request(
+        self,
+        arguments: dict[str, Any],
+        source_call_id: str | None = None,
+    ) -> dict[str, Any]:
         """Handle custom_tool__start_background_tool."""
         tool_name, target_arguments, parse_error = self._extract_background_start_request(arguments)
         if parse_error:
             return {"success": False, "error": parse_error}
 
+        if self._is_subagent_spawn_target_tool(tool_name):
+            try:
+                return await self._start_background_subagent_spawn(
+                    tool_name,
+                    target_arguments,
+                    source_call_id=source_call_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                return {"success": False, "error": str(e)}
+
         try:
-            job = await self._start_background_tool_job(tool_name, target_arguments)
+            job = await self._start_background_tool_job(
+                tool_name,
+                target_arguments,
+                source_call_id=source_call_id,
+            )
         except Exception as e:  # noqa: BLE001
             return {"success": False, "error": str(e)}
 
@@ -1799,36 +1999,54 @@ class CustomToolAndMCPBackend(LLMBackend):
 
         return (tool_name, target_arguments, None)
 
-    def _get_background_tool_status_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _get_background_tool_status_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__get_background_tool_status."""
         job_id = str(arguments.get("job_id", "")).strip()
         if not job_id:
             return {"success": False, "error": "job_id is required"}
 
         job = self._background_tool_jobs.get(job_id)
-        if not job:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
+        if job:
+            payload = self._serialize_background_job(job)
+            payload["success"] = True
+            return payload
 
-        payload = self._serialize_background_job(job)
-        payload["success"] = True
-        return payload
+        # Check delegate for subagent-managed jobs
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                if await delegate.owns(job_id):
+                    return await delegate.get_status(job_id)
+            except Exception:
+                logger.debug("[BackgroundTools] Delegate get_status failed for %s", job_id, exc_info=True)
 
-    def _get_background_tool_result_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"success": False, "error": f"Background job not found: {job_id}"}
+
+    async def _get_background_tool_result_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__get_background_tool_result."""
         job_id = str(arguments.get("job_id", "")).strip()
         if not job_id:
             return {"success": False, "error": "job_id is required"}
 
         job = self._background_tool_jobs.get(job_id)
-        if not job:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
+        if job:
+            ready = job.status in BACKGROUND_TOOL_TERMINAL_STATUSES
+            payload = self._serialize_background_job(job, include_result=True)
+            payload.update({"success": True, "ready": ready})
+            if not ready:
+                payload["message"] = "Background tool still running"
+            return payload
 
-        ready = job.status in BACKGROUND_TOOL_TERMINAL_STATUSES
-        payload = self._serialize_background_job(job, include_result=True)
-        payload.update({"success": True, "ready": ready})
-        if not ready:
-            payload["message"] = "Background tool still running"
-        return payload
+        # Check delegate for subagent-managed jobs
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                if await delegate.owns(job_id):
+                    return await delegate.get_result(job_id)
+            except Exception:
+                logger.debug("[BackgroundTools] Delegate get_result failed for %s", job_id, exc_info=True)
+
+        return {"success": False, "error": f"Background job not found: {job_id}"}
 
     @staticmethod
     def _coerce_background_wait_timeout(arguments: dict[str, Any]) -> float:
@@ -1909,25 +2127,34 @@ class CustomToolAndMCPBackend(LLMBackend):
             else:
                 await asyncio.sleep(sleep_seconds)
 
-    def _cancel_background_tool_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _cancel_background_tool_from_request(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Handle custom_tool__cancel_background_tool."""
         job_id = str(arguments.get("job_id", "")).strip()
         if not job_id:
             return {"success": False, "error": "job_id is required"}
 
         job = self._background_tool_jobs.get(job_id)
-        if not job:
-            return {"success": False, "error": f"Background job not found: {job_id}"}
+        if job:
+            task = self._background_tool_tasks.get(job_id)
+            if task and not task.done():
+                job.status = "cancelled"
+                job.error = "Cancelled by user request"
+                task.cancel()
 
-        task = self._background_tool_tasks.get(job_id)
-        if task and not task.done():
-            job.status = "cancelled"
-            job.error = "Cancelled by user request"
-            task.cancel()
+            payload = self._serialize_background_job(job)
+            payload["success"] = True
+            return payload
 
-        payload = self._serialize_background_job(job)
-        payload["success"] = True
-        return payload
+        # Check delegate for subagent-managed jobs
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                if await delegate.owns(job_id):
+                    return await delegate.cancel(job_id)
+            except Exception:
+                logger.debug("[BackgroundTools] Delegate cancel failed for %s", job_id, exc_info=True)
+
+        return {"success": False, "error": f"Background job not found: {job_id}"}
 
     @staticmethod
     def _coerce_include_all_background_jobs(arguments: dict[str, Any] | None) -> bool:
@@ -1942,10 +2169,20 @@ class CustomToolAndMCPBackend(LLMBackend):
             return raw_include_all.strip().lower() in {"1", "true", "yes", "on", "all"}
         return False
 
-    def _list_background_tools_from_request(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def _list_background_tools_from_request(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Handle custom_tool__list_background_tools."""
         include_all = self._coerce_include_all_background_jobs(arguments)
         jobs = [self._serialize_background_job(job) for job in self._background_tool_jobs.values() if include_all or job.status not in BACKGROUND_TOOL_TERMINAL_STATUSES]
+
+        # Merge delegate jobs (e.g., subagents)
+        delegate = self._background_tool_delegate
+        if delegate:
+            try:
+                delegate_jobs = await delegate.list_jobs(include_all=include_all)
+                jobs.extend(delegate_jobs)
+            except Exception:
+                logger.debug("[BackgroundTools] Delegate list_jobs failed", exc_info=True)
+
         jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
         return {
             "success": True,
@@ -1958,20 +2195,24 @@ class CustomToolAndMCPBackend(LLMBackend):
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        source_call_id: str | None = None,
     ) -> dict[str, Any]:
         """Dispatch internal background-management custom tools."""
         if tool_name == BACKGROUND_TOOL_START_NAME:
-            return await self._start_background_tool_from_request(arguments)
+            return await self._start_background_tool_from_request(
+                arguments,
+                source_call_id=source_call_id,
+            )
         if tool_name == BACKGROUND_TOOL_STATUS_NAME:
-            return self._get_background_tool_status_from_request(arguments)
+            return await self._get_background_tool_status_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_RESULT_NAME:
-            return self._get_background_tool_result_from_request(arguments)
+            return await self._get_background_tool_result_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_WAIT_NAME:
             return await self._wait_for_background_tool_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_CANCEL_NAME:
-            return self._cancel_background_tool_from_request(arguments)
+            return await self._cancel_background_tool_from_request(arguments)
         if tool_name == BACKGROUND_TOOL_LIST_NAME:
-            return self._list_background_tools_from_request(arguments)
+            return await self._list_background_tools_from_request(arguments)
 
         return {"success": False, "error": f"Unknown background management tool: {tool_name}"}
 
@@ -2446,22 +2687,17 @@ class CustomToolAndMCPBackend(LLMBackend):
                     call["arguments"] = arguments_str
                     metric.input_chars = len(arguments_str)
 
-            # Special handling for subagent spawn - notify TUI immediately via callback
-            # This runs in a thread to bypass async generator buffering
-            if "spawn_subagent" in tool_name.lower() and hasattr(self, "_subagent_spawn_callback"):
-                import threading
-
+            # Special handling for subagent spawn - notify TUI immediately.
+            if self._is_subagent_spawn_target_tool(tool_name):
                 try:
-                    args_for_callback = json.loads(arguments_str) if arguments_str else {}
-                    # Run callback in thread to avoid blocking
-                    thread = threading.Thread(
-                        target=self._subagent_spawn_callback,
-                        args=(tool_name, args_for_callback, call_id),
-                        daemon=True,
-                    )
-                    thread.start()
-                except Exception as e:
-                    logger.debug(f"Subagent spawn callback failed: {e}")
+                    args_for_callback = self._parse_tool_arguments(arguments_str) if arguments_str else {}
+                except Exception:
+                    args_for_callback = {}
+                self._trigger_subagent_spawn_callback(
+                    tool_name,
+                    args_for_callback,
+                    source_call_id=call_id,
+                )
 
             # Record tool call to execution trace (if available via mixin)
             if hasattr(self, "_execution_trace") and self._execution_trace:
