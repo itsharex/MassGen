@@ -247,11 +247,12 @@ def test_on_human_input_injected_adds_timeline_entry_and_keeps_queue_when_others
         notify=lambda *_args, **_kwargs: None,
     )
     app._refresh_human_input_pending_state = lambda: textual_display_module.TextualApp._refresh_human_input_pending_state(app)
-    app._add_runtime_injection_timeline_entry = lambda agent_id, content, message_id=None: textual_display_module.TextualApp._add_runtime_injection_timeline_entry(
+    app._add_runtime_injection_timeline_entry = lambda agent_id, content, message_id=None, source_label=None: textual_display_module.TextualApp._add_runtime_injection_timeline_entry(
         app,
         agent_id,
         content,
         message_id=message_id,
+        source_label=source_label,
     )
     app._set_queued_input_region_visible = lambda _visible: None
     app._sync_queued_input_banner_from_hook = lambda: textual_display_module.TextualApp._sync_queued_input_banner_from_hook(app)
@@ -290,11 +291,12 @@ def test_on_human_input_injected_clears_queue_when_fully_delivered():
         notify=lambda *_args, **_kwargs: None,
     )
     app._refresh_human_input_pending_state = lambda: textual_display_module.TextualApp._refresh_human_input_pending_state(app)
-    app._add_runtime_injection_timeline_entry = lambda agent_id, content, message_id=None: textual_display_module.TextualApp._add_runtime_injection_timeline_entry(
+    app._add_runtime_injection_timeline_entry = lambda agent_id, content, message_id=None, source_label=None: textual_display_module.TextualApp._add_runtime_injection_timeline_entry(
         app,
         agent_id,
         content,
         message_id=message_id,
+        source_label=source_label,
     )
     app._set_queued_input_region_visible = lambda _visible: None
     app._sync_queued_input_banner_from_hook = lambda: textual_display_module.TextualApp._sync_queued_input_banner_from_hook(app)

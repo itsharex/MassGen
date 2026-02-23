@@ -263,10 +263,8 @@ async def test_no_hook_midstream_enforcement_includes_subagent_completions(mock_
         lambda _agent_id, _answers: ({}, False),
     )
 
-    monkeypatch.setattr(
-        orchestrator,
-        "_get_pending_subagent_results",
-        lambda _aid: [
+    async def _fake_get_pending_subagent_results(_aid):
+        return [
             (
                 "subagent_1",
                 SubagentResult.create_success(
@@ -276,7 +274,12 @@ async def test_no_hook_midstream_enforcement_includes_subagent_completions(mock_
                     execution_time_seconds=12.0,
                 ),
             ),
-        ],
+        ]
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_get_pending_subagent_results_async",
+        _fake_get_pending_subagent_results,
     )
 
     result = await orchestrator._prepare_no_hook_midstream_enforcement(agent_id, {})

@@ -37,7 +37,7 @@ def test_banner_shows_recent_multiple_messages_with_targets():
     text = rendered[-1].plain
     assert "3 messages queued" in text
     assert "latest" in text
-    assert "[all agents]" in text
+    assert "all agents" in text
     assert "Third queue item" in text
 
 
@@ -65,7 +65,7 @@ def test_banner_set_messages_renders_ids_and_pending_agents():
 
     text = rendered[-1].plain
     assert "#12" in text
-    assert "[agent_b]" in text
+    assert "agent_b" in text
     assert "pending: agent_b" in text
 
 
