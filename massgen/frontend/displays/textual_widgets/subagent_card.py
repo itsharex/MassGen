@@ -278,9 +278,15 @@ class SubagentCard(Vertical, can_focus=True):
     class OpenModal(Message):
         """Message posted when user clicks to open subagent view."""
 
-        def __init__(self, subagent: SubagentDisplayData, all_subagents: list[SubagentDisplayData]) -> None:
+        def __init__(
+            self,
+            subagent: SubagentDisplayData,
+            all_subagents: list[SubagentDisplayData],
+            card: SubagentCard | None = None,
+        ) -> None:
             self.subagent = subagent
             self.all_subagents = all_subagents
+            self.card = card
             super().__init__()
 
     # CSS moved to base.tcss for theme support
@@ -405,7 +411,7 @@ class SubagentCard(Vertical, can_focus=True):
             self._selected_index = self._subagents.index(subagent)
         except ValueError:
             pass
-        self.post_message(self.OpenModal(subagent, all_subagents))
+        self.post_message(self.OpenModal(subagent, all_subagents, card=self))
 
     def _start_polling_if_needed(self) -> None:
         if self._poll_timer is not None:

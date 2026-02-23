@@ -209,3 +209,50 @@ class TestCancelSubagent:
         assert listed
         assert listed[0]["subagent_id"] == "sub-1"
         assert listed[0]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_background_cancel_not_overwritten_by_timeout_result(self, tmp_path, monkeypatch):
+        """Background runner must preserve cancelled state/result when cancellation races timeout handling."""
+        manager = _make_manager(tmp_path)
+        (Path(manager.parent_workspace) / "CONTEXT.md").write_text("# Context\ncancel test\n")
+
+        started = asyncio.Event()
+
+        async def _fake_execute_subagent(config, workspace):  # noqa: ANN001 - monkeypatch target signature
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                # Mirror real _execute_subagent behavior that converts cancellation
+                # into a timeout-style result payload.
+                return manager._create_timeout_result_with_recovery(
+                    subagent_id=config.id,
+                    workspace=workspace,
+                    timeout_seconds=10.0,
+                )
+
+        monkeypatch.setattr(manager, "_execute_subagent", _fake_execute_subagent)
+
+        spawned = manager.spawn_subagent_background(
+            task="long running task",
+            subagent_id="sub-1",
+            timeout_seconds=10.0,
+        )
+        assert spawned["status"] == "running"
+
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        cancelled = await manager.cancel_subagent("sub-1")
+        assert cancelled["success"] is True
+        assert cancelled["status"] == "cancelled"
+
+        await manager.wait_for_subagent("sub-1", timeout=2.0)
+
+        state = manager._subagents["sub-1"]
+        assert state.status == "cancelled"
+        assert state.result is not None
+        assert state.result.error == "Subagent cancelled"
+
+        listed = manager.list_subagents()
+        assert listed
+        assert listed[0]["subagent_id"] == "sub-1"
+        assert listed[0]["status"] == "cancelled"

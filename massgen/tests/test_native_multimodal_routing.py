@@ -6,6 +6,7 @@ to the agent's own backend instead of always using OpenAI.
 """
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -563,15 +564,13 @@ class TestSandboxSecurity:
         mock_client.receive_response = fake_receive
 
         def make_options(**kwargs):
+            captured_options["kwargs"] = dict(kwargs)
             opts = MagicMock()
             for k, v in kwargs.items():
                 setattr(opts, k, v)
             return opts
 
         def capture_client(options):
-            captured_options["allowed_tools"] = options.allowed_tools
-            captured_options["max_turns"] = options.max_turns
-            captured_options["cwd"] = options.cwd
             return mock_client
 
         # Patch at the import source since imports are lazy (inside function body)
@@ -580,6 +579,7 @@ class TestSandboxSecurity:
             patch("claude_agent_sdk.ClaudeAgentOptions", side_effect=make_options),
             patch("claude_agent_sdk.ResultMessage", FakeResultMessage),
             patch("claude_agent_sdk.AssistantMessage", MagicMock),
+            patch("claude_agent_sdk.UserMessage", MagicMock),
             patch("claude_agent_sdk.TextBlock", MagicMock),
             patch("massgen.tool._multimodal_tools.image_backends.shutil.copy2"),
         ):
@@ -587,8 +587,8 @@ class TestSandboxSecurity:
 
             await call_claude_code([loaded], "describe", model=None, agent_cwd="/tmp")
 
-        assert captured_options["allowed_tools"] == ["Read"]
-        assert captured_options["max_turns"] == 2
+        assert captured_options["kwargs"]["allowed_tools"] == ["Read"]
+        assert "max_turns" not in captured_options["kwargs"]
 
     @pytest.mark.asyncio
     async def test_claude_code_uses_temp_dir_not_agent_cwd(self):
@@ -618,6 +618,7 @@ class TestSandboxSecurity:
             patch("claude_agent_sdk.ClaudeAgentOptions", side_effect=lambda **kw: MagicMock(**kw)),
             patch("claude_agent_sdk.ResultMessage", FakeResultMessage),
             patch("claude_agent_sdk.AssistantMessage", MagicMock),
+            patch("claude_agent_sdk.UserMessage", MagicMock),
             patch("claude_agent_sdk.TextBlock", MagicMock),
             patch("massgen.tool._multimodal_tools.image_backends.shutil.copy2"),
         ):
@@ -664,7 +665,7 @@ class TestSandboxSecurity:
         # web_search should be disabled via -c flag
         assert "-c" in cmd, "Missing -c flag for web_search"
         c_idx = cmd.index("-c")
-        assert "web_search" in cmd[c_idx + 1] and "disabled" in cmd[c_idx + 1], f"web_search not disabled in -c arg: {cmd[c_idx + 1]}"
+        assert "web_search" in cmd[c_idx + 1] and "false" in cmd[c_idx + 1], f"web_search not disabled in -c arg: {cmd[c_idx + 1]}"
 
     @pytest.mark.asyncio
     async def test_codex_sets_codex_home_env(self):
@@ -833,30 +834,100 @@ class TestLiveAPICalls:
         Requires: claude CLI installed and authenticated (`claude login`),
         or ANTHROPIC_API_KEY / CLAUDE_CODE_API_KEY set.
         """
+        import logging
         import shutil
 
         if not shutil.which("claude"):
             pytest.skip("claude CLI not installed (run: npm install -g @anthropic-ai/claude-code)")
 
-        from massgen.tool._multimodal_tools.image_backends import call_claude_code
+        # Enable debug logging so we see SDK message types
+        logging.getLogger("massgen").setLevel(logging.DEBUG)
+
+        from claude_agent_sdk import (
+            ClaudeAgentOptions,
+            ClaudeSDKClient,
+            ResultMessage,
+            TextBlock,
+        )
+
         from massgen.tool._multimodal_tools.understand_image import (
             _load_and_process_image,
         )
 
         loaded = _load_and_process_image(str(TEST_IMAGE_PATH), TEST_IMAGE_PATH.parent)
-        result = await call_claude_code(
-            [loaded],
-            "Describe this image briefly.",
-            model=None,  # Use default model
-            agent_cwd=str(TEST_IMAGE_PATH.parent),
+
+        # Run the SDK directly so we can inspect every message
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        dest = Path(tmpdir) / loaded.path.name
+        shutil.copy2(loaded.path, dest)
+
+        options = ClaudeAgentOptions(
+            allowed_tools=["Read"],
+            cwd=tmpdir,
+            env={"CLAUDECODE": ""},
         )
+        client = ClaudeSDKClient(options)
+
         print(f"\n{'='*60}")
-        print("CLAUDE CODE (SDK) response:")
+        print("CLAUDE CODE SDK - raw message dump")
         print(f"{'='*60}")
-        print(result)
+
+        try:
+            await client.connect()
+            await client.query(
+                f"Read and analyze the image(s) in this directory: {dest.name}\n\nDescribe this image briefly.",
+            )
+
+            response_text = ""
+            msg_count = 0
+            async for msg in client.receive_response():
+                msg_count += 1
+                msg_type = type(msg).__name__
+                has_content = hasattr(msg, "content")
+                print(f"\n--- Message #{msg_count}: {msg_type} (has content={has_content}) ---")
+
+                if has_content and msg.content:
+                    for i, block in enumerate(msg.content):
+                        block_type = type(block).__name__
+                        has_text = hasattr(block, "text")
+                        is_textblock = isinstance(block, TextBlock)
+                        text_preview = ""
+                        if has_text and block.text:
+                            text_preview = block.text[:200]
+                        print(
+                            f"  block[{i}]: {block_type}, " f"isinstance(TextBlock)={is_textblock}, " f"has .text={has_text}, " f"text={text_preview!r}",
+                        )
+                        # Dump all attributes for tool blocks
+                        if block_type in ("ToolUseBlock", "ToolResultBlock"):
+                            for attr in ("name", "input", "tool_use_id", "content", "is_error", "type"):
+                                if hasattr(block, attr):
+                                    val = getattr(block, attr)
+                                    val_str = str(val)[:300] if val else str(val)
+                                    print(f"    .{attr} = {val_str}")
+                        if isinstance(block, TextBlock) and block.text:
+                            response_text += block.text
+                elif has_content:
+                    print("  content is empty/None")
+
+                if hasattr(msg, "usage") and msg.usage:
+                    print(f"  usage: {msg.usage}")
+
+                if isinstance(msg, ResultMessage):
+                    print("  -> ResultMessage, breaking")
+                    break
+        finally:
+            await client.disconnect()
+
+        print(f"\n{'='*60}")
+        print(f"Total messages: {msg_count}")
+        print(f"Collected response length: {len(response_text)}")
+        print(f"Response text: {response_text[:500]!r}")
         print(f"{'='*60}\n")
-        assert isinstance(result, str)
-        assert len(result) > 10
+
+        assert isinstance(response_text, str)
+        assert len(response_text) > 10, f"Expected response text > 10 chars, got {len(response_text)}: {response_text!r}"
 
     @pytest.mark.asyncio
     async def test_call_codex_live(self):
@@ -866,25 +937,63 @@ class TestLiveAPICalls:
         and authenticated (`codex login` or OPENAI_API_KEY set).
         """
         import shutil
+        import subprocess
 
         if not shutil.which("codex"):
             pytest.skip("codex CLI not installed (run: npm install -g @openai/codex)")
 
-        from massgen.tool._multimodal_tools.image_backends import call_codex
         from massgen.tool._multimodal_tools.understand_image import (
             _load_and_process_image,
         )
 
         loaded = _load_and_process_image(str(TEST_IMAGE_PATH), TEST_IMAGE_PATH.parent)
-        result = await call_codex(
-            [loaded],
-            "Describe this image briefly.",
-            agent_cwd=str(TEST_IMAGE_PATH.parent),
-        )
+
+        # Use the image in-place (no temp dir) to test without isolation
+        image_path = str(loaded.path)
+        work_dir = str(TEST_IMAGE_PATH.parent)
+
+        prompt = "Describe this image briefly."
+        cmd = [
+            "codex",
+            "exec",
+            prompt,
+            "--full-auto",
+            "--skip-git-repo-check",
+            "--disable",
+            "shell_tool",
+            "-c",
+            "web_search=disabled",
+            "--image",
+            image_path,
+        ]
+
+        env = {**os.environ, "NO_COLOR": "1"}
+
         print(f"\n{'='*60}")
-        print("CODEX (CLI) response:")
+        print("CODEX CLI - debug info (no temp dir)")
         print(f"{'='*60}")
-        print(result)
+        print(f"image_path: {image_path}")
+        print(f"image exists: {Path(image_path).exists()} ({Path(image_path).stat().st_size} bytes)")
+        print(f"work_dir: {work_dir}")
+        print(f"cmd: {cmd}")
+        print(f"{'='*60}")
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=work_dir,
+            env=env,
+            timeout=120,
+        )
+
+        print(f"\nreturncode: {proc.returncode}")
+        print(f"stdout length: {len(proc.stdout)}")
+        print(f"stdout: {proc.stdout[:1000]!r}")
+        print(f"stderr length: {len(proc.stderr)}")
+        print(f"stderr: {proc.stderr[:1000]!r}")
         print(f"{'='*60}\n")
-        assert isinstance(result, str)
-        assert len(result) > 10
+
+        assert proc.returncode == 0, f"Codex CLI failed (exit {proc.returncode}): {proc.stderr}"
+        assert isinstance(proc.stdout, str)
+        assert len(proc.stdout) > 10

@@ -1,4 +1,5 @@
 # uv run massgen --display textual --config massgen/configs/features/background_subagent_example.yaml "Use one subagent to research the band Geese in the background while you create a creative website about them, including similar bands."
+# uv run massgen --config massgen/configs/features/background_subagent_example.yaml "Spawn a background subagent to research the history of jazz. While it runs, call list_background_tools to verify it appears, wait 10s, then cancel_background_tool to cancel it."
 
 agents:
 - id: agent_a

@@ -11,6 +11,7 @@ from typing import Any
 from textual.app import App, ComposeResult
 
 from massgen.frontend.displays import textual_terminal_display as textual_display_module
+from massgen.frontend.displays.textual_widgets.content_sections import TimelineSection
 from massgen.frontend.displays.textual_widgets.subagent_card import (
     SubagentCard,
     SubagentColumn,
@@ -229,7 +230,7 @@ def test_show_subagent_card_from_spawn_uses_current_round_and_keeps_existing_car
     app_cls = textual_display_module.TextualApp
     app = app_cls.__new__(app_cls)
     app.agent_widgets = {"agent_a": panel}
-    app._build_spawn_status_callback = lambda agent_id, seed_subagents: None
+    app._build_spawn_status_callback = lambda agent_id, seed_subagents, card=None: None
 
     monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
 
@@ -264,7 +265,7 @@ def test_show_subagent_card_from_spawn_carries_context_paths(monkeypatch) -> Non
     app_cls = textual_display_module.TextualApp
     app = app_cls.__new__(app_cls)
     app.agent_widgets = {"agent_a": panel}
-    app._build_spawn_status_callback = lambda agent_id, seed_subagents: None
+    app._build_spawn_status_callback = lambda agent_id, seed_subagents, card=None: None
 
     monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
 
@@ -286,6 +287,43 @@ def test_show_subagent_card_from_spawn_carries_context_paths(monkeypatch) -> Non
     card = timeline.added_cards[0]
     assert isinstance(card, SubagentCard)
     assert getattr(card.subagents[0], "context_paths", None) == ["docs/brief.md", "src/components"]
+
+
+def test_show_subagent_card_from_spawn_builds_card_scoped_status_callback(monkeypatch) -> None:
+    """Spawn callback should scope status polling to the newly-created card."""
+    timeline = _SpawnTimeline(existing_cards=[])
+    panel = _SpawnPanel(timeline, current_round=2)
+
+    app_cls = textual_display_module.TextualApp
+    app = app_cls.__new__(app_cls)
+    app.agent_widgets = {"agent_a": panel}
+
+    captured_cards: list[object | None] = []
+
+    def _capture_callback(agent_id, seed_subagents, card=None):  # noqa: ANN001 - test helper shape
+        captured_cards.append(card)
+        return None
+
+    app._build_spawn_status_callback = _capture_callback
+    monkeypatch.setattr(textual_display_module, "get_log_session_dir", lambda: None)
+
+    app.show_subagent_card_from_spawn(
+        agent_id="agent_a",
+        args={
+            "tasks": [
+                {
+                    "subagent_id": "retry_same_id",
+                    "task": "Run evaluator task",
+                },
+            ],
+        },
+        call_id="call:scoped.spawn",
+    )
+
+    assert len(timeline.added_cards) == 1
+    assert len(captured_cards) == 1
+    assert captured_cards[0] is timeline.added_cards[0]
+    assert isinstance(captured_cards[0], SubagentCard)
 
 
 def test_build_subagent_display_data_preserves_existing_context_paths() -> None:
@@ -393,6 +431,41 @@ def test_show_subagent_card_from_args_accepts_start_background_wrapper_payload()
     assert timeline.added_card.subagents[0].id == "jazz_researcher"
 
 
+def test_show_subagent_card_from_args_builds_card_scoped_status_callback(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture type
+    """Fallback args path should scope status callback to the card it just created."""
+    panel_cls = textual_display_module.AgentPanel
+    panel = panel_cls.__new__(panel_cls)
+    panel.agent_id = "agent_a"
+
+    captured_cards: list[object | None] = []
+    fake_app = SimpleNamespace(
+        _build_spawn_status_callback=lambda agent_id, seed_subagents, card=None: captured_cards.append(card) or None,
+    )
+    monkeypatch.setattr(panel_cls, "app", property(lambda _self: fake_app), raising=False)
+
+    timeline = _ArgsTimeline()
+    tool_data = SimpleNamespace(
+        tool_id="call:subagent.scoped.args",
+        tool_name="subagent_agent_a/spawn_subagents",
+        args_full=json.dumps(
+            {
+                "tasks": [
+                    {
+                        "subagent_id": "retry_same_id",
+                        "task": "Retry task",
+                    },
+                ],
+            },
+        ),
+    )
+
+    panel._show_subagent_card_from_args(tool_data, timeline, round_number=2)
+
+    assert isinstance(timeline.added_card, SubagentCard)
+    assert len(captured_cards) == 1
+    assert captured_cards[0] is timeline.added_card
+
+
 def test_spawn_status_callback_uses_spawn_status_file_when_tool_result_is_missing(tmp_path):
     """Spawn status file should unblock cards that otherwise remain running."""
     app_cls = textual_display_module.TextualApp
@@ -496,6 +569,53 @@ def test_spawn_status_callback_uses_known_background_statuses_without_history() 
     assert updated.status == "canceled"
 
 
+def test_extract_background_statuses_from_subagent_payloads() -> None:
+    """ToolSection status extraction should understand subagent lifecycle payloads."""
+    # cancel_subagent style payload
+    cancel_payload = json.dumps(
+        {
+            "success": True,
+            "operation": "cancel_subagent",
+            "subagent_id": "jazz_research",
+            "status": "cancelled",
+        },
+    )
+    cancel_statuses = TimelineSection._extract_background_statuses_from_payload(cancel_payload)
+    assert cancel_statuses.get("jazz_research") == "cancelled"
+
+    # list_subagents style payload
+    list_payload = json.dumps(
+        {
+            "success": True,
+            "operation": "list_subagents",
+            "subagents": [
+                {
+                    "subagent_id": "jazz_research",
+                    "status": "cancelled",
+                },
+            ],
+        },
+    )
+    list_statuses = TimelineSection._extract_background_statuses_from_payload(list_payload)
+    assert list_statuses.get("jazz_research") == "cancelled"
+
+    # spawn_subagents style payload
+    spawn_payload = json.dumps(
+        {
+            "success": True,
+            "operation": "spawn_subagents",
+            "subagents": [
+                {
+                    "subagent_id": "jazz_research",
+                    "status": "running",
+                },
+            ],
+        },
+    )
+    spawn_statuses = TimelineSection._extract_background_statuses_from_payload(spawn_payload)
+    assert spawn_statuses.get("jazz_research") == "running"
+
+
 def test_running_progress_bar_caps_at_99_percent() -> None:
     """Running subagents should not render a full 100% bar until terminal state."""
     subagent = _make_subagent(
@@ -558,6 +678,21 @@ def test_completed_progress_bar_uses_available_width(monkeypatch) -> None:  # no
 
     bar = column._build_progress_bar()
     assert bar.plain == "━" * 37
+
+
+def test_subagent_card_open_modal_event_carries_source_card() -> None:
+    """OpenModal events should include source card for same-ID collision handling."""
+    running = _make_subagent("evaluator_beatles_site", status="running")
+    card = SubagentCard(subagents=[running], tool_call_id="item_88")
+
+    posted: list[object] = []
+    card.post_message = lambda message: posted.append(message)  # type: ignore[assignment]
+
+    card._request_open(running, [running])
+
+    assert posted
+    event = posted[0]
+    assert getattr(event, "card", None) is card
 
 
 async def test_subagent_card_ignores_style_env_variants(monkeypatch) -> None:  # noqa: ANN001 - pytest fixture type

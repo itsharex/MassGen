@@ -1158,7 +1158,7 @@ class TimelineSection(ScrollableContainer):
 
     @staticmethod
     def _extract_background_statuses_from_payload(payload: Any) -> dict[str, str]:
-        """Extract job_id -> status mappings from status/result/list payloads."""
+        """Extract async/subagent identifier -> status mappings from tool payloads."""
         parsed: Any = payload
         if isinstance(payload, str):
             raw = payload.strip()
@@ -1172,14 +1172,24 @@ class TimelineSection(ScrollableContainer):
             return {}
 
         extracted: dict[str, str] = {}
-        entries = []
+        entries: list[dict[str, Any]] = []
         if isinstance(parsed.get("jobs"), list):
             entries.extend(item for item in parsed.get("jobs", []) if isinstance(item, dict))
         if "job_id" in parsed:
             entries.append(parsed)
+        if isinstance(parsed.get("subagents"), list):
+            entries.extend(item for item in parsed.get("subagents", []) if isinstance(item, dict))
+        if isinstance(parsed.get("results"), list):
+            entries.extend(item for item in parsed.get("results", []) if isinstance(item, dict))
+        if isinstance(parsed.get("spawned_subagents"), list):
+            entries.extend(item for item in parsed.get("spawned_subagents", []) if isinstance(item, dict))
+        if "subagent_id" in parsed:
+            entries.append(parsed)
 
         for entry in entries:
             job_id = str(entry.get("job_id") or "").strip()
+            if not job_id:
+                job_id = str(entry.get("subagent_id") or entry.get("id") or "").strip()
             status = str(entry.get("status") or "").strip().lower()
             if job_id and status:
                 extracted[job_id] = status

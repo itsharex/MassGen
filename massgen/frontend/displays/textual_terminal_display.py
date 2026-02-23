@@ -5462,11 +5462,18 @@ if TEXTUAL_AVAILABLE:
                     plan_mode = self._mode_bar.get_plan_mode()
                 except Exception:
                     pass
+
+            mode_required: int | None = None
+            meta_required: int | None = None
+            one_row_required: int | None = None
+            decision_reason = ""
+            forced_compact = False
             # Plan/execute/analysis modes expose longer run-control labels and
             # an extra settings affordance in the left bar; stack the right meta
             # panel earlier to keep run controls readable in standard terminals.
             if plan_mode in {"plan", "execute", "analysis"}:
                 stack_meta = width <= 150
+                decision_reason = "plan_mode_threshold"
             else:
                 # In normal mode, keep one-row layout whenever the compacted
                 # left controls and right meta panel actually fit.
@@ -5492,20 +5499,56 @@ if TEXTUAL_AVAILABLE:
                 meta_required = max(meta_primary_required, hint_required, 24)
                 one_row_required = mode_required + meta_required + 6
 
+                # If full labels cause stacking but compact labels would fit,
+                # proactively compact the mode controls to preserve single-row
+                # startup behavior in thin terminals.
+                if self._mode_bar and one_row_required > width and not self._mode_bar._compact_labels_active:
+                    try:
+                        self._mode_bar._apply_compact_labels(True)
+                        compact_mode_required = max(0, int(self._mode_bar._measure_control_width()))
+                        compact_one_row_required = compact_mode_required + meta_required + 6
+                        if compact_one_row_required <= width:
+                            self._mode_bar._compact_labels_active = True
+                            mode_required = compact_mode_required
+                            one_row_required = compact_one_row_required
+                            decision_reason = "forced_compact_for_fit"
+                            forced_compact = True
+                        else:
+                            # Revert if compact labels still cannot satisfy the row budget.
+                            self._mode_bar._apply_compact_labels(False)
+                    except Exception:
+                        pass
+
                 if width >= 150 and "meta-stacked" not in input_modes_row.classes:
                     # Keep a small tolerance on the tested wide threshold so
                     # minor width deltas do not force a stacked layout.
                     stack_meta = one_row_required > width + 2
+                    if not decision_reason:
+                        decision_reason = "wide_threshold_with_tolerance"
                 elif "meta-stacked" in input_modes_row.classes:
                     # Small hysteresis prevents stack/unstack oscillation.
                     stack_meta = one_row_required > max(0, width - 2)
+                    if not decision_reason:
+                        decision_reason = "stacked_hysteresis"
                 else:
                     stack_meta = one_row_required > width
+                    if not decision_reason:
+                        decision_reason = "fit_comparison"
 
             if stack_meta:
                 input_modes_row.add_class("meta-stacked")
             else:
                 input_modes_row.remove_class("meta-stacked")
+
+            mode_bar_compact = self._mode_bar.has_class("compact-layout") if self._mode_bar else None
+            tui_log(
+                "[INPUT_LAYOUT] "
+                f"width={width} plan_mode={plan_mode} stack_meta={stack_meta} "
+                f"reason={decision_reason} mode_required={mode_required} "
+                f"meta_required={meta_required} one_row_required={one_row_required} "
+                f"mode_bar_compact={mode_bar_compact} forced_compact={forced_compact} "
+                f"classes={list(input_modes_row.classes)}",
+            )
 
         def _build_vim_indicator_text(self, vim_normal: bool | None) -> str:
             """Build a width-aware vim status line for the input meta panel."""
@@ -6527,11 +6570,6 @@ Type your question and press Enter to ask the agents.
                     except Exception as e:
                         tui_log(f"[TextualDisplay] {e}")
 
-                    status_callback = self._build_spawn_status_callback(
-                        agent_id=agent_id,
-                        seed_subagents=subagents,
-                    )
-
                     round_number = max(
                         1,
                         int(getattr(panel, "_current_round", getattr(timeline, "_viewed_round", 1)) or 1),
@@ -6541,9 +6579,34 @@ Type your question and press Enter to ask the agents.
                     card = SubagentCard(
                         subagents=subagents,
                         tool_call_id=call_id,
-                        status_callback=status_callback,
+                        status_callback=None,
                         id=card_dom_id,
                     )
+
+                    status_callback = None
+                    try:
+                        try:
+                            status_callback = self._build_spawn_status_callback(
+                                agent_id=agent_id,
+                                seed_subagents=subagents,
+                                card=card,
+                            )
+                        except TypeError:
+                            # Backward compatibility for tests/overrides that still expose
+                            # the older two-argument callback builder shape.
+                            status_callback = self._build_spawn_status_callback(
+                                agent_id=agent_id,
+                                seed_subagents=subagents,
+                            )
+                    except Exception as e:
+                        tui_log(f"[TextualDisplay] {e}")
+
+                    if status_callback is not None:
+                        try:
+                            card.set_status_callback(status_callback)
+                        except Exception as e:
+                            tui_log(f"[TextualDisplay] {e}")
+
                     timeline.add_widget(card, round_number=round_number)
                     tui_log(
                         f"show_subagent_card_from_spawn: added SubagentCard with {len(subagents)} pending subagents",
@@ -12434,22 +12497,34 @@ Type your question and press Enter to ask the agents.
                 resolved_round = max(1, int(resolved_round or 1))
             except Exception:
                 resolved_round = 1
-            status_callback = None
-            app = getattr(self, "app", None)
-            if app and hasattr(app, "_build_spawn_status_callback"):
-                try:
-                    status_callback = app._build_spawn_status_callback(
-                        agent_id=self.agent_id,
-                        seed_subagents=subagents,
-                    )
-                except Exception as e:
-                    tui_log(f"[TextualDisplay] {e}")
             card = SubagentCard(
                 subagents=subagents,
                 tool_call_id=tool_data.tool_id,
-                status_callback=status_callback,
+                status_callback=None,
                 id=card_id,
             )
+
+            app = getattr(self, "app", None)
+            if app and hasattr(app, "_build_spawn_status_callback"):
+                try:
+                    try:
+                        status_callback = app._build_spawn_status_callback(
+                            agent_id=self.agent_id,
+                            seed_subagents=subagents,
+                            card=card,
+                        )
+                    except TypeError:
+                        # Backward compatibility for tests/overrides that still expose
+                        # the older two-argument callback builder shape.
+                        status_callback = app._build_spawn_status_callback(
+                            agent_id=self.agent_id,
+                            seed_subagents=subagents,
+                        )
+                    if status_callback is not None:
+                        card.set_status_callback(status_callback)
+                except Exception as e:
+                    tui_log(f"[TextualDisplay] {e}")
+
             timeline.add_widget(card, round_number=resolved_round)
             tui_log(f"_show_subagent_card_from_args: added SubagentCard with {len(subagents)} pending subagents")
 

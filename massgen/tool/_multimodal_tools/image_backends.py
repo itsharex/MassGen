@@ -192,6 +192,7 @@ async def call_claude_code(
         ClaudeSDKClient,
         ResultMessage,
         TextBlock,
+        UserMessage,
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -206,7 +207,6 @@ async def call_claude_code(
 
         options_kwargs: dict = {
             "allowed_tools": ["Read"],
-            "max_turns": 2,
             "cwd": tmpdir,
             # Unset CLAUDECODE to allow launching from within a Claude Code session
             # (the nested-session guard checks this env var)
@@ -226,8 +226,14 @@ async def call_claude_code(
 
             response_text = ""
             async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
+                logger.debug(
+                    f"[image_backends] Claude Code msg type={type(msg).__name__}, " f"has content={hasattr(msg, 'content')}",
+                )
+                if isinstance(msg, (AssistantMessage, UserMessage)):
                     for block in msg.content:
+                        logger.debug(
+                            f"[image_backends]   block type={type(block).__name__}, " f"has text={hasattr(block, 'text')}",
+                        )
                         if isinstance(block, TextBlock):
                             response_text += block.text
                 elif isinstance(msg, ResultMessage):
@@ -264,8 +270,6 @@ async def call_codex(
             shutil.copy2(img.path, dest)
             image_paths.append(str(dest))
 
-        image_arg = ",".join(image_paths)
-
         # Set up CODEX_HOME with auth — same pattern as massgen/backend/codex.py
         codex_home = Path(tmpdir) / ".codex"
         codex_home.mkdir(parents=True, exist_ok=True)
@@ -281,16 +285,16 @@ async def call_codex(
         cmd = [
             "codex",
             "exec",
+            prompt,
             "--full-auto",
             "--skip-git-repo-check",
             "--disable",
             "shell_tool",
             "-c",
-            'web_search="disabled"',
-            "-i",
-            image_arg,
-            prompt,
+            "web_search=disabled",
         ]
+        for img_path in image_paths:
+            cmd.extend(["--image", img_path])
 
         env = {**os.environ, "NO_COLOR": "1", "CODEX_HOME": str(codex_home)}
 

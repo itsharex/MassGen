@@ -2140,15 +2140,36 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                         warning=context_warning,
                     )
 
-            # Update state - use result.status directly for recovered states
-            # Status can be: completed, completed_but_timeout, partial, timeout, error
-            if result.success:
-                state.status = "completed"
-            elif result.status in ("timeout", "completed_but_timeout", "partial"):
-                state.status = result.status
+            # Preserve explicit cancellation if cancel_subagent() already marked the
+            # subagent terminal while this background task was still unwinding.
+            cancelled_statuses = {"cancelled", "canceled"}
+            if str(state.status).lower() in cancelled_statuses:
+                if state.result is None:
+                    elapsed = 0.0
+                    if state.started_at is not None:
+                        elapsed = max(
+                            0.0,
+                            (datetime.now() - state.started_at).total_seconds(),
+                        )
+                    state.result = SubagentResult.create_error(
+                        subagent_id=config.id,
+                        error="Subagent cancelled",
+                        workspace_path=str(workspace),
+                        execution_time_seconds=elapsed,
+                    )
+                result = state.result
             else:
-                state.status = "failed"
-            state.result = result
+                # Update state - use result.status directly for recovered states
+                # Status can be: completed, completed_but_timeout, partial, timeout, error
+                if result.success:
+                    state.status = "completed"
+                elif result.status in ("timeout", "completed_but_timeout", "partial"):
+                    state.status = result.status
+                else:
+                    state.status = "failed"
+                state.result = result
+
+            completion_status = "cancelled" if str(state.status).lower() in cancelled_statuses else result.status
 
             # Invoke registered completion callbacks to notify about background completion
             self._invoke_completion_callbacks(config.id, result)
@@ -2158,14 +2179,14 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 self._append_conversation(config.id, "assistant", result.answer)
 
             logger.info(
-                f"[SubagentManager] Background subagent {config.id} finished with status: {result.status}, " f"time: {result.execution_time_seconds:.2f}s",
+                f"[SubagentManager] Background subagent {config.id} finished with status: {completion_status}, " f"time: {result.execution_time_seconds:.2f}s",
             )
 
             # Log subagent completion event for structured logging
             log_subagent_complete(
                 subagent_id=config.id,
                 parent_agent_id=self.parent_agent_id,
-                status=result.status,
+                status=completion_status,
                 execution_time_seconds=result.execution_time_seconds,
                 success=result.success,
                 token_usage=result.token_usage,
