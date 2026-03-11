@@ -312,6 +312,10 @@ def test_auto_injected_evaluator_result_block_includes_summary():
     assert "/tmp/eval/critique_packet.md" in block
     assert "/tmp/eval/verdict.json" in block
     assert "/tmp/eval/next_tasks.json" in block
+    assert "If the task plan includes correctness-critical tasks" in block
+    assert "do those first" in block
+    assert "remaining higher-order work" in block
+    assert "final preserve/regression verification" in block
 
 
 def test_auto_injected_block_strips_absolute_workspace_paths():

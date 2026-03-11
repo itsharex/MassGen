@@ -1123,6 +1123,22 @@ class TestProposeImprovements:
         assert verify_entry["execution"] == {"mode": "delegate", "subagent_type": "evaluator"}
         assert "evaluator or critic subagent" in verify_entry["description"]
         assert "without revealing which answer is yours" in verify_entry["description"]
+        assert "correctness fixes still hold after later changes" in verify_entry["description"]
+
+    def test_result_message_prioritizes_correctness_before_polish(self):
+        """Improvement validation message should make blocker correctness precedence explicit."""
+        result = evaluate_proposed_improvements(
+            improvements={"E2": [{"plan": "fix cards", "sources": [], "impact": "structural"}]},
+            failed_criteria=["E2"],
+            items=["Check 1", "Check 2"],
+            all_criteria_ids=["E1", "E2"],
+            preserve={"E1": {"what": "hero impact", "source": "agent1.2"}},
+        )
+        assert result["valid"] is True
+        lower = result["message"].lower()
+        assert "correctness-critical tasks first" in lower
+        assert "verify_preserve" in result["message"]
+        assert "correctness fixes still hold" in lower
 
     def test_task_plan_improve_entries_have_sources(self):
         """Improve entries include plan and sources fields."""
@@ -3293,11 +3309,13 @@ class TestConvertTaskPlanToInjectFormat:
         assert "[E3]" in task["description"]
         assert task["priority"] == "high"
         assert task["verification"] == (
-            "All preserved elements verified in actual output (run/render/screenshot as appropriate), " "not just present in source files; passing criteria scores confirmed not dropped"
+            "All preserved elements verified in actual output (run/render/screenshot as appropriate), "
+            "not just present in source files; preserved strengths intact; earlier correctness fixes still pass after later changes; passing criteria scores confirmed not dropped"
         )
         assert task["metadata"]["type"] == "verify_preserve"
         assert len(task["metadata"]["items"]) == 2
         assert task["metadata"]["injected"] is True
+        assert "correctness fixes still pass after later changes" in task["description"]
 
     def test_convert_verify_preserve_item_preserves_execution(self):
         """verify_preserve conversion should preserve evaluator/critic delegation execution."""

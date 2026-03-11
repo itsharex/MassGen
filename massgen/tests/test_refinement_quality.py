@@ -391,50 +391,42 @@ class TestCriteriaTierSystem:
         assert c.category == "could"
 
     def test_backward_compat_core_maps_to_must(self):
-        """Parsing 'core' maps to 'must' for backward compatibility."""
+        """Parsing 'core' and 'stretch' both map to 'must'."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
         response = '{"criteria": [' '{"text": "t1", "category": "core"},' '{"text": "t2", "category": "core"},' '{"text": "t3", "category": "core"},' '{"text": "t4", "category": "stretch"}' "]}"
         result = _parse_criteria_response(response)
         assert result is not None
-        assert result[0].category == "must"
-        assert result[1].category == "must"
-        assert result[2].category == "must"
-        assert result[3].category == "could"
+        for c in result:
+            assert c.category == "must"
 
-    def test_new_categories_parsed_directly(self):
-        """New must/should/could categories are parsed directly."""
+    def test_new_categories_parsed_all_must(self):
+        """All input categories (must/should/could) are promoted to must."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
         response = '{"criteria": [' '{"text": "t1", "category": "must"},' '{"text": "t2", "category": "must"},' '{"text": "t3", "category": "should"},' '{"text": "t4", "category": "could"}' "]}"
         result = _parse_criteria_response(response)
         assert result is not None
-        assert result[0].category == "must"
-        assert result[2].category == "should"
-        assert result[3].category == "could"
+        for c in result:
+            assert c.category == "must"
 
 
 class TestDefaultCriteriaTiers:
     """Tests for default criteria using new tier names."""
 
-    def test_default_categories_use_new_tiers(self):
-        """Default categories use must/should/could."""
+    def test_default_categories_all_must(self):
+        """Default categories are all 'must'."""
         from massgen.evaluation_criteria_generator import _DEFAULT_CATEGORIES
 
-        assert "must" in _DEFAULT_CATEGORIES
-        # Should have at least one 'could' (was 'stretch')
-        assert "could" in _DEFAULT_CATEGORIES
+        assert all(c == "must" for c in _DEFAULT_CATEGORIES)
 
-    def test_default_criteria_have_new_tiers(self):
-        """get_default_criteria returns criteria with new tier names."""
+    def test_default_criteria_all_must(self):
+        """get_default_criteria returns criteria all with category 'must'."""
         from massgen.evaluation_criteria_generator import get_default_criteria
 
         criteria = get_default_criteria(has_changedoc=False)
-        categories = {c.category for c in criteria}
-        # Must use new tier names, not old ones
-        assert "core" not in categories
-        assert "stretch" not in categories
-        assert "must" in categories
+        for c in criteria:
+            assert c.category == "must", f"{c.id} has category '{c.category}'"
 
     def test_default_criteria_include_quality_craft(self):
         """Default criteria always include a quality/craft criterion."""
@@ -443,7 +435,7 @@ class TestDefaultCriteriaTiers:
         criteria = get_default_criteria(has_changedoc=False)
         craft = [c for c in criteria if "intentional" in c.text or "craft" in c.text]
         assert len(craft) == 1
-        assert craft[0].category == "should"
+        assert craft[0].category == "must"
 
 
 class TestPresetsTiers:
@@ -489,15 +481,16 @@ class TestPresetsTiers:
 class TestGenerationPromptTiers:
     """Tests for the updated generation prompt."""
 
-    def test_generation_prompt_has_must_should_could(self):
-        """Generation prompt mentions MUST/SHOULD/COULD tiers."""
+    def test_generation_prompt_has_correctness_and_craft_concepts(self):
+        """Generation prompt still covers correctness and craft even without tier labels."""
         from massgen.evaluation_criteria_generator import EvaluationCriteriaGenerator
 
         gen = EvaluationCriteriaGenerator()
         prompt = gen._build_generation_prompt("test task", has_changedoc=False)
-        assert "MUST" in prompt
-        assert "SHOULD" in prompt
-        assert "COULD" in prompt
+        assert "correctness" in prompt.lower()
+        assert "craft" in prompt.lower()
+        # Tier system section should be removed
+        assert "## Tier System" not in prompt
 
     def test_generation_prompt_has_concrete_examples(self):
         """Generation prompt includes concrete vs abstract examples."""

@@ -482,7 +482,10 @@ def evaluate_proposed_improvements(
     if normalized_preserve:
         preserve_items = [{"criterion_id": cid, "what": p["what"], "source": p["source"]} for cid, p in normalized_preserve.items()]
         verify_description = (
-            "Before submitting: verify these strengths haven't regressed — " "confirm each preserved item is present in the actual output, " "and that passing criteria scores haven't dropped."
+            "Before submitting: verify these strengths haven't regressed and "
+            "that earlier correctness fixes still hold after later changes — "
+            "confirm each preserved item is present in the actual output, and "
+            "that passing criteria scores haven't dropped."
         )
         if bool(_state.get("subagents_enabled")):
             verify_description += (
@@ -511,9 +514,12 @@ def evaluate_proposed_improvements(
             f"Improvements validated for {len(failed_criteria)} criteria. "
             f"{len(normalized_preserve)} criteria marked for preservation. "
             "Add each item from task_plan to your task plan tool, then "
-            "execute them. The verify_preserve item at the end is a final "
-            "guardrail — confirm preserved strengths are intact before submitting. "
-            "Do not skip criteria or substitute easier work."
+            "execute them. Do correctness-critical tasks first when present, "
+            "then the remaining higher-order work. The verify_preserve item at "
+            "the end is a final guardrail — confirm preserved strengths are "
+            "intact and that earlier correctness fixes still hold after later "
+            "changes before submitting. Do not defer blocker correctness fixes "
+            "in favor of easier polish."
         ),
     }
     if normalized_preserve:
@@ -1226,11 +1232,15 @@ def _convert_task_plan_to_inject_format(task_plan: list[dict]) -> list[dict]:
                 "description": (
                     f"Before submitting: verify preserved strengths haven't regressed — {bullet_list}. "
                     "Confirm each preserved item is present in the actual output (run/render/screenshot, "
-                    "not just checking the code), and that passing criteria scores haven't dropped."
+                    "not just checking the code), confirm preserved strengths remain intact, and make sure "
+                    "earlier correctness fixes still pass after later changes. "
+                    "Passing criteria scores also must not drop."
                     f"{blind_eval_suffix}"
                 ),
                 "verification": (
-                    "All preserved elements verified in actual output (run/render/screenshot as appropriate), " "not just present in source files; passing criteria scores confirmed not dropped"
+                    "All preserved elements verified in actual output (run/render/screenshot as appropriate), "
+                    "not just present in source files; preserved strengths intact; earlier correctness fixes "
+                    "still pass after later changes; passing criteria scores confirmed not dropped"
                 ),
                 "priority": "high",
                 "metadata": {
@@ -1565,8 +1575,12 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
             result["message"] = (
                 f"Your task plan has been pre-populated with {task_count} items. "
                 "Call get_task_plan to see the list and start executing. "
-                "Preserve items are guardrails — verify after implementing. "
-                "Do not skip criteria."
+                "Correctness-critical tasks come first; if explicit correctness "
+                "criteria exist, use them as anchors. Preserve items are the "
+                "final regression check — verify after implementing that "
+                "preserved strengths remain and earlier correctness fixes still "
+                "hold. Do not defer blocker correctness fixes in favor of "
+                "easier polish."
             )
             # Append subagent delegation guidance when subagents are enabled
             if state_for_improve.get("subagents_enabled"):

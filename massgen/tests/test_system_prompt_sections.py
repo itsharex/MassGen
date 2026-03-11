@@ -125,6 +125,21 @@ def test_checklist_gated_decision_orchestrator_managed_auto_injection_is_task_dr
     assert "multiple independent critiques" not in lower
 
 
+def test_checklist_gated_decision_auto_injection_prioritizes_correctness_then_regression_check():
+    """Auto-injected round-evaluator guidance should make correctness-first execution order explicit."""
+    content = _build_checklist_gated_decision(
+        checklist_items=_CHECKLIST_ITEMS,
+        round_evaluator_before_checklist=True,
+        orchestrator_managed_round_evaluator=True,
+    )
+    lower = content.lower()
+    assert "if the task plan includes correctness-critical tasks" in lower
+    assert "do those first" in lower
+    assert "then execute the remaining higher-order work" in lower
+    assert "use explicit correctness criteria when they exist" in lower
+    assert "finish with the final preserve/regression verification" in lower
+
+
 def test_checklist_gated_decision_includes_peer_build_copy_guidance():
     """Checklist workflow should explain how to evaluate peer build outputs
     without mutating read-only shared snapshots."""
@@ -216,6 +231,18 @@ def test_task_planning_section_is_mandatory_for_complex_tasks():
     content = TaskPlanningSection().build_content()
     assert "REQUIRED" in content
     assert "propose_improvements" in content
+
+
+def test_task_planning_section_prioritizes_correctness_and_final_regression_verification():
+    """Shared planning guidance should order blocker correctness before polish and re-check it at the end."""
+    content = TaskPlanningSection().build_content()
+    lower = content.lower()
+    assert "if the plan includes correctness-critical tasks" in lower
+    assert "complete those first" in lower
+    assert "then move to the remaining quality, novelty, or polish tasks" in lower
+    assert "use explicit correctness criteria when they exist" in lower
+    assert "final preserve/regression pass" in lower
+    assert "correctness fixes still pass after later changes" in lower
 
 
 def test_checklist_gated_decision_requires_verification_replay_memory_capture():

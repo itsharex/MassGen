@@ -1329,6 +1329,37 @@ class TestSpawnSubagentsBackgroundParameter:
         assert result["summary"]["total"] == 1
 
     @pytest.mark.asyncio
+    async def test_blocking_mode_preserves_effective_timeout_in_status_and_results(self, monkeypatch, tmp_path):
+        """Blocking spawn_subagents should carry the effective timeout into TUI-facing payloads."""
+        server, handler = await _build_spawn_subagents_handler(monkeypatch, tmp_path)
+        fake_manager = _FakeSubagentManager()
+        captured_spawn_status = {}
+
+        async def _capture_spawn_parallel(tasks, timeout_seconds=None, refine=True):
+            status_file = tmp_path / "subagents" / "_spawn_status.json"
+            captured_spawn_status["payload"] = json.loads(status_file.read_text())
+            return await _FakeSubagentManager.spawn_parallel(
+                fake_manager,
+                tasks,
+                timeout_seconds=timeout_seconds,
+                refine=refine,
+            )
+
+        fake_manager.spawn_parallel = _capture_spawn_parallel
+        monkeypatch.setattr(server, "_get_manager", lambda: fake_manager)
+        monkeypatch.setattr(server, "_default_timeout", 1800)
+
+        result = await _invoke_handler(
+            handler,
+            tasks=[{"task": "Do work", "subagent_id": "w1", "context_paths": []}],
+            background=False,
+            refine=True,
+        )
+
+        assert captured_spawn_status["payload"]["subagents"][0]["timeout_seconds"] == 1800
+        assert result["results"][0]["timeout_seconds"] == 1800
+
+    @pytest.mark.asyncio
     async def test_background_mode_contract_parity(self, monkeypatch, tmp_path):
         """Background spawn_subagents should preserve running-status contract."""
         server, handler = await _build_spawn_subagents_handler(monkeypatch, tmp_path)
@@ -1348,6 +1379,23 @@ class TestSpawnSubagentsBackgroundParameter:
         assert result["subagents"][0]["subagent_id"] == "w1"
         assert result["subagents"][0]["status"] == "running"
         assert "answer" not in result["subagents"][0]
+
+    @pytest.mark.asyncio
+    async def test_background_mode_preserves_effective_timeout_in_running_payload(self, monkeypatch, tmp_path):
+        """Background spawn_subagents should expose the configured timeout to the TUI immediately."""
+        server, handler = await _build_spawn_subagents_handler(monkeypatch, tmp_path)
+        fake_manager = _FakeSubagentManager()
+        monkeypatch.setattr(server, "_get_manager", lambda: fake_manager)
+        monkeypatch.setattr(server, "_default_timeout", 1800)
+
+        result = await _invoke_handler(
+            handler,
+            tasks=[{"task": "Do work", "subagent_id": "w1", "context_paths": []}],
+            background=True,
+            refine=True,
+        )
+
+        assert result["subagents"][0]["timeout_seconds"] == 1800
 
     @pytest.mark.asyncio
     async def test_inherit_spawning_backend_rejects_task_model_override(self, monkeypatch, tmp_path):

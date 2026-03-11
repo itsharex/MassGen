@@ -878,6 +878,13 @@ class Orchestrator(ChatAgent):
             return
 
         try:
+            _emitter = get_event_emitter()
+            if _emitter:
+                _emitter.emit_raw(
+                    StructuredEventType.EVALUATION_CRITERIA_SET,
+                    criteria=payload["criteria"],
+                    source=payload["source"],
+                )
             display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
             if display and hasattr(display, "set_evaluation_criteria"):
                 display.set_evaluation_criteria(payload["criteria"], source=payload["source"])
@@ -3103,6 +3110,17 @@ class Orchestrator(ChatAgent):
                 status_callback: Any,
                 log_path: str | None,
             ) -> None:
+                _emitter = get_event_emitter()
+                if _emitter:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_STARTED,
+                        agent_id=persona_anchor_agent,
+                        subagent_id=subagent_id,
+                        task=subagent_task,
+                        timeout_seconds=timeout_seconds,
+                        call_id=persona_call_id,
+                        log_path=log_path,
+                    )
                 if display and persona_anchor_agent and hasattr(display, "notify_runtime_subagent_started"):
                     try:
                         display.notify_runtime_subagent_started(
@@ -3141,6 +3159,40 @@ class Orchestrator(ChatAgent):
             )
 
             source = getattr(generator, "last_generation_source", "unknown")
+
+            # Emit event for replay
+            _emitter = get_event_emitter()
+            if _emitter and persona_anchor_agent:
+                if source == "subagent":
+                    _preview_entries: list[str] = []
+                    for _aid, _persona in personas.items():
+                        _summary = _persona.attributes.get(
+                            "approach_summary",
+                            _persona.attributes.get("thinking_style", ""),
+                        )
+                        if _summary:
+                            _preview_entries.append(f"{_aid}: {_summary}")
+                        if len(_preview_entries) >= 2:
+                            break
+                    _preview = " | ".join(_preview_entries)[:400]
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=persona_anchor_agent,
+                        subagent_id="persona_generation",
+                        call_id=persona_call_id,
+                        status="completed",
+                        answer_preview=_preview or "Personas generated successfully.",
+                    )
+                else:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=persona_anchor_agent,
+                        subagent_id="persona_generation",
+                        call_id=persona_call_id,
+                        status="failed",
+                        error="Used fallback personas.",
+                    )
+
             if display and persona_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
                 try:
                     if source == "subagent":
@@ -3202,6 +3254,16 @@ class Orchestrator(ChatAgent):
             try:
                 display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
                 persona_anchor_agent = next(iter(self.agents.keys()), None)
+                _emitter = get_event_emitter()
+                if _emitter and persona_anchor_agent:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=persona_anchor_agent,
+                        subagent_id="persona_generation",
+                        call_id="persona_generation_persona_generation",
+                        status="failed",
+                        error=str(e),
+                    )
                 if display and persona_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
                     display.notify_runtime_subagent_completed(
                         agent_id=persona_anchor_agent,
@@ -3290,6 +3352,17 @@ class Orchestrator(ChatAgent):
                 status_callback: Any,
                 log_path: str | None,
             ) -> None:
+                _emitter = get_event_emitter()
+                if _emitter:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_STARTED,
+                        agent_id=criteria_anchor_agent,
+                        subagent_id=subagent_id,
+                        task=subagent_task,
+                        timeout_seconds=timeout_seconds,
+                        call_id=criteria_call_id,
+                        log_path=log_path,
+                    )
                 if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_started"):
                     try:
                         display.notify_runtime_subagent_started(
@@ -3344,6 +3417,29 @@ class Orchestrator(ChatAgent):
                 f"[Orchestrator] Generated {len(criteria)} evaluation criteria (source: {source})",
             )
 
+            # Emit event for replay
+            _emitter = get_event_emitter()
+            if _emitter and criteria_anchor_agent:
+                if source == "subagent":
+                    _crit_preview = " | ".join(f"{c.id}: {c.text[:60]}..." if len(c.text) > 60 else f"{c.id}: {c.text}" for c in criteria[:3])
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=criteria_anchor_agent,
+                        subagent_id="criteria_generation",
+                        call_id=criteria_call_id,
+                        status="completed",
+                        answer_preview=_crit_preview or f"{len(criteria)} criteria generated.",
+                    )
+                else:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=criteria_anchor_agent,
+                        subagent_id="criteria_generation",
+                        call_id=criteria_call_id,
+                        status="completed",
+                        answer_preview=f"Using {len(criteria)} fallback criteria.",
+                    )
+
             # Notify display of completion
             if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
                 try:
@@ -3375,6 +3471,16 @@ class Orchestrator(ChatAgent):
             try:
                 display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
                 criteria_anchor_agent = next(iter(self.agents.keys()), None)
+                _emitter = get_event_emitter()
+                if _emitter and criteria_anchor_agent:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=criteria_anchor_agent,
+                        subagent_id="criteria_generation",
+                        call_id="criteria_generation_criteria_generation",
+                        status="failed",
+                        error=str(e),
+                    )
                 if display and criteria_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
                     display.notify_runtime_subagent_completed(
                         agent_id=criteria_anchor_agent,
@@ -4964,14 +5070,20 @@ Your answer:"""
         ):
             try:
                 display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
+                persona_map: dict[str, str] = {}
+                for aid, persona in self._generated_personas.items():
+                    summary = persona.attributes.get(
+                        "approach_summary",
+                        persona.attributes.get("thinking_style"),
+                    )
+                    persona_map[aid] = summary.strip() if isinstance(summary, str) and summary.strip() else persona.persona_text
+                _emitter = get_event_emitter()
+                if _emitter:
+                    _emitter.emit_raw(
+                        StructuredEventType.PERSONAS_SET,
+                        personas=persona_map,
+                    )
                 if display and hasattr(display, "set_agent_personas"):
-                    persona_map: dict[str, str] = {}
-                    for aid, persona in self._generated_personas.items():
-                        summary = persona.attributes.get(
-                            "approach_summary",
-                            persona.attributes.get("thinking_style"),
-                        )
-                        persona_map[aid] = summary.strip() if isinstance(summary, str) and summary.strip() else persona.persona_text
                     display.set_agent_personas(persona_map)
             except Exception:
                 pass  # TUI notification is non-critical
@@ -5024,6 +5136,17 @@ Your answer:"""
                 status_callback: Any,
                 log_path: str | None,
             ) -> None:
+                _emitter = get_event_emitter()
+                if _emitter:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_STARTED,
+                        agent_id=decomposition_anchor_agent,
+                        subagent_id=subagent_id,
+                        task=subagent_task,
+                        timeout_seconds=timeout_seconds,
+                        call_id=decomposition_call_id,
+                        log_path=log_path,
+                    )
                 if display and decomposition_anchor_agent and hasattr(display, "notify_runtime_subagent_started"):
                     try:
                         display.notify_runtime_subagent_started(
@@ -5073,6 +5196,30 @@ Your answer:"""
                             self._agent_subtask_criteria[aid] = criteria_from_inline(criteria_inline)
 
                 source = getattr(decomposer, "last_generation_source", "unknown")
+
+                # Emit event for replay
+                _emitter = get_event_emitter()
+                if _emitter and decomposition_anchor_agent:
+                    if source == "subagent":
+                        _subtask_preview = " | ".join(f"{aid}: {subtask}" for aid, subtask in list(self._agent_subtasks.items())[:2])[:400]
+                        _emitter.emit_raw(
+                            StructuredEventType.PRE_COLLAB_COMPLETED,
+                            agent_id=decomposition_anchor_agent,
+                            subagent_id="task_decomposition",
+                            call_id=decomposition_call_id,
+                            status="completed",
+                            answer_preview=_subtask_preview or "Subtasks generated successfully.",
+                        )
+                    else:
+                        _emitter.emit_raw(
+                            StructuredEventType.PRE_COLLAB_COMPLETED,
+                            agent_id=decomposition_anchor_agent,
+                            subagent_id="task_decomposition",
+                            call_id=decomposition_call_id,
+                            status="failed",
+                            error="Used fallback decomposition subtasks.",
+                        )
+
                 if display and decomposition_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
                     try:
                         if source == "subagent":
@@ -5115,6 +5262,16 @@ Your answer:"""
                 logger.warning(
                     f"[Orchestrator] Auto-decomposition failed: {e}, agents will work without explicit subtasks",
                 )
+                _emitter = get_event_emitter()
+                if _emitter and decomposition_anchor_agent:
+                    _emitter.emit_raw(
+                        StructuredEventType.PRE_COLLAB_COMPLETED,
+                        agent_id=decomposition_anchor_agent,
+                        subagent_id="task_decomposition",
+                        call_id=decomposition_call_id,
+                        status="failed",
+                        error=str(e),
+                    )
                 if display and decomposition_anchor_agent and hasattr(display, "notify_runtime_subagent_completed"):
                     try:
                         display.notify_runtime_subagent_completed(
@@ -5129,12 +5286,17 @@ Your answer:"""
 
         # Notify TUI of subtask assignments (from config or auto-decomposition)
         if self._agent_subtasks and any(self._agent_subtasks.values()):
+            _subtask_map = {k: v for k, v in self._agent_subtasks.items() if v}
             try:
+                _emitter = get_event_emitter()
+                if _emitter:
+                    _emitter.emit_raw(
+                        StructuredEventType.SUBTASKS_SET,
+                        subtasks=_subtask_map,
+                    )
                 display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
                 if display and hasattr(display, "set_agent_subtasks"):
-                    display.set_agent_subtasks(
-                        {k: v for k, v in self._agent_subtasks.items() if v},
-                    )
+                    display.set_agent_subtasks(_subtask_map)
             except Exception:
                 pass  # TUI notification is non-critical
 
@@ -6292,6 +6454,66 @@ Your answer:"""
         logger.info(
             f"[Orchestrator] Resume complete: restored {len(answer_snapshots)} snapshots, " f"agents will start at round {target_round + 1}",
         )
+
+    def _restore_workspace_from_latest_answer_dir(self, agent_id: str) -> bool:
+        """Restore an agent's workspace from its most recent per-round answer directory.
+
+        Used before final snapshot save in timeout/fallback paths where the live
+        workspace has been cleared between rounds and only has scaffolding.
+
+        Returns True if restoration happened, False otherwise.
+        """
+        agent = self.agents.get(agent_id)
+        if not agent or not agent.backend.filesystem_manager:
+            return False
+
+        log_session_dir = get_log_session_dir()
+        if not log_session_dir:
+            return False
+
+        agent_log_dir = log_session_dir / agent_id
+        if not agent_log_dir.exists():
+            return False
+
+        # Find all timestamped answer directories (format: YYYYMMDD_HHMMSS_ffffff)
+        # Sort descending to get most recent first
+        answer_dirs = sorted(
+            [d for d in agent_log_dir.iterdir() if d.is_dir() and d.name != "final" and (d / "workspace").is_dir()],
+            key=lambda d: d.name,
+            reverse=True,
+        )
+
+        if not answer_dirs:
+            return False
+
+        latest_workspace = answer_dirs[0] / "workspace"
+        workspace_path = Path(agent.backend.filesystem_manager.cwd)
+
+        # Copy items from the latest answer dir into the live workspace
+        # (non-overwriting — preserve anything already there)
+        items_restored = 0
+        for item in latest_workspace.iterdir():
+            if item.is_symlink():
+                continue
+            dest = workspace_path / item.name
+            if dest.exists():
+                continue
+            if item.is_file():
+                shutil.copy2(item, dest)
+                items_restored += 1
+            elif item.is_dir():
+                shutil.copytree(
+                    item,
+                    dest,
+                    symlinks=True,
+                    ignore_dangling_symlinks=True,
+                )
+                items_restored += 1
+
+        logger.info(
+            f"[Orchestrator] Restored {items_restored} items from latest answer dir " f"{latest_workspace} to workspace for {agent_id}",
+        )
+        return items_restored > 0
 
     async def _save_agent_snapshot(
         self,
@@ -8487,10 +8709,56 @@ Your answer:"""
                     )
                     raw_result = None
                 else:
-                    raw_result = await client.call_tool(
-                        tool_name=full_tool_name,
-                        arguments=params,
-                    )
+                    raw_result = None
+                    background_error: Exception | None = None
+                    retry_error: Exception | None = None
+                    retry_attempted = False
+
+                    try:
+                        raw_result = await client.call_tool(
+                            tool_name=full_tool_name,
+                            arguments=params,
+                        )
+                    except Exception as exc:
+                        background_error = exc
+                        reconnect = getattr(client, "reconnect", None)
+                        should_retry = callable(reconnect) and self._is_reconnectable_background_mcp_error(exc)
+                        if should_retry:
+                            retry_attempted = True
+                            logger.info(
+                                "[Orchestrator] Retrying %s for %s after background MCP reconnect",
+                                full_tool_name,
+                                parent_agent_id,
+                            )
+                            try:
+                                reconnect_result = reconnect(max_retries=1)
+                                if inspect.isawaitable(reconnect_result):
+                                    reconnect_result = await reconnect_result
+                                if reconnect_result:
+                                    raw_result = await client.call_tool(
+                                        tool_name=full_tool_name,
+                                        arguments=params,
+                                    )
+                                    background_error = None
+                                else:
+                                    retry_error = RuntimeError(
+                                        "Background MCP reconnect returned False",
+                                    )
+                            except Exception as reconnect_exc:
+                                retry_error = reconnect_exc
+
+                    if background_error is not None and raw_result is None:
+                        logger.debug(
+                            "[Orchestrator] Background MCP client call failed for %s (%s): %s",
+                            full_tool_name,
+                            parent_agent_id,
+                            background_error,
+                        )
+                        error_messages.append(str(background_error))
+                        if retry_attempted and retry_error is not None:
+                            error_messages.append(
+                                f"Reconnect retry failed for {full_tool_name}: {retry_error}",
+                            )
                 normalized = self._normalize_subagent_mcp_result(raw_result)
                 if normalized is not None:
                     return normalized
@@ -8548,6 +8816,21 @@ Your answer:"""
             "operation": tool_name,
             "error": f"No programmatic MCP client available for {full_tool_name}",
         }
+
+    @staticmethod
+    def _is_reconnectable_background_mcp_error(error: Exception | str) -> bool:
+        """Return whether a background MCP failure is likely recoverable via reconnect."""
+        normalized = str(error or "").strip().lower()
+        if not normalized:
+            return False
+        reconnect_markers = (
+            "not connected",
+            "disconnected",
+            "connection closed",
+            "connection lost",
+            "broken pipe",
+        )
+        return any(marker in normalized for marker in reconnect_markers)
 
     def _call_subagent_mcp_tool(
         self,
@@ -10689,10 +10972,16 @@ Your answer:"""
                 f"   - critique_packet.md: {critique_path}\n"
                 f"   - verdict.json: {verdict_path}\n"
                 f"   - next_tasks.json: {next_tasks_path}\n"
-                "3. Follow `implementation_guidance` on each task, then implement and verify.\n"
-                "4. If the deliverable is a pure text artifact, put the final\n"
+                "3. If the task plan includes correctness-critical tasks or tasks tied to\n"
+                "   explicit correctness criteria, do those first.\n"
+                "4. Then execute the remaining higher-order work and follow\n"
+                "   `implementation_guidance` on each task as written.\n"
+                "5. Finish with the final preserve/regression verification so\n"
+                "   preserved strengths remain intact and earlier correctness fixes still\n"
+                "   pass after later changes.\n"
+                "6. If the deliverable is a pure text artifact, put the final\n"
                 "   artifact body directly in `new_answer.content`.\n"
-                "5. Otherwise, call `new_answer` with your usual concise summary.\n\n"
+                "7. Otherwise, call `new_answer` with your usual concise summary.\n\n"
                 "Do NOT call `submit_checklist`.\n"
                 "Do NOT call `propose_improvements`.\n"
                 "Do NOT write a second diagnostic report.\n"
@@ -10900,7 +11189,7 @@ Your answer:"""
                 task_plan.append(
                     {
                         "type": "verify_preserve",
-                        "description": "Verify preserved strengths haven't regressed",
+                        "description": ("Verify preserved strengths haven't regressed and that earlier " "correctness fixes still pass after later changes"),
                         "execution": {"mode": "inline"},
                         "items": [
                             {
@@ -10958,7 +11247,7 @@ Your answer:"""
             task_plan.append(
                 {
                     "type": "verify_preserve",
-                    "description": "Verify preserved strengths haven't regressed",
+                    "description": ("Verify preserved strengths haven't regressed and that earlier " "correctness fixes still pass after later changes"),
                     "execution": {"mode": "inline"},
                     "items": [
                         {
@@ -11072,18 +11361,19 @@ Your answer:"""
         temp_workspace_path = await self._copy_all_snapshots_to_temp_workspace(parent_agent_id)
         coord_cfg = getattr(self.config, "coordination_config", None)
         evaluator_refine = bool(coord_cfg and getattr(coord_cfg, "round_evaluator_refine", False))
+        spawn_task = self._build_round_evaluator_task(parent_agent_id, answers)
+        spawn_context_paths = self._get_round_evaluator_context_paths(
+            parent_agent_id,
+            temp_workspace_path=temp_workspace_path,
+        )
+        task_payload: dict[str, Any] = {
+            "subagent_id": f"round_eval_r{upcoming_round}",
+            "task": spawn_task,
+            "subagent_type": "round_evaluator",
+            "context_paths": spawn_context_paths,
+        }
         spawn_args: dict[str, Any] = {
-            "tasks": [
-                {
-                    "subagent_id": f"round_eval_r{upcoming_round}",
-                    "task": self._build_round_evaluator_task(parent_agent_id, answers),
-                    "subagent_type": "round_evaluator",
-                    "context_paths": self._get_round_evaluator_context_paths(
-                        parent_agent_id,
-                        temp_workspace_path=temp_workspace_path,
-                    ),
-                },
-            ],
+            "tasks": [task_payload],
             "background": False,
             "refine": evaluator_refine,
         }
@@ -11983,16 +12273,23 @@ Your answer:"""
             if should_refresh_criteria_display and _active_items:
                 try:
                     _ui_display = getattr(self.coordination_ui, "display", None) if self.coordination_ui else None
+                    _crit_dicts = [
+                        {
+                            "id": f"E{_i + 1}",
+                            "text": _t,
+                            "category": (_active_categories or {}).get(f"E{_i + 1}", "should"),
+                            "verify_by": (_active_verify_by or {}).get(f"E{_i + 1}"),
+                        }
+                        for _i, _t in enumerate(_active_items)
+                    ]
+                    _emitter = get_event_emitter()
+                    if _emitter:
+                        _emitter.emit_raw(
+                            StructuredEventType.EVALUATION_CRITERIA_SET,
+                            criteria=_crit_dicts,
+                            source=_criteria_source,
+                        )
                     if _ui_display and hasattr(_ui_display, "set_evaluation_criteria"):
-                        _crit_dicts = [
-                            {
-                                "id": f"E{_i + 1}",
-                                "text": _t,
-                                "category": (_active_categories or {}).get(f"E{_i + 1}", "should"),
-                                "verify_by": (_active_verify_by or {}).get(f"E{_i + 1}"),
-                            }
-                            for _i, _t in enumerate(_active_items)
-                        ]
                         _ui_display.set_evaluation_criteria(_crit_dicts, source=_criteria_source)
                         self._criteria_display_payload = {
                             "criteria": _crit_dicts,
@@ -13957,6 +14254,12 @@ Your answer:"""
                     is_final=True,
                 )
 
+        # Restore workspace from latest per-round answer dir before final save.
+        # In timeout/fallback paths, the workspace may have been cleared between
+        # rounds and only has scaffolding — the real deliverables are in the
+        # per-round answer directories.
+        self._restore_workspace_from_latest_answer_dir(selected_agent_id)
+
         final_context = self.get_last_context(selected_agent_id)
         await self._save_agent_snapshot(
             selected_agent_id,
@@ -15111,6 +15414,9 @@ INSTRUCTIONS FOR NEXT ATTEMPT:
         finally:
             # Ensure final snapshot is always saved (even if "done" chunk wasn't yielded)
             if not final_snapshot_saved:
+                # Restore workspace in case it was cleared between rounds
+                self._restore_workspace_from_latest_answer_dir(self._selected_agent)
+
                 # Use clean_answer_content (excludes tool calls/results) for answer.txt
                 final_answer = clean_answer_content.strip() if clean_answer_content.strip() else self.agent_states[selected_agent_id].answer
                 final_context = self.get_last_context(selected_agent_id)

@@ -296,6 +296,7 @@ Reasoning:
 Across runtime modes, contracts remain stable:
 
 - blocking/background `spawn_subagents` response structure
+- TUI-facing spawn/continue payloads carry the effective `timeout_seconds`, so running progress bars reflect the configured runtime timeout
 - standardized background-tool lifecycle semantics for async jobs
 - `live_logs`/`full_logs` layout and references
 - subagent result `warning` field for fallback diagnostics

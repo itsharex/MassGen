@@ -255,6 +255,29 @@ def _save_subagents_to_filesystem() -> None:
         logger.error(f"[SubagentMCP] Failed to save registry: {e}")
 
 
+def _resolve_effective_timeout_seconds(manager: Any, timeout_seconds: int | None = None) -> int:
+    """Resolve the timeout the manager will actually enforce."""
+    clamp_timeout = getattr(manager, "_clamp_timeout", None)
+    if callable(clamp_timeout):
+        try:
+            return int(clamp_timeout(timeout_seconds))
+        except Exception:
+            pass
+
+    if timeout_seconds is not None:
+        return int(timeout_seconds)
+    return int(_default_timeout)
+
+
+def _attach_timeout_seconds(payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    """Ensure TUI-facing spawn payloads include timeout metadata."""
+    if payload.get("timeout_seconds") is not None:
+        return payload
+    enriched = dict(payload)
+    enriched["timeout_seconds"] = timeout_seconds
+    return enriched
+
+
 async def create_server() -> fastmcp.FastMCP:
     """Factory function to create and configure the subagent MCP server."""
     global _workspace_path, _parent_agent_id, _orchestrator_id, _parent_agent_configs
@@ -703,6 +726,7 @@ async def create_server() -> fastmcp.FastMCP:
         """
         try:
             manager = _get_manager()
+            effective_timeout_seconds = _resolve_effective_timeout_seconds(manager)
 
             # Validate tasks
             if not tasks:
@@ -906,11 +930,12 @@ async def create_server() -> fastmcp.FastMCP:
                         context_paths=task_config.get("context_paths") or [],
                         include_parent_workspace=task_config.get("include_parent_workspace", True),
                         system_prompt=task_config.get("system_prompt"),
-                        timeout_seconds=_default_timeout,
+                        timeout_seconds=effective_timeout_seconds,
                         refine=refine,
                         skills=task_config.get("skills"),
                         subagent_type=task_config.get("subagent_type") or None,
                     )
+                    info = _attach_timeout_seconds(info, effective_timeout_seconds)
                     # Clean up manager state for immediately-failed spawns
                     if info.get("status") == "error":
                         assigned_id = task_config.get("subagent_id", "")
@@ -945,6 +970,7 @@ async def create_server() -> fastmcp.FastMCP:
                                 "task": t.get("task", ""),
                                 "status": "running",
                                 "progress_percent": 0,
+                                "timeout_seconds": effective_timeout_seconds,
                                 "workspace": "",
                                 "log_path": "",
                             }
@@ -959,10 +985,11 @@ async def create_server() -> fastmcp.FastMCP:
                 results = run_async_safely(
                     manager.spawn_parallel(
                         tasks=normalized_tasks,
-                        timeout_seconds=_default_timeout,  # Use configured default, not model-specified
+                        timeout_seconds=effective_timeout_seconds,  # Use configured default, not model-specified
                         refine=refine,
                     ),
                 )
+                result_payloads = [_attach_timeout_seconds(r.to_dict(), effective_timeout_seconds) for r in results]
 
                 # Update status file with completion
                 if _workspace_path is not None:
@@ -971,7 +998,7 @@ async def create_server() -> fastmcp.FastMCP:
                         "status": "completed",
                         "started_at": started_at,
                         "completed_at": datetime.now().isoformat(),
-                        "subagents": [r.to_dict() for r in results],
+                        "subagents": result_payloads,
                     }
                     status_file.write_text(json.dumps(completed_status, indent=2))
 
@@ -988,7 +1015,7 @@ async def create_server() -> fastmcp.FastMCP:
                     "success": all_success,
                     "operation": "spawn_subagents",
                     "mode": "blocking",
-                    "results": [r.to_dict() for r in results],
+                    "results": result_payloads,
                     "summary": {
                         "total": len(results),
                         "completed": completed,
@@ -1123,6 +1150,7 @@ async def create_server() -> fastmcp.FastMCP:
         """
         try:
             manager = _get_manager()
+            effective_timeout_seconds = _resolve_effective_timeout_seconds(manager, timeout_seconds)
 
             # Validate inputs
             if not subagent_id or not subagent_id.strip():
@@ -1145,6 +1173,7 @@ async def create_server() -> fastmcp.FastMCP:
                     new_message=message,
                     timeout_seconds=timeout_seconds,
                 )
+                info = _attach_timeout_seconds(info, effective_timeout_seconds)
                 if str(info.get("status", "")).lower() == "error" or info.get("error"):
                     return {
                         "success": False,
@@ -1179,14 +1208,14 @@ async def create_server() -> fastmcp.FastMCP:
                     "operation": "continue_subagent",
                     "mode": "blocking",
                     "error": result.error,
-                    **result.to_dict(),
+                    **_attach_timeout_seconds(result.to_dict(), effective_timeout_seconds),
                 }
 
             return {
                 "success": True,
                 "operation": "continue_subagent",
                 "mode": "blocking",
-                **result.to_dict(),
+                **_attach_timeout_seconds(result.to_dict(), effective_timeout_seconds),
             }
 
         except Exception as e:

@@ -571,6 +571,7 @@ class TestBuildTaskPlanFromVerdict:
         assert [task["id"] for task in task_plan[:-1]] == ["reframe_ia", "route_map"]
         assert task_plan[-1]["type"] == "verify_preserve"
         assert task_plan[-1]["items"][0]["what"] == "Three-color brand palette"
+        assert "correctness fixes still pass after later changes" in task_plan[-1]["description"]
         assert task_plan[0]["id"] == "reframe_ia"
         assert task_plan[0]["description"] == "Replace brochure IA with route and region planning structure"
         assert "type" not in task_plan[0]

@@ -2350,6 +2350,104 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
             except Exception as e:
                 logger.warning(f"[SubagentManager] Failed to copy subagent workspace for {subagent_id}: {e}")
 
+        # Synthesize final/ snapshot if the subprocess was cancelled before
+        # its internal orchestrator could run finalization.
+        dest_logs_dir = log_dir / "full_logs"
+        if dest_logs_dir.exists():
+            self._synthesize_final_snapshot(dest_logs_dir)
+
+    def _synthesize_final_snapshot(self, full_logs: Path) -> None:
+        """Synthesize a ``final/`` directory from per-round answer dirs.
+
+        When a subagent is cancelled externally, its internal orchestrator
+        never runs finalization so ``final/<agent_id>/workspace/`` is never
+        created.  This method reconstructs it from the per-round answer
+        directories that *do* exist in ``full_logs/<agent_id>/<timestamp>/``.
+
+        Selection: winner (from status.json) > most recent answer by timestamp.
+        """
+        if (full_logs / "final").exists():
+            return  # Already finalized — nothing to do
+
+        # Read status.json for winner/historical_workspaces
+        status: dict = {}
+        status_file = full_logs / "status.json"
+        if status_file.exists():
+            try:
+                status = json.loads(status_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        winner = status.get("winner")
+
+        # Build a map of agent_id -> list of (timestamp, workspace_path)
+        # from directory structure: full_logs/<agent_id>/<timestamp>/workspace/
+        _skip_dirs = {
+            "final",
+            "agent_outputs",
+            "planning_injection",
+            "shared_tools",
+            "snapshots",
+        }
+        agent_answers: dict[str, list[tuple[str, Path]]] = {}
+        for item in full_logs.iterdir():
+            if not item.is_dir() or item.name.startswith(".") or item.name in _skip_dirs:
+                continue
+            # Check if this looks like an agent dir (has timestamped subdirs)
+            for ts_dir in item.iterdir():
+                if ts_dir.is_dir() and (ts_dir / "workspace").is_dir():
+                    agent_answers.setdefault(item.name, []).append(
+                        (ts_dir.name, ts_dir / "workspace"),
+                    )
+
+        if not agent_answers:
+            return
+
+        # Select the best agent
+        selected_agent = None
+        if winner and winner in agent_answers:
+            selected_agent = winner
+        else:
+            # Pick agent with the most recent timestamp across all answers
+            best_ts = ""
+            for agent_id, answers in agent_answers.items():
+                latest = max(answers, key=lambda x: x[0])
+                if latest[0] > best_ts:
+                    best_ts = latest[0]
+                    selected_agent = agent_id
+
+        if not selected_agent:
+            return
+
+        # Get the most recent answer dir for the selected agent
+        answers = sorted(agent_answers[selected_agent], key=lambda x: x[0], reverse=True)
+        latest_workspace = answers[0][1]
+
+        # Create final/<agent_id>/workspace/ by copying
+        final_ws = full_logs / "final" / selected_agent / "workspace"
+        try:
+            final_ws.mkdir(parents=True, exist_ok=True)
+            for src_item in latest_workspace.iterdir():
+                if src_item.is_symlink():
+                    continue
+                dest = final_ws / src_item.name
+                if src_item.is_file():
+                    shutil.copy2(src_item, dest)
+                elif src_item.is_dir():
+                    shutil.copytree(
+                        src_item,
+                        dest,
+                        symlinks=True,
+                        ignore_dangling_symlinks=True,
+                    )
+            logger.info(
+                f"[SubagentManager] Synthesized final snapshot for " f"{selected_agent} from {latest_workspace}",
+            )
+        except Exception as e:
+            logger.warning(
+                f"[SubagentManager] Failed to synthesize final snapshot: {e}",
+            )
+
     async def spawn_subagent(
         self,
         task: str,

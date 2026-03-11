@@ -51,9 +51,28 @@ them out. Keep digging for:
 - fragile implementation choices
 - ambition ceilings, bland sections, or default-feeling design decisions
 - verification gaps and untested claims
+- approach ceilings — the current strategy may be fundamentally limited even if execution is competent
+- untapped breakthroughs — one component may be dramatically better than the rest, signaling a technique worth spreading
 
 Prefer a sharp, actionable critique over praise. Mention strengths only when
 they should be preserved in the next revision.
+
+### Question the choices
+
+Beyond evaluating execution quality, question the fundamental choices the work
+is built on. Early decisions become invisible assumptions that constrain
+everything after them. Ask: is this the right choice, or just the first
+choice? Would a different direction produce a higher quality ceiling even if it
+required rework? Has the work been optimizing within an unexamined constraint
+that a different choice would eliminate entirely?
+
+This is distinct from ceiling analysis. Ceiling analysis asks "can this
+approach go further?" Choice questioning asks "should this have been the
+approach at all?" A choice can be wrong even when the ceiling hasn't been
+reached.
+
+When you identify a questionable choice, surface it in `criterion_findings`
+and propose the alternative in `evolution_tasks`.
 
 ## Required output contract
 
@@ -63,6 +82,7 @@ Return one structured packet with these top-level keys:
 - `criterion_findings`
 - `cross_answer_synthesis`
 - `unexplored_approaches`
+- `approach_assessment`
 - `preserve`
 - `improvement_spec`
 - `verification_plan`
@@ -137,6 +157,33 @@ You may elevate zero, one, or many unexplored approaches, but the resulting
 `next_tasks.json` must still resolve to one coherent implementation thesis
 rather than a menu of incompatible directions.
 
+### `approach_assessment`
+
+Assess whether the current approach itself has room to grow, or whether it has
+hit a ceiling where further fixes produce diminishing returns.
+
+- **`ceiling_status`**: one of `ceiling_not_reached`, `ceiling_approaching`, or
+  `ceiling_reached`.
+  - `ceiling_not_reached`: the approach is sound and fixes will produce
+    meaningful improvement.
+  - `ceiling_approaching`: fixes still help but returns are diminishing. The
+    approach can go further but not much further.
+  - `ceiling_reached`: the approach is fundamentally limited. Cosmetic and
+    structural improvements within this approach will not push quality
+    significantly higher. A different strategy is needed.
+- **`ceiling_explanation`**: concrete reasoning for the status — what specific
+  limitation defines the ceiling.
+- **`breakthroughs`**: list any components that are dramatically better than the
+  rest. For each: name the element, explain WHY it works so well, and recommend
+  how its technique or principle could be applied to lift weaker components.
+  Breakthroughs should be amplified, not just preserved.
+- **`paradigm_shift`**: when `ceiling_approaching` or `ceiling_reached`, include:
+  - `recommended`: boolean
+  - `current_limitation`: what the current approach cannot overcome
+  - `alternative_approach`: a concrete different strategy
+  - `transferable_elements`: what from the current work should carry over into
+    the new approach
+
 ### `preserve`
 
 List the exact ideas, implementation choices, visual treatments, arguments, or
@@ -155,6 +202,8 @@ Write this like a compact design spec or builder handoff. Include:
 - `anti_goals`
 - `deliverable_expectations`
 
+If the task plan contains correctness-critical fixes or explicit correctness criteria failures, do those first. Then complete the remaining higher-order improvements. Finish with a preserve/regression pass that confirms preserved strengths still hold and earlier correctness fixes still hold after later changes.
+
 Each `per_criterion_spec` entry should explain:
 
 - what must change
@@ -171,6 +220,9 @@ Each `per_criterion_spec` entry should explain:
 ### `verification_plan`
 
 Spell out the concrete checks that should be rerun after implementation.
+Use explicit correctness criteria when they exist. Otherwise, state the
+concrete blocker/basic-correctness condition that must be proven fixed in the
+actual deliverable.
 
 ### `evidence_gaps`
 
@@ -226,17 +278,35 @@ That JSON object must have this shape:
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "objective": "Rebuild the deliverable around a clear primary interaction model",
   "primary_strategy": "promote_primary_navigation_model",
   "why_this_strategy": "Fixes weak information architecture with one structural change instead of layering more surface polish",
+  "approach_assessment": {
+    "ceiling_status": "ceiling_not_reached",
+    "ceiling_explanation": "The core architecture is sound but the navigation model was never properly implemented — this is an execution gap, not an approach limitation.",
+    "breakthroughs": [
+      {
+        "element": "Data visualization section",
+        "why": "Uses progressive disclosure that lets users control detail level — a technique absent from all other sections",
+        "amplification": "Apply the same progressive-disclosure pattern to the timeline and comparison sections"
+      }
+    ],
+    "paradigm_shift": {
+      "recommended": false,
+      "current_limitation": "",
+      "alternative_approach": "",
+      "transferable_elements": []
+    }
+  },
   "deprioritize_or_remove": ["flat all-sections browse layout"],
   "execution_scope": {
     "active_chunk": "c1"
   },
-  "tasks": [
+  "fix_tasks": [
     {
       "id": "reframe_navigation",
+      "task_category": "fix",
       "description": "Replace the flat browse-first layout with a task-driven navigation structure",
       "implementation_guidance": "The current deliverable exposes every section at once, so users get a long browse surface but no clear decision path. Step 1: Define a navigation state model with stable ids, labels, and the content each state activates. Step 2: Replace the always-visible layout with a primary control plus detail area, such as tabs, a sidebar, a stepper, or a master-detail split, where one user choice determines the active content. Step 3: If the previous attempt only added navigation chrome above the existing layout, remove the duplicate browse surface so the new control actually becomes the main interaction path. Step 4: If the richer interaction pattern proves brittle, fall back to a simpler tabs or accordion implementation that preserves the same state model and content grouping.",
       "priority": "high",
@@ -246,19 +316,59 @@ That JSON object must have this shape:
       "verification": "The deliverable is organized around explicit user choices instead of a flat browse surface",
       "verification_method": "Review the rendered result and confirm the primary navigation changes which content is active",
       "metadata": {
-        "impact": "transformative",
+        "impact": "incremental",
         "relates_to": ["E3", "E7", "E8"]
       }
     }
+  ],
+  "evolution_tasks": [
+    {
+      "id": "elevate_content_architecture",
+      "task_category": "evolution",
+      "description": "Restructure the mid-page from generic filler into a narrative funnel that answers buyer questions in sequence",
+      "implementation_guidance": "...",
+      "priority": "medium",
+      "depends_on": ["reframe_navigation"],
+      "chunk": "c1",
+      "execution": {"mode": "inline"},
+      "verification": "A first-time visitor can explain what the product does and why after reading the page top-to-bottom",
+      "verification_method": "Read page content end-to-end and assess whether it tells a coherent product story vs displaying disconnected sections",
+      "metadata": {
+        "impact": "transformative",
+        "relates_to": ["E3", "E7"]
+      }
+    }
+  ],
+  "tasks": [
+    {"id": "reframe_navigation", "task_category": "fix", "...": "same as fix_tasks[0]"},
+    {"id": "elevate_content_architecture", "task_category": "evolution", "...": "same as evolution_tasks[0]"}
   ]
 }
 ```
 
 Rules for `next_tasks.json`:
 - this is the authoritative next-round task plan, not a restatement of prose
+- `approach_assessment` must be present and consistent with the `approach_assessment`
+  section in `critique_packet.md`
+- categorize each task as `fix` (defect within current approach) or `evolution`
+  (structural elevation that takes the work to a genuinely higher level)
+- **`evolution_tasks` are always required** — at least 1-2 evolution tasks must
+  be present regardless of ceiling status. These are the "what would make this
+  genuinely impressive" tasks, always ready as fallback when fix iterations
+  produce diminishing returns. Evolution tasks should be substantial and
+  transformative — not incremental polish relabeled as evolution
+- populate both `fix_tasks` and `evolution_tasks` arrays, AND always populate
+  the flat `tasks` array with the union of both (the orchestrator reads only
+  `tasks`)
+- when `ceiling_not_reached`: `fix_tasks` are primary, `evolution_tasks` are
+  ready if fixes plateau. When `ceiling_approaching` or `ceiling_reached`:
+  `evolution_tasks` become primary, `fix_tasks` are optional correctness work
 - prefer execution-oriented tasks that can fix multiple weak criteria together
 - choose one thesis via `primary_strategy`; do not keep multiple incompatible directions open
 - explicitly name what should be removed or deprioritized in `deprioritize_or_remove`
+- if the task plan contains correctness-critical fixes or tasks tied to
+  explicit correctness criteria, do those first rather than burying them under
+  polish or novelty work
 - if an `unexplored_approach` should actually be pursued, elevate it here; do
   not leave the implementing agent to choose among alternatives during execution
 - for now, always emit one chunk only: `execution_scope.active_chunk` must be `"c1"` and every task `chunk` must be `"c1"`
@@ -280,6 +390,11 @@ Rules for `next_tasks.json`:
 - when the task brief lists available specialized subagents and delegation is a good fit, use `execution: {"mode": "delegate", "subagent_type": "..."}` or `execution: {"mode": "delegate", "subagent_id": "..."}`.
 - if the task brief says no specialized subagents are available, keep every task inline and do not emit delegate execution hints
 - use `metadata.relates_to` to show which criteria a task addresses
+- when explicit correctness criteria exist, reference them directly in task
+  verification; otherwise describe the blocker/basic-correctness condition that
+  will prove the task is fixed in the actual output
+- the final preserve/regression verification must confirm both preserved
+  strengths and that earlier correctness fixes still hold after later changes
 
 ## Evaluation expectations
 
@@ -320,6 +435,39 @@ result of prior iteration attempts. When critiquing and writing
   answer shows polish on surface aspects while the structural weakness remains),
   assume the agent is stuck and needs a fundamentally different strategy, not a
   refinement of the same approach.
+
+### Approach ceiling detection
+
+When evidence suggests the agent has been iterating without meaningful
+improvement, distinguish between implementation difficulty and approach
+limitation:
+
+- **Implementation difficulty**: the approach is sound but the agent hasn't
+  found the right execution. Prescribe different techniques, not a different
+  strategy. Look for: the agent tried one or two approaches to the same
+  structural idea.
+- **Approach ceiling**: the strategy itself is limited. Improvements within this
+  approach are cosmetic — they don't change the quality ceiling. Look for:
+  multiple structurally different attempts that all plateau at a similar quality
+  level, or the approach is inherently constrained (e.g., a flat layout cannot
+  create visual hierarchy no matter how well it's styled).
+
+When you detect an approach ceiling, your `approach_assessment.ceiling_status`
+should reflect this, and `evolution_tasks` should propose a fundamentally
+different strategy rather than more fixes within the current one.
+
+### Breakthrough amplification
+
+When one component of the deliverable is dramatically better than the rest,
+don't just preserve it — amplify it:
+
+- Identify WHY that component works so well (technique, structure, craft level)
+- Recommend applying the same principle to lift weaker components
+- In `approach_assessment.breakthroughs`, name the element, explain the
+  technique, and describe how to spread it
+
+The goal is to restructure around what's working, not just protect it while
+fixing what isn't.
 
 ## Deliverable / output format
 

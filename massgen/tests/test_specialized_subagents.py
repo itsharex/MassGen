@@ -324,6 +324,26 @@ def test_round_evaluator_prompt_allows_machine_readable_preserve_metadata():
     assert "machine-readable" in lower
 
 
+def test_round_evaluator_prompt_requires_correctness_first_handoffs_and_final_regression_check():
+    """round_evaluator handoffs should prioritize blocker correctness work before polish and re-check it at the end."""
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    types = scan_subagent_types(
+        builtin_dir=builtin_dir,
+        project_dir=Path("/nonexistent"),
+        allowed_types=["round_evaluator"],
+    )
+    config = types[0]
+    lower = config.system_prompt.lower()
+
+    assert "correctness-critical" in lower
+    assert "do those first" in lower
+    assert "higher-order improvements" in lower
+    assert "explicit correctness criteria" in lower
+    assert "correctness fixes still hold after later changes" in lower
+
+
 def test_scanner_project_overrides_builtin(tmp_path):
     """Project type with same name replaces built-in."""
     from massgen.subagent.type_scanner import scan_subagent_types

@@ -140,13 +140,13 @@ _CHECKLIST_ITEMS = [
     ),
 ]
 
-# Category tags for default checklist items: "must", "should", or "could"
+# Category tags for default checklist items — all "must" (no tier deprioritization).
 _CHECKLIST_ITEM_CATEGORIES = {
     "E1": "must",
     "E2": "must",
-    "E3": "should",
-    "E4": "could",
-    "E5": "should",  # quality/craft — always present
+    "E3": "must",
+    "E4": "must",
+    "E5": "must",
 }
 
 _CHECKLIST_ITEMS_CHANGEDOC = [
@@ -161,12 +161,12 @@ _CHECKLIST_ITEMS_CHANGEDOC = [
     ("The output shows care beyond correctness — thoughtful choices," " consistent style, attention to edge cases, or creative elements that" " distinguish it from adequate work."),
 ]
 
-# Category tags for changedoc checklist items
+# Category tags for changedoc checklist items — all "must" (no tier deprioritization).
 _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC = {
     "E1": "must",
     "E2": "must",
-    "E3": "should",
-    "E4": "could",
+    "E3": "must",
+    "E4": "must",
 }
 
 
@@ -905,10 +905,14 @@ def _build_checklist_gated_decision(
             "output. Spawn\n"
             "  the blocking task first, then re-run the dependent builder once it "
             "completes.\n"
-            "- **Multiple builders rewrote the same file**: You arbitrate — pick "
-            "the better\n"
-            "  version or merge manually inline. Do not silently discard either "
-            "output.\n"
+            "- **Multiple builders rewrote the same file** (expected when you "
+            "split aggressively):\n"
+            "  Merge their outputs — each builder touched a different logical "
+            "section. Read both\n"
+            "  versions, take each builder's section, and combine. This is the "
+            "normal cost of\n"
+            "  parallel execution and almost always worth it. Do not silently "
+            "discard either output.\n"
             "\n"
             "If no specialized subagents are available, execute tasks inline in "
             "dependency\n"
@@ -1093,6 +1097,14 @@ do not call `propose_improvements`. do not write a second diagnostic report.
 After implementing all tasks, verify them and call `new_answer` to submit your
 improved work. If the deliverable is a pure text artifact, place the final
 artifact body directly in `new_answer.content`.
+
+If the task plan includes correctness-critical tasks or tasks tied to explicit \
+correctness criteria, do those first. Then execute the remaining higher-order work. \
+Use explicit correctness criteria when they exist in the evaluator packet or task \
+metadata; otherwise treat concrete blocker/basic-viability defects as \
+correctness-critical. Finish with the final preserve/regression verification so you \
+confirm preserved strengths still hold and earlier correctness fixes still hold after \
+later changes.
 
 **Injected tasks are mandatory, not advisory.** The evaluator has access to
 all candidate answers, cross-answer analysis, and the full evaluation criteria.
@@ -1604,6 +1616,14 @@ tool calls in parallel to read all 3 files into context at the same time. Maximi
 tool calls where possible to increase speed and efficiency. However, if some tool calls depend on
 previous calls to inform dependent values like the parameters, do NOT call these tools in parallel
 and instead call them sequentially. Never use placeholders or guess missing parameters in tool calls.
+
+**Question the Choices:**
+When refining work across iterations, don't just improve execution — question the fundamental
+choices the work is built on. Early decisions (architecture, creative direction, algorithm,
+structure, framing) become invisible assumptions that constrain everything after them. Ask: is this
+the right choice, or just the first choice? Would a different direction produce a higher quality
+ceiling even if it required rework? If the work has been optimizing within an unexamined constraint,
+a different choice may eliminate the constraint entirely.
 
 **Task Persistence:**
 Your context window will be automatically compacted as it approaches its limit, allowing you to
@@ -3302,6 +3322,12 @@ class TaskPlanningSection(SystemPromptSection):
             "**Spawn all independent delegated tasks in a single call** — they run in parallel. "
             "While they run, execute your inline tasks.\n"
             "\n"
+            "**Split aggressively for maximum parallelism** when improvements are substantial. "
+            "The unit of delegation is one coherent improvement, not one file. If two substantial "
+            "improvements touch the same file but are logically independent, spawn separate "
+            "builders — you merge the results after. But keep trivial fixes (one-liners, small "
+            "tweaks) inline — the spawn + merge overhead isn't worth it for small work.\n"
+            "\n"
             "When tasks come from `propose_improvements`, structural and transformative criteria "
             'are pre-filled with `execution: {"mode": "delegate", "subagent_type": "builder"}` as an advisory signal. '
             "Scope each builder to exactly one task. Never bundle multiple criteria into one "
@@ -3398,6 +3424,12 @@ Every criterion added to the plan MUST be addressed before you submit. Do not ch
 easy improvements and skip the hard ones. Call `get_task_plan` to see all items, then work
 through them one by one. If a task is truly infeasible this round, explicitly mark it `[skip]`
 in the description with a reason — do not silently leave it pending.
+
+If the plan includes correctness-critical tasks, complete those first. Use explicit \
+correctness criteria when they exist in the task descriptions, evaluator packet, or \
+checklist. Then move to the remaining quality, novelty, or polish tasks. End with the \
+final preserve/regression pass and confirm both that preserved strengths remain and \
+that earlier correctness fixes still pass after later changes.
 
 The flow is:
 ```
@@ -4615,14 +4647,22 @@ class SubagentSection(SystemPromptSection):
                     )
             if t.name.lower() == "builder":
                 lines.append(
-                    "**FOR `BUILDER` TASKS — one task per deliverable, run independent ones in parallel:**\n\n"
-                    "**The key rule: one builder task per independent deliverable.** Do NOT write one "
-                    "large spec that covers multiple improvements. Split them into separate tasks and "
-                    "spawn them in a single `spawn_subagents` call — they run simultaneously.\n\n"
+                    "**FOR `BUILDER` TASKS — maximize parallelism, split aggressively:**\n\n"
+                    "**The key rule: one builder task per coherent improvement.** The unit of "
+                    "work is one focused change, NOT one file. Split improvements into "
+                    "separate tasks and spawn them in a single `spawn_subagents` call — "
+                    "they run simultaneously.\n\n"
+                    "**Same-file work is fine to split across builders** when each piece is "
+                    "substantial (e.g., rewrite the hero section vs redesign the footer in "
+                    "the same HTML). You merge the results afterward. Do NOT split trivial "
+                    "changes (one-liner fixes, small CSS tweaks) into separate builders — "
+                    "the spawn + merge overhead isn't worth it for small work. Rule of thumb: "
+                    "if a builder would spend most of its time reading context and little time "
+                    "writing, do it inline instead.\n\n"
                     "Bad (monolithic — DO NOT DO THIS):\n"
                     '`tasks=[{"task": "Rewrite member portraits, redesign album section, fix timeline, '
                     'update CSS, rewrite narrative, fix scroll-reveal", "subagent_type": "builder", ...}]`\n\n'
-                    "Good (parallel — each improvement is its own task):\n"
+                    "Good (parallel — each improvement is its own task, even if same file):\n"
                     "`tasks=[\n"
                     '  {"task": "Rewrite member portraits section...", "subagent_type": "builder"},\n'
                     '  {"task": "Redesign album section with artwork...", "subagent_type": "builder"},\n'
