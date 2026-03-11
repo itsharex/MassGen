@@ -38,12 +38,39 @@ Invoke MassGen for multi-agent iteration on any task — general-purpose work, e
 | plan | Create or refine a plan | Goal + constraints (+ existing plan) | `project_plan.json` (typed tasks, chunks, deps, prototypes) | `"planning"` |
 | spec | Create or refine a spec | Problem + needs (+ existing spec) | `project_spec.json` (EARS requirements, chunks, rationale) | `"spec"` |
 
+## FIRST: Check Config (do this before anything else)
+
+Before reading any other section of this skill, run this check:
+
+```bash
+ls .massgen/config.yaml 2>/dev/null && echo "FOUND: project config"
+ls ~/.config/massgen/config.yaml 2>/dev/null && echo "FOUND: global config"
+```
+
+- If the user gave a specific config path → use it with `--config <path>`.
+- If `.massgen/config.yaml` exists → use it (no `--config` needed).
+- If `~/.config/massgen/config.yaml` exists → use it.
+- If **neither exists** → run the web quickstart **from the current working directory** (do NOT cd anywhere) and wait for it to finish:
+
+```bash
+uv run massgen --web-quickstart
+```
+
+Run this from cwd so the config is saved to `.massgen/config.yaml` in the
+right project. Do NOT cd to another directory first. The quickstart opens a
+browser where the user picks providers/models, enters API keys, and saves a
+config. It exits automatically when done.
+
+**STOP here until you have a config.** Do NOT proceed with the workflow below
+until a config exists. Do NOT create config files yourself. Do NOT search
+for configs in subdirectories, parent directories, or anywhere else.
+
+---
+
 ## Scope
 
 Before starting, determine what the MassGen invocation covers. Focused invocations
 produce far better results than unscoped "do everything" runs.
-
-**When invoking this skill, specify the scope:**
 
 - **General**: the task to accomplish, relevant context, quality expectations
 - **Evaluate**: which files/artifacts to evaluate, what to ignore, evaluation focus
@@ -51,97 +78,6 @@ produce far better results than unscoped "do everything" runs.
 - **Spec**: the problem to specify, user needs, system boundaries
 
 If the user doesn't specify scope, ask them.
-
-## Important: Setup Requires Human Input
-
-MassGen setup (API key configuration, provider selection, Docker choice) currently
-requires human interaction. Before invoking this skill, ensure the environment is
-already set up — either a `.massgen/config.yaml` exists or the user has provided
-a config path. If no config exists, the Setup step below will need user input.
-
-**Config fallback behavior**: If there is no interactive user available (e.g.,
-running in a non-interactive agent environment), use whatever config was provided
-or fall back to `.massgen/config.yaml`. Do not attempt setup without a user present.
-
-## Prerequisites
-
-### 1. Check if massgen is installed
-
-```bash
-uv run massgen --help 2>/dev/null || massgen --help 2>/dev/null
-```
-
-If not installed:
-```bash
-pip install massgen
-# or
-uv pip install massgen
-```
-
-### 2. Resolve configuration
-
-Prefer the lowest-friction path first — do NOT ask unnecessary setup questions:
-
-1. If the user provides a specific config path, use it with `--config <path>` in Step 4.
-2. Otherwise, check for an existing project config at `.massgen/config.yaml`.
-3. If that does not exist, check for a global default config at `~/.config/massgen/config.yaml`.
-4. If either default exists, use it without asking extra setup questions.
-5. If no config exists and a user is available, ask them which config to use or proceed to **Setup** below.
-6. If no config exists and no user is available, stop — setup requires human input.
-
-### 3. Setup (only if no config exists)
-
-Prefer the browser quickstart first:
-
-```bash
-uv run massgen --web-quickstart
-```
-
-This opens a temporary setup flow in the browser, lets the user enter API keys,
-choose Docker or local execution, configure agents, review the generated YAML,
-pick project vs global save location, and then exits automatically when setup is
-finished.
-
-Only fall back to headless quickstart when:
-- the browser flow is unavailable
-- the user explicitly asks for a non-browser flow
-- you are operating in an environment where opening the browser is not practical
-
-For headless fallback, first inspect supported backends if needed:
-
-```bash
-uv run massgen --list-backends
-```
-
-Then use one of these:
-
-```bash
-# Single provider (three agents on one backend)
-uv run massgen --quickstart --headless \
-  --config-backend <backend_type> \
-  --config-model <model> \
-  --config-docker
-
-# Mixed providers (one explicit agent per backend)
-uv run massgen --quickstart --headless \
-  --quickstart-agent backend=claude,model=claude-opus-4-6 \
-  --quickstart-agent backend=openai,model=gpt-5.4 \
-  --quickstart-agent backend=gemini,model=gemini-3-flash-preview \
-  --config-docker
-```
-
-Omit `--config-docker` if the user wants local execution.
-
-If authentication is missing:
-- for login-based backends (`claude_code`, `codex`, `copilot`), help the user run the provider login flow
-- for API key backends, help the user populate either `./.env` or `~/.massgen/.env`
-
-If quickstart still needs manual provider/model selection, ask only the minimum necessary follow-up question.
-
-To see all supported backends, models, capabilities, and auth requirements:
-```bash
-uv run massgen --list-backends
-```
 
 ## Workflow
 
@@ -257,7 +193,7 @@ cat $WORK_DIR/run_summary.json
 - `--no-cwd-context` — disable read-only CWD access
 - `--extra-args "..."` — pass additional massgen CLI flags
 
-**Timing:** expect 2-10 minutes for standard tasks, 10-30 minutes for complex ones.
+**Timing:** expect 15-45 minutes. Do not assume something is stuck — MassGen runs multiple agents through several rounds of iteration.
 
 ### Step 5: Parse the Output
 

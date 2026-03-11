@@ -396,9 +396,10 @@ def _automation_print(msg: str) -> None:
     """Print automation-mode status lines (LOG_DIR, STATUS, OUTPUT_FILE, etc.).
 
     When event streaming is active, stdout is reserved for JSONL, so these
-    lines are routed to stderr instead.
+    lines are routed to stderr instead. Always flush so background processes
+    with piped stdout (block-buffered) emit lines immediately.
     """
-    print(msg, file=sys.stderr if _stream_events_active else sys.stdout)
+    print(msg, file=sys.stderr if _stream_events_active else sys.stdout, flush=True)
 
 
 def _has_evolving_skills_enabled(agents: dict[str, Any] | None) -> bool:
@@ -9723,8 +9724,8 @@ async def main(args):
             # LOG_DIR is the main session directory, STATUS includes turn/attempt subdirectory
             if args.automation:
                 full_log_dir = get_log_session_dir()
-                _automation_print(f"LOG_DIR: {log_dir}")
-                _automation_print(f"STATUS: {full_log_dir / 'status.json'}")
+                _automation_print(f"LOG_DIR: {Path(log_dir).resolve()}")
+                _automation_print(f"STATUS: {Path(full_log_dir).resolve() / 'status.json'}")
 
             # Only register in global session registry if not suppressed (e.g., subagent runs)
             if not getattr(args, "no_session_registry", False):

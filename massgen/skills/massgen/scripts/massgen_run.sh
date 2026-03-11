@@ -71,16 +71,21 @@ OUTPUT_FILE="${OUTPUT_FILE:-$WORK_DIR/result.md}"
 OUTPUT_LOG="$WORK_DIR/output.log"
 SUMMARY_FILE="$WORK_DIR/run_summary.json"
 VIEWER_PID=""
+MASSGEN_PID=""
 START_TIME=$(date +%s)
 
 # ── Cleanup on exit ──────────────────────────────────────────────────────────
 cleanup() {
+    if [[ -n "$MASSGEN_PID" ]]; then
+        kill "$MASSGEN_PID" 2>/dev/null || true
+        wait "$MASSGEN_PID" 2>/dev/null || true
+    fi
     if [[ -n "$VIEWER_PID" ]]; then
         kill "$VIEWER_PID" 2>/dev/null || true
         wait "$VIEWER_PID" 2>/dev/null || true
     fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # ── Build MassGen command ────────────────────────────────────────────────────
 CMD=(uv run massgen --automation --no-parse-at-references)
@@ -128,14 +133,7 @@ for i in $(seq 1 60); do
     sleep 0.5
 done
 
-# Resolve relative LOG_DIR to absolute (MassGen outputs relative paths)
-if [[ -n "$LOG_DIR" && ! "$LOG_DIR" = /* ]]; then
-    if [[ -d "$LOG_DIR" ]]; then
-        LOG_DIR="$(cd "$LOG_DIR" && pwd)"
-    else
-        LOG_DIR="$(pwd)/$LOG_DIR"
-    fi
-fi
+# LOG_DIR is an absolute path from MassGen's automation output
 
 if [[ -n "$LOG_DIR" ]]; then
     echo "Log directory: $LOG_DIR"
@@ -143,7 +141,7 @@ fi
 
 if $VIEWER && [[ -n "$LOG_DIR" ]]; then
     echo "Starting web viewer on port $VIEWER_PORT..."
-    uv run massgen viewer "$LOG_DIR" --web --port "$VIEWER_PORT" --no-browser > /dev/null 2>&1 &
+    uv run massgen viewer "$LOG_DIR" --web --port "$VIEWER_PORT" > /dev/null 2>&1 &
     VIEWER_PID=$!
     echo "Viewer running at http://localhost:$VIEWER_PORT"
 elif $VIEWER; then
@@ -160,14 +158,6 @@ DURATION=$((END_TIME - START_TIME))
 # ── Extract LOG_DIR if we didn't get it earlier ──────────────────────────────
 if [[ -z "$LOG_DIR" && -f "$OUTPUT_LOG" ]]; then
     LOG_DIR=$(grep -m1 '^LOG_DIR:' "$OUTPUT_LOG" 2>/dev/null | cut -d' ' -f2 || true)
-    # Resolve relative path
-    if [[ -n "$LOG_DIR" && ! "$LOG_DIR" = /* ]]; then
-        if [[ -d "$LOG_DIR" ]]; then
-            LOG_DIR="$(cd "$LOG_DIR" && pwd)"
-        else
-            LOG_DIR="$(pwd)/$LOG_DIR"
-        fi
-    fi
 fi
 
 # ── Write summary ────────────────────────────────────────────────────────────
