@@ -520,6 +520,16 @@ class ConfigValidator:
                     "Use a string model identifier",
                 )
 
+        # Require cwd for backends that create workspace config directories.
+        # Without cwd, codex writes .codex/ and claude_code writes .claude/
+        # into the project root, polluting the repo.
+        if backend_type in ("codex", "claude_code") and "cwd" not in backend_config:
+            result.add_error(
+                f"Backend type '{backend_type}' requires 'cwd' to avoid writing config into the project root",
+                f"{location}.cwd",
+                "Add 'cwd: workspace' (resolved to .massgen/workspaces/workspace_<hash>)",
+            )
+
         # Validate backend-specific capabilities using existing validator
         capability_errors = validate_backend_config(backend_type, backend_config)
         for error_msg in capability_errors:
@@ -1160,6 +1170,20 @@ class ConfigValidator:
                         f"{location}.coordination.enable_quality_rethink_on_iteration",
                         "Use true or false",
                     )
+                if "enable_execution_trace_analyzer" in coordination:
+                    eta_val = coordination["enable_execution_trace_analyzer"]
+                    if not isinstance(eta_val, bool):
+                        result.add_error(
+                            "'enable_execution_trace_analyzer' must be a boolean",
+                            f"{location}.coordination.enable_execution_trace_analyzer",
+                            "Use true or false",
+                        )
+                    elif eta_val and not coordination.get("orchestrator_managed_round_evaluator", False):
+                        result.add_error(
+                            "enable_execution_trace_analyzer requires orchestrator_managed_round_evaluator: true",
+                            f"{location}.coordination.enable_execution_trace_analyzer",
+                            "Enable orchestrator_managed_round_evaluator or remove enable_execution_trace_analyzer",
+                        )
                 if "improvements" in coordination:
                     improvements = coordination["improvements"]
                     improvements_location = f"{location}.coordination.improvements"

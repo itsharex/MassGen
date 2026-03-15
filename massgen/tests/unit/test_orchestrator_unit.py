@@ -185,14 +185,12 @@ async def test_call_subagent_mcp_tool_async_returns_structured_failure_when_all_
 
 
 @pytest.mark.asyncio
-async def test_round_evaluator_pre_round_uses_codex_background_mcp_client(
+async def test_round_evaluator_pre_round_uses_direct_spawn(
     mock_orchestrator,
     monkeypatch,
     tmp_path,
 ):
-    """Managed round evaluator should work with a Codex parent via host-side MCP access."""
-    from massgen.backend import codex as codex_mod
-    from massgen.backend.codex import CodexBackend
+    """Managed round evaluator uses direct spawn (bypassing MCP), even with Codex parent."""
     from massgen.subagent.models import SubagentResult
 
     orchestrator = mock_orchestrator(num_agents=1)
@@ -203,36 +201,6 @@ async def test_round_evaluator_pre_round_uses_codex_background_mcp_client(
     orchestrator.config.coordination_config.enable_subagents = True
     orchestrator.config.coordination_config.subagent_types = ["round_evaluator"]
 
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    temp_root = workspace_root / "temp"
-    temp_root.mkdir()
-
-    monkeypatch.setattr(CodexBackend, "_find_codex_cli", lambda self: "/usr/bin/codex")
-    monkeypatch.setattr(CodexBackend, "_has_cached_credentials", lambda self: True)
-
-    backend = CodexBackend(
-        api_key="test-key",
-        cwd=str(workspace_root),
-        agent_id=agent_id,
-    )
-    backend.config["type"] = "codex"
-    backend.config["mcp_servers"] = {
-        f"subagent_{agent_id}": {
-            "type": "stdio",
-            "command": "fastmcp",
-            "args": ["run", "dummy"],
-            "tool_timeout_sec": 2040,
-        },
-    }
-    backend.filesystem_manager = SimpleNamespace(
-        get_workspace_root=lambda: str(workspace_root),
-        get_current_workspace=lambda: str(workspace_root),
-        agent_temporary_workspace=str(temp_root),
-        cwd=str(workspace_root),
-    )
-    orchestrator.agents[agent_id].backend = backend
-
     orchestrator.agent_states[agent_id].answer = "draft answer v1"
     orchestrator.coordination_tracker.add_agent_answer(
         agent_id=agent_id,
@@ -242,7 +210,7 @@ async def test_round_evaluator_pre_round_uses_codex_background_mcp_client(
     eval_workspace = tmp_path / "round-eval-workspace"
     eval_workspace.mkdir()
     (eval_workspace / "critique_packet.md").write_text(
-        "# Critique Packet\n\nCodex-backed evaluator packet.",
+        "# Critique Packet\n\nDirect-spawn evaluator packet.",
         encoding="utf-8",
     )
     (eval_workspace / "verdict.json").write_text(
@@ -250,36 +218,23 @@ async def test_round_evaluator_pre_round_uses_codex_background_mcp_client(
         encoding="utf-8",
     )
 
-    setup_calls: list[dict[str, object]] = []
+    direct_spawn_calls: list[dict[str, object]] = []
 
-    class _FakeBackgroundClient:
-        async def call_tool(self, tool_name, arguments):
-            return SimpleNamespace(
-                content=None,
-                structuredContent={
-                    "success": True,
-                    "operation": "spawn_subagents",
-                    "results": [
-                        SubagentResult.create_success(
-                            subagent_id="round_eval_r2",
-                            answer="Short evaluator summary",
-                            workspace_path=str(eval_workspace),
-                            execution_time_seconds=12.0,
-                        ).to_dict(),
-                    ],
-                },
-            )
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
+        direct_spawn_calls.append({"parent_agent_id": parent_agent_id, "tasks": tasks, "refine": refine})
+        return {
+            "success": True,
+            "mode": "blocking",
+            "results": [
+                SubagentResult.create_success(
+                    subagent_id="round_eval_r2",
+                    answer="Short evaluator summary",
+                    workspace_path=str(eval_workspace),
+                    execution_time_seconds=12.0,
+                ).to_dict(),
+            ],
+        }
 
-    async def fake_setup_mcp_client(**kwargs):
-        setup_calls.append(kwargs)
-        return _FakeBackgroundClient()
-
-    monkeypatch.setattr(
-        codex_mod,
-        "MCPResourceManager",
-        SimpleNamespace(setup_mcp_client=fake_setup_mcp_client),
-        raising=False,
-    )
     monkeypatch.setattr(
         orchestrator,
         "_copy_all_snapshots_to_temp_workspace",
@@ -287,14 +242,15 @@ async def test_round_evaluator_pre_round_uses_codex_background_mcp_client(
     )
     monkeypatch.setattr(orchestrator, "_emit_round_evaluator_spawn_event", lambda **kw: None)
     monkeypatch.setattr(orchestrator, "_queue_round_start_context_block", lambda *a, **kw: None)
+    monkeypatch.setattr(orchestrator, "_direct_spawn_subagents", fake_direct_spawn)
 
     result = await orchestrator._run_round_evaluator_pre_round_if_needed(
         answers={agent_id: "draft answer v1"},
     )
 
     assert result is True
-    assert len(setup_calls) == 1
-    assert [server["name"] for server in setup_calls[0]["servers"]] == [f"subagent_{agent_id}"]
+    assert len(direct_spawn_calls) == 1
+    assert direct_spawn_calls[0]["parent_agent_id"] == agent_id
     assert agent_id in orchestrator._round_evaluator_completed_labels
 
 
@@ -356,16 +312,11 @@ async def test_round_evaluator_large_payload_is_kept_inline_for_spawn_subagents(
         encoding="utf-8",
     )
 
-    captured_params: dict[str, object] = {}
+    captured_tasks: list[dict[str, object]] = []
 
-    async def fake_subagent_call(
-        parent_agent_id: str,
-        tool_name: str,
-        params: dict[str, object],
-    ):
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
         assert parent_agent_id == agent_id
-        assert tool_name == "spawn_subagents"
-        captured_params.update(params)
+        captured_tasks.extend(tasks)
         return {
             "success": True,
             "mode": "blocking",
@@ -381,8 +332,8 @@ async def test_round_evaluator_large_payload_is_kept_inline_for_spawn_subagents(
 
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
-        fake_subagent_call,
+        "_direct_spawn_subagents",
+        fake_direct_spawn,
     )
 
     result = await orchestrator._run_round_evaluator_pre_round_if_needed(
@@ -390,9 +341,8 @@ async def test_round_evaluator_large_payload_is_kept_inline_for_spawn_subagents(
     )
 
     assert result is True
-    tasks = captured_params["tasks"]
-    assert isinstance(tasks, list)
-    task_config = tasks[0]
+    assert len(captured_tasks) >= 1
+    task_config = captured_tasks[0]
     assert len(task_config["task"]) > 10000
     assert "ORIGINAL TASK:" in task_config["task"]
     assert "CANDIDATE ANSWERS:" in task_config["task"]
@@ -470,9 +420,9 @@ def test_round_evaluator_context_paths_are_always_absolute(mock_orchestrator):
 
 
 @pytest.mark.asyncio
-async def test_round_evaluator_rewrites_subagent_types_before_spawn(mock_orchestrator, monkeypatch):
-    """Regression: workspace may be cleared between rounds, so subagent type dirs
-    must be re-written before the evaluator spawn call."""
+async def test_round_evaluator_uses_direct_spawn_not_mcp(mock_orchestrator, monkeypatch):
+    """Orchestrator-managed round evaluator should use _direct_spawn_subagents
+    which internally creates a temp workspace, writes type dirs, and CONTEXT.md."""
     orchestrator = mock_orchestrator(num_agents=1)
     agent_id = "agent_a"
 
@@ -482,75 +432,37 @@ async def test_round_evaluator_rewrites_subagent_types_before_spawn(mock_orchest
     orchestrator.config.coordination_config.enable_subagents = True
     orchestrator.config.coordination_config.subagent_types = ["round_evaluator"]
 
-    # Set up a fake filesystem_manager with a workspace root
-    import tempfile
-    from pathlib import Path
-    from types import SimpleNamespace
+    # Give the agent a completed answer so the gate triggers
+    orchestrator.agent_states[agent_id].answer = "draft answer v1"
+    orchestrator.coordination_tracker.add_agent_answer(
+        agent_id=agent_id,
+        answer="draft answer v1",
+    )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ws_root = Path(tmpdir)
-        fs_mgr = SimpleNamespace(
-            get_workspace_root=lambda: str(ws_root),
-            get_current_workspace=lambda: str(ws_root),
-            agent_temporary_workspace=str(ws_root / "temp"),
-            cwd=str(ws_root),
-        )
-        orchestrator.agents[agent_id].backend.filesystem_manager = fs_mgr
+    spawn_called = False
 
-        # Give the agent a completed answer so the gate triggers
-        orchestrator.agent_states[agent_id].answer = "draft answer v1"
-        # Register an answer label in the coordination tracker
-        orchestrator.coordination_tracker.add_agent_answer(
-            agent_id=agent_id,
-            answer="draft answer v1",
-        )
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
+        nonlocal spawn_called
+        spawn_called = True
+        assert parent_agent_id == agent_id
+        assert isinstance(tasks, list)
+        assert tasks[0]["subagent_type"] == "round_evaluator"
+        return {"success": True, "results": [{"subagent_id": "round_eval_r2", "answer": "critique"}]}
 
-        # Track calls to _write_subagent_type_dirs and _call_subagent_mcp_tool_async
-        call_order: list[str] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "_copy_all_snapshots_to_temp_workspace",
+        AsyncMock(return_value="/tmp/temp_ws"),
+    )
+    monkeypatch.setattr(orchestrator, "_direct_spawn_subagents", fake_direct_spawn)
+    monkeypatch.setattr(orchestrator, "_emit_round_evaluator_spawn_event", lambda **kw: None)
+    monkeypatch.setattr(orchestrator, "_queue_round_start_context_block", lambda *a: None)
 
-        def tracking_write(workspace_root):
-            call_order.append("write_types")
-            # Don't actually scan — just verify it's called
-            return None
+    await orchestrator._run_round_evaluator_pre_round_if_needed(
+        answers={agent_id: "draft answer v1"},
+    )
 
-        monkeypatch.setattr(orchestrator, "_write_subagent_type_dirs", tracking_write)
-        monkeypatch.setattr(
-            orchestrator,
-            "_copy_all_snapshots_to_temp_workspace",
-            AsyncMock(return_value="/tmp/temp_ws"),
-        )
-        monkeypatch.setattr(
-            orchestrator,
-            "_call_subagent_mcp_tool_async",
-            AsyncMock(
-                side_effect=lambda *a, **kw: (
-                    call_order.append("spawn_call"),
-                    {"success": True, "results": [{"subagent_id": "round_eval_r2", "answer": "critique"}]},
-                )[1],
-            ),
-        )
-        monkeypatch.setattr(orchestrator, "_emit_round_evaluator_spawn_event", lambda **kw: None)
-        monkeypatch.setattr(orchestrator, "_queue_round_start_context_block", lambda *a: None)
-
-        await orchestrator._run_round_evaluator_pre_round_if_needed(
-            answers={agent_id: "draft answer v1"},
-        )
-
-        # _write_subagent_type_dirs MUST be called BEFORE _call_subagent_mcp_tool_async
-        assert "write_types" in call_order, "subagent types were not re-written before spawn"
-        assert "spawn_call" in call_order, "spawn_subagents was not called"
-        assert call_order.index("write_types") < call_order.index("spawn_call"), f"write_types must come before spawn_call, got: {call_order}"
-
-        # CONTEXT.md must also be written for the SubagentManager
-        context_md = ws_root / "CONTEXT.md"
-        assert context_md.exists(), "CONTEXT.md was not created in workspace for round evaluator"
-        content = context_md.read_text()
-        assert "draft answer" not in content  # Should have the task, not the answer
-        assert "Task coordination" in content or (orchestrator.current_task and orchestrator.current_task in content)
-
-        # Subagent MCP config files must be re-written (workspace clear removes them)
-        mcp_dir = ws_root / ".massgen" / "subagent_mcp"
-        assert (mcp_dir / f"{agent_id}_agent_configs.json").exists(), "agent_configs.json not re-written before evaluator spawn"
+    assert spawn_called, "_direct_spawn_subagents must be called for orchestrator-managed round evaluator"
 
 
 @pytest.mark.asyncio
@@ -651,7 +563,7 @@ async def test_round_evaluator_auto_injects_when_next_tasks_exist_without_legacy
     )
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
+        "_direct_spawn_subagents",
         AsyncMock(
             return_value={
                 "success": True,
@@ -786,7 +698,7 @@ async def test_round_evaluator_auto_injects_when_next_tasks_exist_only_in_nested
     )
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
+        "_direct_spawn_subagents",
         AsyncMock(
             return_value={
                 "success": True,
@@ -1113,8 +1025,10 @@ async def test_round_evaluator_launches_between_round_one_and_round_two_and_inje
 
     monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: None)
     orchestrator._save_agent_snapshot = AsyncMock(return_value="snapshot-ts")
+    _temp_ws_dir = tmp_path / "temp_workspaces"
+    _temp_ws_dir.mkdir(exist_ok=True)
     orchestrator._copy_all_snapshots_to_temp_workspace = AsyncMock(
-        return_value="/tmp/temp_workspaces",
+        return_value=str(_temp_ws_dir),
     )
 
     recorded_user_messages: list[str] = []
@@ -1138,7 +1052,7 @@ async def test_round_evaluator_launches_between_round_one_and_round_two_and_inje
 
     monkeypatch.setattr(backend, "stream_with_tools", wrapped_stream_with_tools)
 
-    captured_subagent_calls: list[tuple[str, dict[str, object], int]] = []
+    captured_direct_spawn_calls: list[tuple[str, list, bool, int]] = []
     eval_workspace = tmp_path / "round-eval-workspace"
     eval_workspace.mkdir()
     (eval_workspace / "critique_packet.md").write_text(
@@ -1150,37 +1064,29 @@ async def test_round_evaluator_launches_between_round_one_and_round_two_and_inje
         encoding="utf-8",
     )
 
-    async def fake_subagent_call(
-        parent_agent_id: str,
-        tool_name: str,
-        params: dict[str, object],
-    ):
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
         assert parent_agent_id == agent_id
-        captured_subagent_calls.append((tool_name, dict(params), backend._call_count))
-        if tool_name == "list_subagents":
-            return {"success": True, "subagents": []}
-        if tool_name == "spawn_subagents":
-            return {
-                "success": True,
-                "mode": "blocking",
-                "results": [
-                    {
-                        "subagent_id": "round_eval",
-                        "status": "completed",
-                        "success": True,
-                        "answer": "Short summary only.",
-                        "workspace": str(eval_workspace),
-                        "execution_time_seconds": 1.25,
-                        "token_usage": {"input_tokens": 10, "output_tokens": 20},
-                    },
-                ],
-            }
-        raise AssertionError(f"Unexpected subagent MCP call: {tool_name}")
+        captured_direct_spawn_calls.append((parent_agent_id, list(tasks), refine, backend._call_count))
+        return {
+            "success": True,
+            "mode": "blocking",
+            "results": [
+                {
+                    "subagent_id": "round_eval",
+                    "status": "completed",
+                    "success": True,
+                    "answer": "Short summary only.",
+                    "workspace": str(eval_workspace),
+                    "execution_time_seconds": 1.25,
+                    "token_usage": {"input_tokens": 10, "output_tokens": 20},
+                },
+            ],
+        }
 
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
-        fake_subagent_call,
+        "_direct_spawn_subagents",
+        fake_direct_spawn,
     )
 
     emitter = EventEmitter()
@@ -1192,16 +1098,14 @@ async def test_round_evaluator_launches_between_round_one_and_round_two_and_inje
     async for _chunk in orchestrator._stream_coordination_with_agents(votes, {}):
         pass
 
-    spawn_calls = [entry for entry in captured_subagent_calls if entry[0] == "spawn_subagents"]
-    assert len(spawn_calls) == 1
+    assert len(captured_direct_spawn_calls) == 1
 
-    _, spawn_params, backend_call_count_at_spawn = spawn_calls[0]
+    _parent_id, spawn_tasks, spawn_refine, backend_call_count_at_spawn = captured_direct_spawn_calls[0]
     assert backend_call_count_at_spawn == 1
-    assert spawn_params["background"] is False
-    assert spawn_params["refine"] is False
-    assert isinstance(spawn_params["tasks"], list)
-    assert spawn_params["tasks"][0]["subagent_type"] == "round_evaluator"
-    assert any("temp_workspaces" in p for p in spawn_params["tasks"][0]["context_paths"])
+    assert spawn_refine is False
+    assert isinstance(spawn_tasks, list)
+    assert spawn_tasks[0]["subagent_type"] == "round_evaluator"
+    assert any("temp_workspaces" in p for p in spawn_tasks[0]["context_paths"])
 
     assert len(recorded_user_messages) >= 2
     assert "ROUND_EVAL_PACKET" not in recorded_user_messages[0]
@@ -1219,10 +1123,11 @@ async def test_round_evaluator_launches_between_round_one_and_round_two_and_inje
 async def test_round_evaluator_single_failure_terminates_coordination(
     mock_orchestrator,
     monkeypatch,
+    tmp_path,
 ):
-    """A single round_evaluator launch failure should immediately stop coordination (no retries)."""
+    """Persistent round_evaluator launch failures should stop coordination after retry limit."""
     orchestrator = mock_orchestrator(num_agents=1)
-    orchestrator.current_task = "Terminate on first evaluator failure."
+    orchestrator.current_task = "Terminate after repeated evaluator failures."
     agent_id = next(iter(orchestrator.agents.keys()))
 
     orchestrator.config.voting_sensitivity = "checklist_gated"
@@ -1237,8 +1142,10 @@ async def test_round_evaluator_single_failure_terminates_coordination(
 
     monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: None)
     orchestrator._save_agent_snapshot = AsyncMock(return_value="snapshot-ts")
+    _temp_ws_dir = tmp_path / "temp_workspaces"
+    _temp_ws_dir.mkdir(exist_ok=True)
     orchestrator._copy_all_snapshots_to_temp_workspace = AsyncMock(
-        return_value="/tmp/temp_workspaces",
+        return_value=str(_temp_ws_dir),
     )
 
     sequence: list[tuple[str, object]] = []
@@ -1263,14 +1170,8 @@ async def test_round_evaluator_single_failure_terminates_coordination(
 
     monkeypatch.setattr(orchestrator, "_stream_agent_execution", fake_stream_agent_execution)
 
-    async def fake_subagent_call(
-        parent_agent_id: str,
-        tool_name: str,
-        params: dict[str, object],
-    ):
-        _ = params
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
         assert parent_agent_id == agent_id
-        assert tool_name == "spawn_subagents"
         sequence.append(("gate", False))
         return {
             "success": False,
@@ -1280,8 +1181,8 @@ async def test_round_evaluator_single_failure_terminates_coordination(
 
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
-        fake_subagent_call,
+        "_direct_spawn_subagents",
+        fake_direct_spawn,
     )
 
     monkeypatch.setattr("massgen.orchestrator.asyncio.sleep", AsyncMock())
@@ -1290,11 +1191,10 @@ async def test_round_evaluator_single_failure_terminates_coordination(
     async for _chunk in orchestrator._stream_coordination_with_agents(votes, {}):
         pass
 
-    # Single failure → terminal, no retry
-    assert sequence == [
-        ("stream", {}),
-        ("gate", False),
-    ]
+    # Failures accumulate until MAX_LAUNCH_FAILURES is reached, then terminal
+    max_failures = orchestrator._ROUND_EVALUATOR_MAX_LAUNCH_FAILURES
+    expected_gate_entries = [("gate", False)] * max_failures
+    assert sequence == [("stream", {})] + expected_gate_entries
     assert stream_call_count["count"] == 1
     assert orchestrator.agent_states[agent_id].is_killed is True
 
@@ -1328,23 +1228,19 @@ async def test_round_evaluator_timeout_without_packet_degrades_and_continues(
 
     monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: None)
     orchestrator._save_agent_snapshot = AsyncMock(return_value="snapshot-ts")
+    _temp_ws_dir = tmp_path / "temp_workspaces"
+    _temp_ws_dir.mkdir(exist_ok=True)
     orchestrator._copy_all_snapshots_to_temp_workspace = AsyncMock(
-        return_value="/tmp/temp_workspaces",
+        return_value=str(_temp_ws_dir),
     )
     monkeypatch.setattr("massgen.orchestrator.asyncio.sleep", AsyncMock())
 
     round_eval_workspace = tmp_path / "round-eval-timeout"
     round_eval_workspace.mkdir()
 
-    # Re-run with explicit timeout payload through the real spawn path.
-    async def fake_subagent_call(
-        parent_agent_id: str,
-        tool_name: str,
-        params: dict[str, object],
-    ):
-        _ = params
+    # Re-run with explicit timeout payload through the direct spawn path.
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
         assert parent_agent_id == agent_id
-        assert tool_name == "spawn_subagents"
         return {
             "success": False,
             "operation": "spawn_subagents",
@@ -1359,8 +1255,8 @@ async def test_round_evaluator_timeout_without_packet_degrades_and_continues(
 
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
-        fake_subagent_call,
+        "_direct_spawn_subagents",
+        fake_direct_spawn,
     )
     orchestrator._round_evaluator_completed_labels.clear()
 
@@ -1383,6 +1279,7 @@ async def test_round_evaluator_timeout_without_packet_degrades_and_continues(
 async def test_round_evaluator_persistent_failure_stops_after_retry_limit(
     mock_orchestrator,
     monkeypatch,
+    tmp_path,
 ):
     """Persistent evaluator launch failures should stop coordination instead of looping forever."""
     orchestrator = mock_orchestrator(num_agents=1)
@@ -1400,12 +1297,15 @@ async def test_round_evaluator_persistent_failure_stops_after_retry_limit(
 
     monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: None)
     orchestrator._save_agent_snapshot = AsyncMock(return_value="snapshot-ts")
+    _temp_ws_dir = tmp_path / "temp_workspaces"
+    _temp_ws_dir.mkdir(exist_ok=True)
     orchestrator._copy_all_snapshots_to_temp_workspace = AsyncMock(
-        return_value="/tmp/temp_workspaces",
+        return_value=str(_temp_ws_dir),
     )
 
     sequence: list[tuple[str, object]] = []
     stream_call_count = {"count": 0}
+    max_failures = orchestrator._ROUND_EVALUATOR_MAX_LAUNCH_FAILURES
 
     async def fake_stream_agent_execution(
         aid: str,
@@ -1426,15 +1326,12 @@ async def test_round_evaluator_persistent_failure_stops_after_retry_limit(
 
     monkeypatch.setattr(orchestrator, "_stream_agent_execution", fake_stream_agent_execution)
 
-    async def fake_subagent_call(
-        parent_agent_id: str,
-        tool_name: str,
-        params: dict[str, object],
-    ):
-        _ = params
+    gate_call_count = {"count": 0}
+
+    async def fake_direct_spawn(parent_agent_id, tasks, refine=True):
         assert parent_agent_id == agent_id
-        assert tool_name == "spawn_subagents"
-        if len([entry for entry in sequence if entry[0] == "gate"]) >= 1:
+        gate_call_count["count"] += 1
+        if gate_call_count["count"] > max_failures:
             raise AssertionError("Round evaluator gate retried more than the retry limit")
         sequence.append(("gate", False))
         return {
@@ -1445,8 +1342,8 @@ async def test_round_evaluator_persistent_failure_stops_after_retry_limit(
 
     monkeypatch.setattr(
         orchestrator,
-        "_call_subagent_mcp_tool_async",
-        fake_subagent_call,
+        "_direct_spawn_subagents",
+        fake_direct_spawn,
     )
 
     sleep_calls: list[float] = []
@@ -1460,12 +1357,11 @@ async def test_round_evaluator_persistent_failure_stops_after_retry_limit(
     async for _chunk in orchestrator._stream_coordination_with_agents(votes, {}):
         pass
 
-    assert sequence == [
-        ("stream", {}),
-        ("gate", False),
-    ]
+    expected_gate_entries = [("gate", False)] * max_failures
+    assert sequence == [("stream", {})] + expected_gate_entries
     assert stream_call_count["count"] == 1
-    assert sleep_calls == []
+    # First (max_failures - 1) failures return False → sleep 0.25 each
+    assert len(sleep_calls) == max_failures - 1
     assert orchestrator.agent_states[agent_id].is_killed is True
     from massgen.coordination_tracker import EventType as TrackerEventType
 
@@ -1710,3 +1606,121 @@ class TestCancellationManagerSigterm:
         mgr.unregister()
 
         assert signal.getsignal(signal.SIGTERM) == original_sigterm
+
+
+class TestSplitCombinedSpawnResult:
+    """Tests for Orchestrator._split_combined_spawn_result."""
+
+    def test_splits_by_subagent_id(self):
+        """Results are partitioned by matching subagent_id."""
+        from massgen.orchestrator import Orchestrator
+
+        combined = {
+            "success": True,
+            "operation": "spawn_subagents",
+            "results": [
+                {"subagent_id": "round_eval_r2", "answer": "eval"},
+                {"subagent_id": "trace_analyzer_r2", "answer": "trace"},
+            ],
+        }
+        eval_d, trace_d = Orchestrator._split_combined_spawn_result(
+            combined,
+            evaluator_subagent_id="round_eval_r2",
+            trace_subagent_id="trace_analyzer_r2",
+        )
+        assert len(eval_d["results"]) == 1
+        assert eval_d["results"][0]["subagent_id"] == "round_eval_r2"
+        assert len(trace_d["results"]) == 1
+        assert trace_d["results"][0]["subagent_id"] == "trace_analyzer_r2"
+        assert trace_d["success"] is True
+
+    def test_missing_trace_result(self):
+        """When no trace result is present, trace dict has empty results and success=False."""
+        from massgen.orchestrator import Orchestrator
+
+        combined = {
+            "success": True,
+            "results": [
+                {"subagent_id": "round_eval_r3", "answer": "eval"},
+            ],
+        }
+        eval_d, trace_d = Orchestrator._split_combined_spawn_result(
+            combined,
+            evaluator_subagent_id="round_eval_r3",
+            trace_subagent_id="trace_analyzer_r3",
+        )
+        assert len(eval_d["results"]) == 1
+        assert trace_d["results"] == []
+        assert trace_d["success"] is False
+
+    def test_empty_results(self):
+        """Empty results list produces two empty dicts."""
+        from massgen.orchestrator import Orchestrator
+
+        combined = {"success": False, "results": []}
+        eval_d, trace_d = Orchestrator._split_combined_spawn_result(
+            combined,
+            evaluator_subagent_id="round_eval_r1",
+            trace_subagent_id="trace_analyzer_r1",
+        )
+        assert eval_d["results"] == []
+        assert trace_d["results"] == []
+
+    def test_preserves_base_keys(self):
+        """Non-results keys from the combined dict are preserved in both outputs."""
+        from massgen.orchestrator import Orchestrator
+
+        combined = {
+            "success": True,
+            "operation": "spawn_subagents",
+            "extra_key": 42,
+            "results": [
+                {"subagent_id": "round_eval_r1", "answer": "eval"},
+                {"subagent_id": "trace_analyzer_r1", "answer": "trace"},
+            ],
+        }
+        eval_d, trace_d = Orchestrator._split_combined_spawn_result(
+            combined,
+            evaluator_subagent_id="round_eval_r1",
+            trace_subagent_id="trace_analyzer_r1",
+        )
+        assert eval_d["operation"] == "spawn_subagents"
+        assert eval_d["extra_key"] == 42
+        assert trace_d["operation"] == "spawn_subagents"
+        assert trace_d["extra_key"] == 42
+
+
+@pytest.mark.asyncio
+async def test_direct_spawn_uses_configured_timeout(mock_orchestrator, monkeypatch):
+    """_direct_spawn_subagents should use subagent_default_timeout from config, not hardcoded 600."""
+    from unittest.mock import AsyncMock
+
+    orch = mock_orchestrator(num_agents=1)
+
+    # Override coordination_config on the real config object
+    orch.config.coordination_config.subagent_default_timeout = 2000
+
+    # Capture what configure_direct_spawn receives
+    captured_kwargs: dict = {}
+
+    import massgen.mcp_tools.subagent._subagent_mcp_server as mcp_mod
+
+    def fake_configure(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {}  # saved state
+
+    monkeypatch.setattr(mcp_mod, "configure_direct_spawn", fake_configure)
+    monkeypatch.setattr(
+        mcp_mod,
+        "spawn_subagents_direct",
+        AsyncMock(return_value={"success": True, "results": []}),
+    )
+    monkeypatch.setattr(mcp_mod, "reset_direct_spawn", lambda saved: None)
+
+    await orch._direct_spawn_subagents(
+        parent_agent_id="agent_a",
+        tasks=[{"task": "test"}],
+    )
+
+    assert captured_kwargs["default_timeout"] == 2000
+    assert captured_kwargs["max_timeout"] == 3000  # 2000 * 1.5

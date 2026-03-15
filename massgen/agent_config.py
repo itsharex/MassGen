@@ -215,6 +215,7 @@ class CoordinationConfig:
     round_evaluator_transformation_pressure: str = "balanced"  # "gentle" | "balanced" | "aggressive"
     enable_quality_rethink_on_iteration: bool = False  # Auto-inject quality_rethinking spawn task on iteration 2+
     enable_novelty_on_iteration: bool = False  # Auto-inject novelty/quality spawn task on iteration 2+
+    enable_execution_trace_analyzer: bool = False  # Run execution_trace_analyzer in parallel with round_evaluator
     novelty_injection: str = "none"  # "none" | "gentle" | "moderate" | "aggressive"
     improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for propose_improvements
     checklist_criteria_preset: str | None = None  # "persona" | "decomposition" | "evaluation" | "prompt" | "analysis" | "planning" | "spec" | "round_evaluator"

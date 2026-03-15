@@ -37,6 +37,11 @@ from massgen.subagent.models import (
     SubagentState,
 )
 
+# Subagent event streams can include large JSON lines for final answers or
+# verbose tool payloads. Raise the asyncio reader limit so line-based parsing
+# can consume those events without hitting LimitOverrunError.
+SUBPROCESS_STREAM_LIMIT = 4 * 1024 * 1024
+
 
 class SubagentManager:
     """
@@ -51,6 +56,20 @@ class SubagentManager:
 
     Subagents cannot spawn their own subagents (no nesting).
     """
+
+    @staticmethod
+    def _clean_subprocess_env() -> dict[str, str]:
+        """Return a copy of ``os.environ`` with ``CLAUDECODE`` removed.
+
+        Child MassGen processes inherit the parent environment.  When the
+        parent is itself a Claude Code session ``CLAUDECODE=1`` is set,
+        which blocks nested Claude Code SDK initialisation.  Stripping the
+        variable ensures subagent processes can launch their own Claude Code
+        backends without hitting nested-session detection.
+        """
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        return env
 
     def __init__(
         self,
@@ -1123,7 +1142,9 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=SUBPROCESS_STREAM_LIMIT,
                 cwd=str(workspace_abs),
+                env=self._clean_subprocess_env(),
             )
 
             # Track the process for potential cancellation
@@ -1588,7 +1609,9 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=SUBPROCESS_STREAM_LIMIT,
                 cwd=str(workspace_abs),
+                env=self._clean_subprocess_env(),
             )
 
             # Track the process for potential cancellation
@@ -3357,7 +3380,9 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=SUBPROCESS_STREAM_LIMIT,
                 cwd=str(workspace),
+                env=self._clean_subprocess_env(),
             )
 
             # Track the process for potential cancellation

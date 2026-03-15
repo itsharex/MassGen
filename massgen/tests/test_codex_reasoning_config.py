@@ -1,5 +1,6 @@
 """Tests for Codex reasoning effort config mapping."""
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ except ImportError:  # pragma: no cover - Python < 3.11 fallback
 
 from massgen import logger_config
 from massgen.agent_config import AgentConfig
-from massgen.backend.codex import CodexBackend
+from massgen.backend.codex import SUBPROCESS_STREAM_LIMIT, CodexBackend
 from massgen.orchestrator import Orchestrator
 
 
@@ -237,6 +238,46 @@ def test_codex_writes_execution_trace_markdown(tmp_path: Path):
     assert "I found the root cause and prepared a fix." in trace_text
     assert "### Tool Call: massgen_custom_tools/custom_tool__read_media" in trace_text
     assert "### Tool Result: massgen_custom_tools/custom_tool__read_media" in trace_text
+
+
+@pytest.mark.asyncio
+async def test_codex_stream_local_uses_large_subprocess_limit(tmp_path: Path, monkeypatch):
+    backend = CodexBackend(cwd=str(tmp_path))
+    backend._build_exec_command = lambda prompt, resume_session=False: ["/usr/bin/codex", "exec"]  # noqa: ARG005
+
+    captured_kwargs: dict[str, object] = {}
+
+    class _EmptyAsyncReader:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeStderr:
+        async def read(self):
+            return b""
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = _EmptyAsyncReader()
+            self.stderr = _FakeStderr()
+            self.returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):  # noqa: ANN002, ANN003
+        del args
+        captured_kwargs.update(kwargs)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    chunks = [chunk async for chunk in backend._stream_local("prompt", resume_session=False)]
+
+    assert chunks == []
+    assert captured_kwargs["limit"] == SUBPROCESS_STREAM_LIMIT
 
 
 def test_codex_turn_completed_usage_preserves_cached_input_tokens(tmp_path: Path):

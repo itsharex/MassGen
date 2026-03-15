@@ -278,6 +278,359 @@ def _attach_timeout_seconds(payload: dict[str, Any], timeout_seconds: int) -> di
     return enriched
 
 
+# ---------------------------------------------------------------------------
+# Direct-spawn helpers (orchestrator calls these as plain Python, not MCP)
+# ---------------------------------------------------------------------------
+
+# Module globals that configure_direct_spawn / reset_direct_spawn swap.
+_DIRECT_SPAWN_GLOBALS = [
+    "_manager",
+    "_workspace_path",
+    "_parent_agent_id",
+    "_orchestrator_id",
+    "_parent_agent_configs",
+    "_subagent_orchestrator_config",
+    "_log_directory",
+    "_agent_temporary_workspace",
+    "_parent_context_paths",
+    "_parent_coordination_config",
+    "_default_timeout",
+    "_max_timeout",
+    "_specialized_subagents",
+    "_subagent_types_loaded",
+]
+
+
+def configure_direct_spawn(
+    *,
+    workspace_path: Path,
+    parent_agent_id: str,
+    orchestrator_id: str,
+    parent_agent_configs: list[dict[str, Any]],
+    subagent_orchestrator_config: SubagentOrchestratorConfig | None,
+    log_directory: str | None,
+    agent_temporary_workspace: str | None,
+    parent_context_paths: list[dict[str, str]],
+    parent_coordination_config: dict[str, Any] | None = None,
+    default_timeout: int = 600,
+    max_timeout: int = 900,
+) -> dict[str, Any]:
+    """Set module globals for a direct spawn (no MCP transport).
+
+    Returns a snapshot of the previous globals so they can be restored
+    via ``reset_direct_spawn(saved)``.
+    """
+    saved: dict[str, Any] = {}
+    for attr in _DIRECT_SPAWN_GLOBALS:
+        val = globals()[attr]
+        # Shallow-copy mutable containers so the snapshot is stable.
+        if isinstance(val, dict):
+            val = dict(val)
+        elif isinstance(val, list):
+            val = list(val)
+        saved[attr] = val
+
+    global _manager, _workspace_path, _parent_agent_id, _orchestrator_id
+    global _parent_agent_configs, _subagent_orchestrator_config, _log_directory
+    global _agent_temporary_workspace, _parent_context_paths
+    global _parent_coordination_config, _default_timeout, _max_timeout
+    global _specialized_subagents, _subagent_types_loaded
+
+    _manager = None  # Force fresh SubagentManager
+    _workspace_path = workspace_path
+    _parent_agent_id = parent_agent_id
+    _orchestrator_id = orchestrator_id
+    _parent_agent_configs = parent_agent_configs
+    _subagent_orchestrator_config = subagent_orchestrator_config
+    _log_directory = log_directory
+    _agent_temporary_workspace = agent_temporary_workspace
+    _parent_context_paths = parent_context_paths
+    _parent_coordination_config = parent_coordination_config or {}
+    _default_timeout = default_timeout
+    _max_timeout = max_timeout
+    _specialized_subagents = {}
+    _subagent_types_loaded = False  # Force rescan from new workspace
+
+    return saved
+
+
+def reset_direct_spawn(saved: dict[str, Any]) -> None:
+    """Restore module globals after a direct spawn completes."""
+    for attr in _DIRECT_SPAWN_GLOBALS:
+        globals()[attr] = saved[attr]
+
+
+def _preprocess_spawn_tasks(
+    tasks: list[dict[str, Any]],
+    context_paths: list[str] | None = None,
+    timeout_override: int | None = None,
+    lenient_types: bool = False,
+) -> dict[str, Any] | tuple[Any, list[dict[str, Any]], int]:
+    """Validate and normalize spawn tasks.
+
+    Shared by ``spawn_subagents`` (MCP tool) and ``spawn_subagents_direct``
+    (orchestrator internal).
+
+    When *lenient_types* is True, unknown ``subagent_type`` values are logged
+    as warnings and skipped instead of causing a hard failure.  This matches
+    the orchestrator-managed direct-spawn behaviour where a missing type
+    definition (e.g. ``execution_trace_analyzer``) should not abort the
+    entire spawn.
+
+    Returns ``(manager, normalized_tasks, effective_timeout)`` on success,
+    or an error dict on validation failure.
+    """
+    global _next_subagent_index
+
+    manager = _get_manager()
+    effective_timeout = timeout_override if timeout_override is not None else _resolve_effective_timeout_seconds(manager)
+
+    # Validate tasks
+    if not tasks:
+        return {
+            "success": False,
+            "operation": "spawn_subagents",
+            "error": "No tasks provided. Must provide at least one task.",
+        }
+
+    if len(tasks) > _max_concurrent:
+        return {
+            "success": False,
+            "operation": "spawn_subagents",
+            "error": f"Too many tasks: {len(tasks)} requested but maximum is {_max_concurrent}. " f"Please reduce to {_max_concurrent} or fewer tasks per spawn_subagents call.",
+        }
+
+    # Merge top-level context_paths into every task so callers can share
+    # peer workspace mounts without repeating them per-task.
+    normalized_top_level_paths = _normalize_context_paths_arg(context_paths)
+    top_level_paths: list[str] = normalized_top_level_paths or []
+    if top_level_paths:
+        merged_tasks = []
+        for t in tasks:
+            t = dict(t)  # shallow copy — don't mutate caller's dicts
+            normalized_task_paths = _normalize_context_paths_arg(t.get("context_paths"))
+            per_task = list(normalized_task_paths or [])
+            for p in top_level_paths:
+                if p not in per_task:
+                    per_task.append(p)
+            t["context_paths"] = per_task
+            merged_tasks.append(t)
+        tasks = merged_tasks
+
+    # Auto-mount temp_workspace (shared reference dir) for all tasks unless
+    # opted out via include_temp_workspace=False. Prepended so it's always
+    # first, giving subagents immediate access to peer agent snapshots.
+    if _agent_temporary_workspace:
+        tw_str = str(_agent_temporary_workspace)
+        merged_tasks = []
+        for t in tasks:
+            if t.get("include_temp_workspace", True):
+                t = dict(t)
+                normalized_task_paths = _normalize_context_paths_arg(t.get("context_paths"))
+                per_task = list(normalized_task_paths or [])
+                if tw_str not in per_task:
+                    per_task.insert(0, tw_str)
+                t["context_paths"] = per_task
+            merged_tasks.append(t)
+        tasks = merged_tasks
+
+    for i, task_config in enumerate(tasks):
+        if "task" not in task_config:
+            return {
+                "success": False,
+                "operation": "spawn_subagents",
+                "error": f"Task at index {i} missing required 'task' field",
+            }
+        context_paths_val = _normalize_context_paths_arg(task_config.get("context_paths", []))
+        if context_paths_val is not None and not isinstance(context_paths_val, list):
+            actual_type = type(context_paths_val).__name__
+            return {
+                "success": False,
+                "operation": "spawn_subagents",
+                "error": (f"Task at index {i} has invalid 'context_paths' type: " f"expected list, got {actual_type}. " "Use [] for no extra paths or a list of path strings."),
+            }
+        for idx, path_str in enumerate(context_paths_val or []):
+            if not isinstance(path_str, str):
+                return {
+                    "success": False,
+                    "operation": "spawn_subagents",
+                    "error": (f"Task at index {i} context_paths[{idx}]: " f"expected string, got {type(path_str).__name__}"),
+                }
+        task_config["context_paths"] = context_paths_val or []
+        if _workspace_path:
+            workspace_root = Path(_workspace_path)
+            for path_str in context_paths_val or []:
+                resolved = Path(path_str)
+                if not resolved.is_absolute():
+                    resolved = workspace_root / path_str
+                if not resolved.exists():
+                    return {
+                        "success": False,
+                        "operation": "spawn_subagents",
+                        "error": (f"Task at index {i} has a non-existent context_path: '{path_str}'. " f"Your workspace is at: {_workspace_path}. " "Check the path exists first."),
+                    }
+
+    inherit_spawning_agent_backend = bool(
+        _subagent_orchestrator_config and getattr(_subagent_orchestrator_config, "inherit_spawning_agent_backend", False),
+    )
+    if inherit_spawning_agent_backend:
+        model_override_indices = []
+        for i, task_config in enumerate(tasks):
+            model_override = task_config.get("model")
+            if model_override is not None and str(model_override).strip():
+                model_override_indices.append(i)
+
+        if model_override_indices:
+            task_indexes = ", ".join(str(idx) for idx in model_override_indices)
+            return {
+                "success": False,
+                "operation": "spawn_subagents",
+                "error": ("Task-level model override is not allowed when " "subagent_orchestrator.inherit_spawning_agent_backend=true. " f"Remove 'model' from task(s) at index: {task_indexes}."),
+            }
+
+    # Normalize task IDs using a global counter so IDs are unique
+    # across multiple spawn_subagents calls (not just within one call).
+    normalized_tasks = []
+    for t in tasks:
+        if "subagent_id" in t:
+            task_id = t["subagent_id"]
+        else:
+            task_id = f"subagent_{_next_subagent_index}"
+            _next_subagent_index += 1
+        normalized_tasks.append(
+            {
+                **t,
+                "subagent_id": task_id,
+            },
+        )
+
+    task_ids = [str(t["subagent_id"]) for t in normalized_tasks]
+
+    # Reject duplicate IDs in a single spawn request.
+    seen_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+    for task_id in task_ids:
+        if task_id in seen_ids:
+            duplicate_ids.add(task_id)
+        seen_ids.add(task_id)
+    if duplicate_ids:
+        duplicate_list = ", ".join(sorted(duplicate_ids))
+        return {
+            "success": False,
+            "operation": "spawn_subagents",
+            "error": (f"Duplicate subagent_id values in this spawn request: {duplicate_list}. " "Each task must use a unique subagent_id."),
+        }
+
+    # Reject IDs that are already running to avoid accidental double-spawn.
+    existing_subagents = manager.list_subagents() or []
+    running_ids = {str(entry.get("subagent_id", "")).strip() for entry in existing_subagents if isinstance(entry, dict) and str(entry.get("status", "")).lower() == "running"}
+    running_ids.discard("")
+    conflicting_running_ids = sorted(set(task_ids) & running_ids)
+    if conflicting_running_ids:
+        conflict_text = ", ".join(conflicting_running_ids)
+        return {
+            "success": False,
+            "operation": "spawn_subagents",
+            "error": (f"Cannot spawn subagent_id already running: {conflict_text}. " "Use send_message_to_subagent() to steer the existing run, " "or wait/cancel it before spawning again."),
+        }
+
+    # Resolve specialized subagent types (lazy load on first call)
+    _ensure_specialized_types_loaded()
+    for t in normalized_tasks:
+        # Normalize common alias: some models send "subagent_name" instead of "subagent_type"
+        if "subagent_type" not in t and "subagent_name" in t:
+            t["subagent_type"] = t.pop("subagent_name")
+        subagent_type = t.get("subagent_type", "")
+        if not subagent_type:
+            continue
+
+        type_config = _specialized_subagents.get(subagent_type.lower())
+        if not type_config:
+            if lenient_types:
+                logger.warning(
+                    "[SubagentMCP] Unknown subagent_type '%s' for task '%s' — " "proceeding without specialized system prompt",
+                    subagent_type,
+                    t["subagent_id"],
+                )
+                continue
+            available_types = sorted(_specialized_subagents.keys())
+            available_text = ", ".join(available_types) if available_types else "(none configured)"
+            return {
+                "success": False,
+                "operation": "spawn_subagents",
+                "error": (f"Unknown subagent_type '{subagent_type}' for task '{t['subagent_id']}'. " f"Available subagent types: {available_text}."),
+            }
+
+        # Inject system_prompt from type definition
+        if "system_prompt" not in t and type_config.get("system_prompt"):
+            t["system_prompt"] = type_config["system_prompt"]
+        # Inject skills list for the manager to configure
+        if "skills" not in t and type_config.get("skills"):
+            t["skills"] = type_config["skills"]
+        logger.info(
+            f"[SubagentMCP] Resolved subagent_type '{subagent_type}' for task {t['subagent_id']}",
+        )
+
+    logger.info(f"[SubagentMCP] Spawning {len(normalized_tasks)} subagents: {task_ids}")
+    return manager, normalized_tasks, effective_timeout
+
+
+async def spawn_subagents_direct(
+    tasks: list[dict[str, Any]],
+    refine: bool = True,
+    context_paths: list[str] | None = None,
+    timeout_override: int | None = None,
+) -> dict[str, Any]:
+    """Async direct spawn — same logic as the MCP tool but without transport.
+
+    Called from ``Orchestrator._direct_spawn_subagents`` after configuring
+    module globals via ``configure_direct_spawn()``.  Uses ``await`` on
+    ``manager.spawn_parallel()`` instead of ``run_async_safely()``.
+    """
+    try:
+        result = _preprocess_spawn_tasks(
+            tasks,
+            context_paths,
+            timeout_override,
+            lenient_types=True,
+        )
+        if isinstance(result, dict):
+            return result
+        manager, normalized_tasks, effective_timeout = result
+
+        results = await manager.spawn_parallel(
+            tasks=normalized_tasks,
+            timeout_seconds=effective_timeout,
+            refine=refine,
+        )
+        result_payloads = [_attach_timeout_seconds(r.to_dict(), effective_timeout) for r in results]
+
+        completed = sum(1 for r in results if r.status in ("completed", "completed_but_timeout", "partial"))
+        failed = sum(1 for r in results if r.status == "error")
+        timeout = sum(1 for r in results if r.status in ("timeout", "completed_but_timeout"))
+        all_success = all(r.success for r in results)
+
+        return {
+            "success": all_success,
+            "operation": "spawn_subagents",
+            "mode": "blocking",
+            "results": result_payloads,
+            "summary": {
+                "total": len(results),
+                "completed": completed,
+                "failed": failed,
+                "timeout": timeout,
+            },
+        }
+    except Exception as e:
+        logger.error(f"[SubagentMCP] Direct spawn error: {e}")
+        return {
+            "success": False,
+            "operation": "spawn_subagents",
+            "error": str(e),
+        }
+
+
 async def create_server() -> fastmcp.FastMCP:
     """Factory function to create and configure the subagent MCP server."""
     global _workspace_path, _parent_agent_id, _orchestrator_id, _parent_agent_configs
@@ -725,197 +1078,10 @@ async def create_server() -> fastmcp.FastMCP:
             # ])
         """
         try:
-            manager = _get_manager()
-            effective_timeout_seconds = _resolve_effective_timeout_seconds(manager)
-
-            # Validate tasks
-            if not tasks:
-                return {
-                    "success": False,
-                    "operation": "spawn_subagents",
-                    "error": "No tasks provided. Must provide at least one task.",
-                }
-
-            # Enforce hard limit on number of subagents
-            if len(tasks) > _max_concurrent:
-                return {
-                    "success": False,
-                    "operation": "spawn_subagents",
-                    "error": f"Too many tasks: {len(tasks)} requested but maximum is {_max_concurrent}. " f"Please reduce to {_max_concurrent} or fewer tasks per spawn_subagents call.",
-                }
-
-            # Merge top-level context_paths into every task so callers can share
-            # peer workspace mounts without repeating them per-task.
-            normalized_top_level_paths = _normalize_context_paths_arg(context_paths)
-            top_level_paths: list[str] = normalized_top_level_paths or []
-            if top_level_paths:
-                merged_tasks = []
-                for t in tasks:
-                    t = dict(t)  # shallow copy — don't mutate caller's dicts
-                    normalized_task_paths = _normalize_context_paths_arg(t.get("context_paths"))
-                    per_task = list(normalized_task_paths or [])
-                    # Append top-level paths, preserving per-task order and
-                    # avoiding duplicates while keeping list semantics.
-                    for p in top_level_paths:
-                        if p not in per_task:
-                            per_task.append(p)
-                    t["context_paths"] = per_task
-                    merged_tasks.append(t)
-                tasks = merged_tasks
-
-            # Auto-mount temp_workspace (shared reference dir) for all tasks unless
-            # opted out via include_temp_workspace=False. Prepended so it's always
-            # first, giving subagents immediate access to peer agent snapshots.
-            if _agent_temporary_workspace:
-                tw_str = str(_agent_temporary_workspace)
-                merged_tasks = []
-                for t in tasks:
-                    if t.get("include_temp_workspace", True):
-                        t = dict(t)
-                        normalized_task_paths = _normalize_context_paths_arg(t.get("context_paths"))
-                        per_task = list(normalized_task_paths or [])
-                        if tw_str not in per_task:
-                            per_task.insert(0, tw_str)
-                        t["context_paths"] = per_task
-                    merged_tasks.append(t)
-                tasks = merged_tasks
-
-            for i, task_config in enumerate(tasks):
-                if "task" not in task_config:
-                    return {
-                        "success": False,
-                        "operation": "spawn_subagents",
-                        "error": f"Task at index {i} missing required 'task' field",
-                    }
-                # context_paths is now optional (defaults to []).
-                # Parent workspace is always mounted unless include_parent_workspace=False.
-                context_paths_val = _normalize_context_paths_arg(task_config.get("context_paths", []))
-                if context_paths_val is not None and not isinstance(context_paths_val, list):
-                    actual_type = type(context_paths_val).__name__
-                    return {
-                        "success": False,
-                        "operation": "spawn_subagents",
-                        "error": (f"Task at index {i} has invalid 'context_paths' type: " f"expected list, got {actual_type}. " "Use [] for no extra paths or a list of path strings."),
-                    }
-                for idx, path_str in enumerate(context_paths_val or []):
-                    if not isinstance(path_str, str):
-                        return {
-                            "success": False,
-                            "operation": "spawn_subagents",
-                            "error": (f"Task at index {i} context_paths[{idx}]: " f"expected string, got {type(path_str).__name__}"),
-                        }
-                task_config["context_paths"] = context_paths_val or []
-                if _workspace_path:
-                    workspace_root = Path(_workspace_path)
-                    for path_str in context_paths_val or []:
-                        resolved = Path(path_str)
-                        if not resolved.is_absolute():
-                            resolved = workspace_root / path_str
-                        if not resolved.exists():
-                            return {
-                                "success": False,
-                                "operation": "spawn_subagents",
-                                "error": (f"Task at index {i} has a non-existent context_path: '{path_str}'. " f"Your workspace is at: {_workspace_path}. " "Check the path exists first."),
-                            }
-
-            inherit_spawning_agent_backend = bool(
-                _subagent_orchestrator_config and getattr(_subagent_orchestrator_config, "inherit_spawning_agent_backend", False),
-            )
-            if inherit_spawning_agent_backend:
-                model_override_indices = []
-                for i, task_config in enumerate(tasks):
-                    model_override = task_config.get("model")
-                    if model_override is not None and str(model_override).strip():
-                        model_override_indices.append(i)
-
-                if model_override_indices:
-                    task_indexes = ", ".join(str(idx) for idx in model_override_indices)
-                    return {
-                        "success": False,
-                        "operation": "spawn_subagents",
-                        "error": (
-                            "Task-level model override is not allowed when " "subagent_orchestrator.inherit_spawning_agent_backend=true. " f"Remove 'model' from task(s) at index: {task_indexes}."
-                        ),
-                    }
-
-            # Normalize task IDs using a global counter so IDs are unique
-            # across multiple spawn_subagents calls (not just within one call).
-            # _auto_id marks tasks whose ID was assigned here (not caller-provided),
-            # so we can reclaim the counter slot if the spawn immediately fails.
-            global _next_subagent_index
-            normalized_tasks = []
-            for t in tasks:
-                if "subagent_id" in t:
-                    task_id = t["subagent_id"]
-                else:
-                    task_id = f"subagent_{_next_subagent_index}"
-                    _next_subagent_index += 1
-                normalized_tasks.append(
-                    {
-                        **t,
-                        "subagent_id": task_id,
-                    },
-                )
-
-            task_ids = [str(t["subagent_id"]) for t in normalized_tasks]
-
-            # Reject duplicate IDs in a single spawn request.
-            seen_ids: set[str] = set()
-            duplicate_ids: set[str] = set()
-            for task_id in task_ids:
-                if task_id in seen_ids:
-                    duplicate_ids.add(task_id)
-                seen_ids.add(task_id)
-            if duplicate_ids:
-                duplicate_list = ", ".join(sorted(duplicate_ids))
-                return {
-                    "success": False,
-                    "operation": "spawn_subagents",
-                    "error": (f"Duplicate subagent_id values in this spawn request: {duplicate_list}. " "Each task must use a unique subagent_id."),
-                }
-
-            # Reject IDs that are already running to avoid accidental double-spawn.
-            existing_subagents = manager.list_subagents() or []
-            running_ids = {str(entry.get("subagent_id", "")).strip() for entry in existing_subagents if isinstance(entry, dict) and str(entry.get("status", "")).lower() == "running"}
-            running_ids.discard("")
-            conflicting_running_ids = sorted(set(task_ids) & running_ids)
-            if conflicting_running_ids:
-                conflict_text = ", ".join(conflicting_running_ids)
-                return {
-                    "success": False,
-                    "operation": "spawn_subagents",
-                    "error": (f"Cannot spawn subagent_id already running: {conflict_text}. " "Use send_message_to_subagent() to steer the existing run, " "or wait/cancel it before spawning again."),
-                }
-
-            # Resolve specialized subagent types (lazy load on first call)
-            _ensure_specialized_types_loaded()
-            for t in normalized_tasks:
-                # Normalize common alias: some models send "subagent_name" instead of "subagent_type"
-                if "subagent_type" not in t and "subagent_name" in t:
-                    t["subagent_type"] = t.pop("subagent_name")
-                subagent_type = t.get("subagent_type", "")
-                if not subagent_type:
-                    continue
-
-                type_config = _specialized_subagents.get(subagent_type.lower())
-                if not type_config:
-                    available_types = sorted(_specialized_subagents.keys())
-                    available_text = ", ".join(available_types) if available_types else "(none configured)"
-                    return {
-                        "success": False,
-                        "operation": "spawn_subagents",
-                        "error": (f"Unknown subagent_type '{subagent_type}' for task '{t['subagent_id']}'. " f"Available subagent types: {available_text}."),
-                    }
-
-                # Inject system_prompt from type definition
-                if "system_prompt" not in t and type_config.get("system_prompt"):
-                    t["system_prompt"] = type_config["system_prompt"]
-                # Inject skills list for the manager to configure
-                if "skills" not in t and type_config.get("skills"):
-                    t["skills"] = type_config["skills"]
-                logger.info(f"[SubagentMCP] Resolved subagent_type '{subagent_type}' for task {t['subagent_id']}")
-
-            logger.info(f"[SubagentMCP] Spawning {len(normalized_tasks)} subagents: {task_ids}")
+            prep = _preprocess_spawn_tasks(tasks, context_paths)
+            if isinstance(prep, dict):
+                return prep
+            manager, normalized_tasks, effective_timeout_seconds = prep
 
             if background:
                 # BACKGROUND MODE: Spawn subagents in background and return immediately

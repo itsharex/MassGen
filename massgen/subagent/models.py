@@ -868,6 +868,11 @@ class RoundEvaluatorResult:
         if workspace_path:
             workspace = Path(workspace_path)
             _add_candidate(workspace / artifact_name, priority=0)
+            # Inner agent directories (subagent_orchestrator layout):
+            # When the round evaluator runs as a multi-agent MassGen instance,
+            # the winning agent writes artifacts into workspace/agent_<id>/.
+            for candidate in workspace.glob(f"agent_*/{artifact_name}"):
+                _add_candidate(candidate, priority=5)
             for pattern in (
                 f".massgen/sessions/*/turn_*/workspace/{artifact_name}",
                 f".massgen/massgen_logs/*/turn_*/final/*/workspace/{artifact_name}",

@@ -3110,6 +3110,79 @@ class TestContinueSubagent:
         assert listed["sub1"]["status"] == "completed"
         assert listed["sub1"]["session_id"] == "sess-new"
 
+    @pytest.mark.asyncio
+    async def test_continue_passes_large_subprocess_limit(self, tmp_path, monkeypatch):
+        from massgen.subagent.manager import SUBPROCESS_STREAM_LIMIT, SubagentManager
+        from massgen.subagent.models import SubagentState
+
+        workspace = tmp_path / "workspace"
+        manager = SubagentManager(
+            parent_workspace=str(workspace),
+            parent_agent_id="test-agent",
+            orchestrator_id="test-orch",
+            parent_agent_configs=[],
+        )
+
+        sub_workspace = workspace / "subagents" / "sub1" / "workspace"
+        sub_workspace.mkdir(parents=True, exist_ok=True)
+
+        config = SubagentConfig(id="sub1", task="research topic", parent_agent_id="test-agent")
+        manager._subagents["sub1"] = SubagentState(
+            config=config,
+            status="cancelled",
+            workspace_path=str(sub_workspace),
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            result=SubagentResult.create_error(
+                subagent_id="sub1",
+                error="cancelled",
+                workspace_path=str(sub_workspace),
+                execution_time_seconds=1.0,
+            ),
+        )
+        manager._subagent_sessions["sub1"] = "sess-old"
+
+        registry = {
+            "parent_agent_id": "test-agent",
+            "orchestrator_id": "test-orch",
+            "subagents": [
+                {
+                    "subagent_id": "sub1",
+                    "session_id": "sess-old",
+                    "task": "research topic",
+                    "status": "cancelled",
+                    "workspace": str(sub_workspace),
+                    "continuable": True,
+                    "source_agent": "test-agent",
+                },
+            ],
+        }
+        registry_path = manager.subagents_base / "_registry.json"
+        registry_path.parent.mkdir(parents=True, exist_ok=True)
+        registry_path.write_text(json.dumps(registry))
+        (sub_workspace / ".massgen" / "sessions" / "sess-old" / "turn_1").mkdir(parents=True, exist_ok=True)
+
+        captured_kwargs: dict[str, object] = {}
+
+        async def _fake_create_subprocess_exec(*args, **kwargs):  # noqa: ANN002, ANN003
+            del args
+            captured_kwargs.update(kwargs)
+            return _FakeContinueProcess(sub_workspace)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+        monkeypatch.setattr(manager, "_resolve_effective_runtime_mode", lambda: ("inherited", None))
+        monkeypatch.setattr(manager, "_session_has_saved_turns", lambda *args, **kwargs: True)
+        monkeypatch.setattr(manager, "_parse_subprocess_status", lambda _workspace: ({}, None, "sess-new"))
+        monkeypatch.setattr(manager, "_write_subprocess_log_reference", lambda *args, **kwargs: None)
+
+        result = await manager.continue_subagent(
+            subagent_id="sub1",
+            new_message="continue with more depth",
+        )
+
+        assert result.success is True
+        assert captured_kwargs["limit"] == SUBPROCESS_STREAM_LIMIT
+
 
 class TestContinueSubagentBackground:
     """Tests for SubagentManager.continue_subagent_background()."""
@@ -3780,3 +3853,43 @@ class TestListSubagentsTimeoutFields:
         # remaining should be ~200s
         assert entry["seconds_remaining"] <= 201.0
         assert entry["seconds_remaining"] >= 190.0
+
+
+class TestCleanSubprocessEnv:
+    """Tests for SubagentManager._clean_subprocess_env."""
+
+    def test_removes_claudecode_env_var(self):
+        """CLAUDECODE should be stripped from the returned env dict."""
+        import os
+
+        from massgen.subagent.manager import SubagentManager
+
+        original = os.environ.get("CLAUDECODE")
+        try:
+            os.environ["CLAUDECODE"] = "1"
+            env = SubagentManager._clean_subprocess_env()
+            assert "CLAUDECODE" not in env
+        finally:
+            if original is None:
+                os.environ.pop("CLAUDECODE", None)
+            else:
+                os.environ["CLAUDECODE"] = original
+
+    def test_preserves_other_env_vars(self):
+        """Other environment variables should remain intact."""
+
+        from massgen.subagent.manager import SubagentManager
+
+        env = SubagentManager._clean_subprocess_env()
+        # PATH is universally present
+        assert "PATH" in env
+
+    def test_returns_copy_not_reference(self):
+        """The returned dict must be a copy so mutations don't affect os.environ."""
+        import os
+
+        from massgen.subagent.manager import SubagentManager
+
+        env = SubagentManager._clean_subprocess_env()
+        env["__TEST_SENTINEL__"] = "yes"
+        assert os.environ.get("__TEST_SENTINEL__") is None

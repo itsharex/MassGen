@@ -2697,7 +2697,12 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
 
         # Clear CLAUDECODE env var so child Claude Code sessions are not blocked
         # by nested session detection (CLAUDECODE=1 is inherited from the parent).
-        env_overrides = {"CLAUDECODE": ""}
+        # Raise the SDK initialize timeout to avoid premature stream close on
+        # slow cold-starts (default is 60 000 ms).
+        env_overrides: dict[str, str] = {
+            "CLAUDECODE": "",
+            "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "180000",  # 3 min in ms (default 60000)
+        }
         if "env" in options_kwargs:
             env_overrides.update(options_kwargs["env"])
 
@@ -2745,10 +2750,16 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
 
         options["can_use_tool"] = can_use_tool
 
-        # Capture stderr from the Claude Code subprocess to prevent noisy
-        # "Stream closed" / "Error in hook callback" messages on Ctrl+C.
+        # Capture stderr from the Claude Code subprocess.
         # Without this, stderr is inherited and dumps directly to the terminal.
-        options["stderr"] = lambda line: logger.debug(f"[ClaudeCode stderr] {line.rstrip()}")
+        # Log at WARNING so errors (rate limits, API failures, auth issues) are
+        # visible in INFO+ log files — previously DEBUG swallowed them silently.
+        options["stderr"] = lambda line: logger.warning(f"[ClaudeCode stderr] {line.rstrip()}")
+
+        # Enable CLI-level debug logging to stderr for diagnosing silent hangs.
+        if os.getenv("MASSGEN_CLAUDE_CODE_DEBUG", "0") == "1":
+            options.setdefault("extra_args", {})["debug-to-stderr"] = None
+            logger.info("[ClaudeCodeBackend] Enabled debug-to-stderr for CLI diagnostics")
 
         # Parse unified reasoning config → SDK thinking + effort fields
         # Supports: reasoning: {type: adaptive, effort: high}
@@ -3143,6 +3154,17 @@ class ClaudeCodeBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend
             llm_span_open = True
 
             await client.query(combined_query)
+            logger.info(f"[ClaudeCodeBackend] Query sent ({len(combined_query)} chars), waiting for response...")
+
+            # Surface a "thinking" indicator so the TUI/display shows activity
+            # while the model processes the prompt (can take minutes for large contexts).
+            log_stream_chunk("backend.claude_code", "reasoning", "Thinking...", agent_id)
+            yield StreamChunk(
+                type="reasoning",
+                content="Thinking...",
+                reasoning_delta="Thinking...",
+                source="claude_code",
+            )
         else:
             log_stream_chunk("backend.claude_code", "error", "All user messages were empty", agent_id)
             yield StreamChunk(type="error", error="All user messages were empty", source="claude_code")

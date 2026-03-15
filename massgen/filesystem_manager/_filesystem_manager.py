@@ -39,7 +39,7 @@ def _remove_readonly(func, path, _exc_unused):
     callback (func, path, exc_info) and the ``onexc`` callback
     (func, path, exc) introduced in Python 3.12.
     """
-    os.chmod(path, stat.S_IWRITE)
+    os.chmod(path, stat.S_IRWXU)
     func(path)
 
 

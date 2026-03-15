@@ -1,0 +1,49 @@
+# Debug config: round_evaluator + execution_trace_analyzer side-by-side
+#
+# Uses a codex main agent with a codex+claude_code evaluator team.
+# Both round_evaluator and execution_trace_analyzer run on each inter-round
+# gate so we can verify the combined spawn path and TUI display.
+#
+# Example usage:
+#   massgen --automation --config @configs/debug/test_trace_analyzer_side_by_side.yaml \
+#     "Write a short Python utility that parses CSV files."
+
+agents:
+  - id: "agent_a"
+    backend:
+      type: codex
+      model: gpt-5.4
+      cwd: workspace
+
+orchestrator:
+  snapshot_storage: "snapshots"
+  agent_temporary_workspace: "temp_workspaces"
+
+  coordination:
+    enable_subagents: true
+    round_evaluator_before_checklist: true
+    orchestrator_managed_round_evaluator: true
+    enable_execution_trace_analyzer: true
+    enable_memory_filesystem_mode: true
+    subagent_types: [round_evaluator, execution_trace_analyzer]
+    round_evaluator_refine: false
+    round_evaluator_transformation_pressure: "balanced"
+
+    subagent_orchestrator:
+      enabled: true
+      agents:
+        - id: "eval_codex"
+          backend:
+            type: codex
+            model: gpt-5.4
+        - id: "eval_claude"
+          backend:
+            type: claude_code
+            model: claude-sonnet-4-6
+
+  voting_sensitivity: "checklist_gated"
+  max_new_answers_per_agent: 3
+
+ui:
+  display_type: "textual_terminal"
+  logging_enabled: true

@@ -86,6 +86,11 @@ from .base import (
 )
 from .native_tool_mixin import NativeToolBackendMixin
 
+# Large tool results and final answers can produce oversized JSONL events.
+# Bump the asyncio StreamReader limit so line-based parsing doesn't trip
+# LimitOverrunError before we can process the event.
+SUBPROCESS_STREAM_LIMIT = 4 * 1024 * 1024
+
 
 class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
     """OpenAI Codex backend using CLI subprocess with JSON event stream.
@@ -2005,6 +2010,7 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=SUBPROCESS_STREAM_LIMIT,
                 cwd=self.cwd,
                 env={**os.environ, "NO_COLOR": "1", "CODEX_HOME": codex_home},
             )

@@ -118,6 +118,7 @@ class APIParamsHandlerBase(ABC):
             "round_evaluator_transformation_pressure",  # Coordination-only bias for evaluator thesis boldness
             "enable_quality_rethink_on_iteration",  # Coordination-only quality task injection toggle
             "enable_novelty_on_iteration",  # Coordination-only novelty task injection toggle
+            "enable_execution_trace_analyzer",  # Coordination-only execution trace analysis toggle
             "novelty_injection",  # Novelty pressure level (none/gentle/moderate/aggressive)
             "improvements",  # propose_improvements gate settings (orchestrator/checklist only)
             "learning_capture_mode",  # Learning capture timing (round/verification_and_final_only/final_only)
