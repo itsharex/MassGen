@@ -1,0 +1,12 @@
+# GPT-5-nano with WebSocket Mode
+# Single agent with persistent WebSocket connection.
+agents:
+  - id: "gpt-5-nano-ws"
+    backend:
+      type: "openai"
+      model: "gpt-5-nano"
+      websocket_mode: true
+      enable_code_interpreter: true
+ui:
+  display_type: "textual_terminal"
+  logging_enabled: true

@@ -63,8 +63,10 @@ class ResponseFormatter(FormatterBase):
                 continue
 
             if message.get("type") == "message":
-                # Response API output items have type="message" with content array
-                # containing output_text items. Convert to simple assistant message format.
+                # Messages with 'id' must keep identity for reasoning→message pairing on replay
+                if "id" in message:
+                    converted_messages.append(message)
+                    continue
                 role = message.get("role", "assistant")
                 content_items = message.get("content", [])
                 # Extract text from output_text items

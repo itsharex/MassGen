@@ -1,0 +1,13 @@
+# GPT-5.2 with WebSocket Mode
+# Single agent using the latest GPT-5.2 model over persistent WebSocket.
+agents:
+  - id: "gpt-5-2-ws"
+    backend:
+      type: "openai"
+      model: "gpt-5.2"
+      websocket_mode: true
+      enable_web_search: true
+      enable_code_interpreter: true
+ui:
+  display_type: "textual_terminal"
+  logging_enabled: true

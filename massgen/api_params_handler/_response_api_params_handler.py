@@ -29,6 +29,9 @@ class ResponseAPIParamsHandler(APIParamsHandlerBase):
                 "enable_audio_generation",  # Internal flag for audio generation (used in system messages only)
                 "enable_video_generation",  # Internal flag for video generation (used in system messages only)
                 "previous_response_id",  # Handled explicitly above for reasoning continuity
+                "websocket_mode",  # Transport control, not an API parameter
+                "base_url",  # Client-constructor param, not a request-body param
+                "organization",  # Client-constructor param, not a request-body param
             },
         )
 
@@ -71,10 +74,12 @@ class ResponseAPIParamsHandler(APIParamsHandlerBase):
         converted_messages = self.formatter.format_messages(messages)
 
         # Response API uses 'input' instead of 'messages'
-        api_params = {
-            "input": converted_messages,
-            "stream": True,
-        }
+        websocket_mode = all_params.get("websocket_mode", False)  # In WebSocket mode, stream/background are not used (transport handles streaming)
+        api_params = {"input": converted_messages}
+        if not websocket_mode:
+            api_params["stream"] = True
+        else:
+            all_params.pop("background", None)
 
         # Set default reasoning configuration for reasoning models (GPT-5, o-series)
         # Per OpenAI docs, GPT-5.1 and GPT-5.2 default to reasoning=none, but GPT-5 defaults to medium

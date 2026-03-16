@@ -1,0 +1,18 @@
+# Multi-Model WebSocket Mode
+# Two agents with different models, both using WebSocket transport.
+agents:
+  - id: "gpt-5-2"
+    backend:
+      type: "openai"
+      model: "gpt-5.2"
+      websocket_mode: true
+      enable_code_interpreter: true
+  - id: "gpt-5-nano"
+    backend:
+      type: "openai"
+      model: "gpt-5-nano"
+      websocket_mode: true
+      enable_code_interpreter: true
+ui:
+  display_type: "textual_terminal"
+  logging_enabled: true
