@@ -816,6 +816,56 @@ async def test_presentation_fallback_uses_stored_answer(mock_orchestrator, monke
     assert orchestrator._final_presentation_content == stored_answer
 
 
+@pytest.mark.asyncio
+async def test_final_presentation_coerces_structured_new_answer_content(
+    mock_orchestrator,
+    monkeypatch,
+):
+    """Structured workflow answers should be normalized before final presentation saves them."""
+    orchestrator = mock_orchestrator(num_agents=1)
+    selected_agent_id = next(iter(orchestrator.agents.keys()))
+    orchestrator._selected_agent = selected_agent_id
+
+    monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: None)
+    orchestrator._copy_all_snapshots_to_temp_workspace = AsyncMock(return_value=None)
+    orchestrator._save_agent_snapshot = AsyncMock(return_value="final")
+
+    structured_answer = {
+        "title": "Content",
+        "description": "The contents of the requested file is:\n```\nSECRET_READONLY_af83d722\n```",
+    }
+
+    async def structured_presentation_chat(*args, **kwargs):
+        _ = (args, kwargs)
+        yield StreamChunk(
+            type="tool_calls",
+            tool_calls=[
+                {
+                    "name": "new_answer",
+                    "arguments": {"content": structured_answer},
+                },
+            ],
+        )
+        yield StreamChunk(type="done")
+
+    orchestrator.agents[selected_agent_id].chat = structured_presentation_chat
+
+    chunks = []
+    async for chunk in orchestrator.get_final_presentation(
+        selected_agent_id,
+        {
+            "vote_counts": {selected_agent_id: 1},
+            "voter_details": {},
+            "is_tie": False,
+        },
+    ):
+        chunks.append(chunk)
+
+    assert chunks[-1].type == "done"
+    assert orchestrator._save_agent_snapshot.await_args.kwargs["answer_content"] == "The contents of the requested file is:\n```\nSECRET_READONLY_af83d722\n```"
+    assert orchestrator._final_presentation_content == "The contents of the requested file is:\n```\nSECRET_READONLY_af83d722\n```"
+
+
 def test_get_coordination_result_includes_timeout_metadata(mock_orchestrator):
     """Execution mode needs explicit timeout signals for chunk retry handling."""
     orchestrator = mock_orchestrator(num_agents=1)

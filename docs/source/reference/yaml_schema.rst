@@ -275,6 +275,54 @@ Tool Filtering
            - mcp__discord__read_messages
            - mcp__discord__send_message
 
+GitHub Copilot Backend
+~~~~~~~~~~~~~~~~~~~~~~
+
+The GitHub Copilot backend uses the ``github-copilot-sdk`` with native MCP support.
+Requires a GitHub Copilot subscription and the Copilot CLI (``gh copilot``).
+
+**Basic Configuration:**
+
+.. code-block:: yaml
+
+   backend:
+     type: "copilot"
+     model: "gpt-5-mini"       # Also: gpt-4.1, claude-sonnet-4, gemini-2.5-pro
+
+**With MCP Servers and Custom Tools:**
+
+.. code-block:: yaml
+
+   backend:
+     type: "copilot"
+     model: "gpt-5-mini"
+     mcp_servers:
+       - name: "filesystem"
+         command: "npx"
+         args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+     custom_tools:
+       - path: "massgen/tool/_basic"
+         function: "two_num_tool"
+
+**Configuration Options:**
+
+- ``copilot_system_message_mode`` (string: "append"|"replace", default: "append"):
+  How the system message is applied to the Copilot session.
+- ``copilot_permission_policy`` (string: "approve"|"deny", default: "approve"):
+  Permission callback policy. "approve" validates paths via PathPermissionManager.
+- ``allowed_tools`` / ``exclude_tools``: Backend-level tool filtering.
+- ``enable_multimodal_tools`` (bool): Enable read_media/generate_media tools.
+
+**Docker Mode:**
+
+.. code-block:: yaml
+
+   backend:
+     type: "copilot"
+     model: "gpt-5-mini"
+     command_line_execution_mode: "docker"
+     command_line_docker_network_mode: "bridge"
+
 AG2 Backend
 ~~~~~~~~~~~
 
@@ -636,7 +684,7 @@ Backend
      - string
      - Yes
      - All
-     - Backend type: ``claude``, ``claude_code``, ``codex``, ``gemini``, ``openai``, ``grok``, ``azure_openai``, ``zai``, ``chatcompletion``, ``lmstudio``, ``vllm``, ``sglang``, ``ag2``
+     - Backend type: ``claude``, ``claude_code``, ``codex``, ``gemini``, ``gemini_cli``, ``openai``, ``grok``, ``azure_openai``, ``zai``, ``chatcompletion``, ``lmstudio``, ``vllm``, ``sglang``, ``ag2``, ``copilot``
    * - ``model``
      - string
      - Yes
@@ -744,9 +792,9 @@ Backend
      - Docker CPU limit (e.g., "2.0", default: "4.0")
    * - ``command_line_docker_network_mode``
      - string
-     - **Codex** (Docker mode)
+     - **Codex**, **Gemini CLI** (Docker mode)
      - All with MCP support
-     - Docker network mode: "bridge", "host", "none". **Required for Codex in Docker mode** (use "bridge").
+     - Docker network mode: "bridge", "host", "none". **Required for Codex and Gemini CLI in Docker mode** (use "bridge").
    * - ``model_reasoning_effort``
      - string
      - No

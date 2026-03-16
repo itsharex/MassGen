@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..logger_config import logger
-from ..mcp_tools.hooks import HookResult
+from ..mcp_tools.hooks import HookResult, PatternHook
 from ._base import Permission
 from ._constants import BINARY_FILE_EXTENSIONS, DEFAULT_EXCLUDED_DIRS
 from ._file_operation_tracker import FileOperationTracker
@@ -1630,7 +1630,7 @@ class PathPermissionManager:
 
 
 # Hook implementation for PathPermissionManager
-class PathPermissionManagerHook:
+class PathPermissionManagerHook(PatternHook):
     """
     Simple FunctionHook implementation that uses PathPermissionManager.
 
@@ -1638,7 +1638,7 @@ class PathPermissionManagerHook:
     """
 
     def __init__(self, path_permission_manager):
-        self.name = "path_permission_hook"
+        super().__init__(name="path_permission_hook", matcher="*")
         self.path_permission_manager = path_permission_manager
 
     async def execute(self, function_name: str, arguments: str, context=None, **kwargs):

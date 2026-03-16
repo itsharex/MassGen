@@ -1757,6 +1757,41 @@ class TestGapReportModeValidation:
         assert not result.is_valid()
         assert any("gap_report_mode" in error.message for error in result.errors)
 
+    def test_copilot_docker_requires_network_mode(self):
+        """Copilot in Docker mode without network_mode should produce an error."""
+        config = {
+            "agent": {
+                "id": "test-agent",
+                "backend": {
+                    "type": "copilot",
+                    "model": "gpt-5-mini",
+                    "command_line_execution_mode": "docker",
+                },
+            },
+        }
+        validator = ConfigValidator()
+        result = validator.validate_config(config)
+        assert not result.is_valid()
+        assert any("copilot" in error.message.lower() and "docker" in error.message.lower() and "network_mode" in error.message.lower() for error in result.errors)
+
+    def test_copilot_docker_with_network_mode_passes(self):
+        """Copilot in Docker mode with network_mode should pass."""
+        config = {
+            "agent": {
+                "id": "test-agent",
+                "backend": {
+                    "type": "copilot",
+                    "model": "gpt-5-mini",
+                    "command_line_execution_mode": "docker",
+                    "command_line_docker_network_mode": "bridge",
+                },
+            },
+        }
+        validator = ConfigValidator()
+        result = validator.validate_config(config)
+        # Should not have the network_mode error
+        assert not any("copilot" in error.message.lower() and "docker" in error.message.lower() and "network_mode" in error.message.lower() for error in result.errors)
+
     def test_checklist_gated_without_changedoc_warns(self):
         """checklist_gated voting with enable_changedoc=False produces warning."""
         config = {

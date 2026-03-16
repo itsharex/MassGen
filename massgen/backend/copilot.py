@@ -27,6 +27,7 @@ except ImportError:
     CopilotClient = object
     Tool = None
 
+from ..filesystem_manager import Permission
 from ..logger_config import logger
 from ._streaming_buffer_mixin import StreamingBufferMixin
 from .base import FilesystemSupport, LLMBackend, StreamChunk
@@ -44,11 +45,17 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
 
         super().__init__(api_key, **kwargs)
         self.__init_native_tool_mixin__()
+        self._init_native_hook_adapter(
+            "massgen.mcp_tools.native_hook_adapters.CopilotNativeHookAdapter",
+        )
 
         self.client = CopilotClient()
         self.sessions: dict[str, Any] = {}
         self._session_signatures: dict[str, str] = {}
         self._started = False
+
+        # Docker execution mode
+        self._docker_execution = kwargs.get("command_line_execution_mode") == "docker" or self.config.get("command_line_execution_mode") == "docker"
 
         config_mcp_servers = self.config.get("mcp_servers", [])
         self.mcp_servers = list(config_mcp_servers) if isinstance(config_mcp_servers, list) else []
@@ -78,7 +85,32 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
     def get_filesystem_support(self) -> FilesystemSupport:
         return FilesystemSupport.MCP
 
+    @property
+    def _is_docker_mode(self) -> bool:
+        """Check if we should route file/shell ops through Docker containers."""
+        if not self._docker_execution:
+            return False
+        if not self.filesystem_manager:
+            return False
+        dm = getattr(self.filesystem_manager, "docker_manager", None)
+        if dm is None:
+            return False
+        agent_id = self.config.get("agent_id")
+        if agent_id and dm.get_container(agent_id):
+            return True
+        return False
+
     def get_disallowed_tools(self, config: dict[str, Any]) -> list[str]:
+        if self._docker_execution:
+            return [
+                "editFile",
+                "createFile",
+                "deleteFile",
+                "readFile",
+                "listDirectory",
+                "runShellCommand",
+                "shellCommand",
+            ]
         return []
 
     def get_tool_category_overrides(self) -> dict[str, str]:
@@ -455,15 +487,167 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
         )
         return "approve"
 
+    @staticmethod
+    def _extract_path_from_permission_request(request: dict) -> str | None:
+        """Extract a file path from a Copilot SDK PermissionRequest.
+
+        The SDK PermissionRequest TypedDict only types ``kind`` and
+        ``toolCallId``; additional fields vary by kind and are untyped.
+        We probe common field names so the helper is easy to extend once
+        the real field names are discovered at runtime.
+        """
+        for key in ("path", "filePath", "file_path", "fileName", "file"):
+            val = request.get(key)
+            if isinstance(val, str):
+                return val
+        return None
+
+    @staticmethod
+    def _extract_command_from_permission_request(request: dict) -> str | None:
+        """Extract a shell command from a Copilot SDK PermissionRequest."""
+        for key in ("command", "cmd", "shellCommand"):
+            val = request.get(key)
+            if isinstance(val, str):
+                return val
+        return None
+
     def _build_permission_callback(self, policy: str):
-        """Build SDK permission callback from resolved policy."""
+        """Build SDK permission callback from resolved policy.
+
+        When a PathPermissionManager is available (via ``self.filesystem_manager``),
+        the callback validates file paths against PPM before approving.
+        This is **Layer 1** of the two-layer defense:
+
+        * Layer 1 (here): coarse permission gate — extract path from the
+          untyped ``PermissionRequest`` and check PPM.  Fail-open if no path
+          can be extracted (defer to Layer 2).
+        * Layer 2: ``PathPermissionManagerHook`` registered as ``PRE_TOOL_USE``
+          in the orchestrator, with full ``toolName``/``toolArgs``.
+        """
         if policy == "deny":
 
             def _deny_permission(_request, _context):
                 return {"kind": "denied-by-rules"}
 
             return _deny_permission
-        return self._auto_approve_permission
+
+        # Resolve PPM (may be None)
+        ppm = None
+        fm = getattr(self, "filesystem_manager", None)
+        if fm:
+            ppm = getattr(fm, "path_permission_manager", None)
+
+        if not ppm:
+            return self._auto_approve_permission
+
+        def _ppm_permission_callback(request, _context):
+            logger.debug(
+                "[Copilot] Permission request: %s",
+                {k: v for k, v in request.items() if k != "toolCallId"},
+            )
+
+            kind = request.get("kind", "")
+
+            # Kinds handled entirely by the hook system or not filesystem-related
+            if kind in ("mcp", "custom-tool", "url"):
+                return {"kind": "approved"}
+
+            # --- Write permission ---
+            if kind == "write":
+                path_str = self._extract_path_from_permission_request(request)
+                if path_str is None:
+                    # Fail-open: rely on Layer 2
+                    return {"kind": "approved"}
+                permission = ppm.get_permission(Path(path_str))
+                if permission == Permission.WRITE:
+                    return {"kind": "approved"}
+                return {"kind": "denied-by-rules"}
+
+            # --- Read permission ---
+            if kind == "read":
+                path_str = self._extract_path_from_permission_request(request)
+                if path_str is None:
+                    return {"kind": "approved"}
+                permission = ppm.get_permission(Path(path_str))
+                if permission in (Permission.READ, Permission.WRITE):
+                    return {"kind": "approved"}
+                return {"kind": "denied-by-rules"}
+
+            # --- Shell permission ---
+            if kind == "shell":
+                cmd = self._extract_command_from_permission_request(request)
+                if cmd is None:
+                    return {"kind": "approved"}
+                # PPM.pre_tool_use_hook is async; run synchronously
+                # in the permission callback context.
+                import asyncio as _asyncio
+
+                try:
+                    loop = _asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    # We're inside an event loop — use a new thread to
+                    # avoid blocking.
+                    import concurrent.futures
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        allowed, _reason = pool.submit(
+                            _asyncio.run,
+                            ppm.pre_tool_use_hook("Bash", {"command": cmd}),
+                        ).result()
+                else:
+                    allowed, _reason = _asyncio.run(
+                        ppm.pre_tool_use_hook("Bash", {"command": cmd}),
+                    )
+
+                if allowed:
+                    return {"kind": "approved"}
+                return {"kind": "denied-by-rules"}
+
+            # Unknown kind — fail-open
+            return {"kind": "approved"}
+
+        return _ppm_permission_callback
+
+    def _build_default_native_permission_hooks_config(
+        self,
+        *,
+        agent_id: str | None,
+        working_dir: str,
+    ) -> dict[str, Any]:
+        """Build standalone PRE_TOOL_USE permission hooks for direct backend usage."""
+        adapter = self.get_native_hook_adapter()
+        if adapter is None:
+            return {}
+
+        fm = getattr(self, "filesystem_manager", None)
+        if fm is None:
+            return {}
+
+        ppm = getattr(fm, "path_permission_manager", None)
+        if ppm is None:
+            return {}
+
+        from ..filesystem_manager import PathPermissionManagerHook
+        from ..mcp_tools.hooks import GeneralHookManager, HookType
+
+        manager = GeneralHookManager()
+        manager.register_global_hook(HookType.PRE_TOOL_USE, PathPermissionManagerHook(ppm))
+
+        def context_factory() -> dict[str, Any]:
+            return {
+                "session_id": "",
+                "agent_id": agent_id,
+                "workspace_path": working_dir,
+            }
+
+        return adapter.build_native_hooks_config(
+            manager,
+            agent_id=agent_id,
+            context_factory=context_factory,
+        )
 
     @staticmethod
     def _hash_payload(payload: Any) -> str:
@@ -506,6 +690,7 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
         available_tools: list[str] | None,
         excluded_tools: list[str] | None,
         permission_policy: str,
+        writable_paths: list[str] | None = None,
     ) -> str:
         """Build a stable signature for session cache invalidation."""
         payload = {
@@ -518,6 +703,7 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
             "available_tools": available_tools,
             "excluded_tools": excluded_tools,
             "permission_policy": permission_policy,
+            "writable_paths": sorted(writable_paths) if writable_paths else [],
         }
         return self._hash_payload(payload)
 
@@ -729,7 +915,7 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
         await self._ensure_started()
 
         agent_id = kwargs.get("agent_id", self.config.get("agent_id") or "default")
-        model = kwargs.get("model") or self.config.get("model") or "gpt-4.1"
+        model = kwargs.get("model") or self.config.get("model") or "gpt-5-mini"
         queue: asyncio.Queue = asyncio.Queue()
 
         buffer_kwargs = {k: v for k, v in kwargs.items() if k != "agent_id"}
@@ -789,7 +975,39 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
         prompt = "\n\n".join(prompt_parts) if prompt_parts else "Please continue."
 
         available_tools, excluded_tools = self._resolve_backend_tool_filters(kwargs)
+
+        # In Docker mode, merge disallowed built-in tools into excluded_tools
+        # so all file/shell ops route through MCP servers inside the container.
+        if self._docker_execution:
+            docker_excluded = self.get_disallowed_tools(self.config)
+            if docker_excluded:
+                excluded_tools = list(set((excluded_tools or []) + docker_excluded))
+                logger.debug(
+                    f"[Copilot] Docker mode: merged excluded_tools={excluded_tools}",
+                )
+
         mcp_servers = self._build_mcp_servers_dict()
+        default_permission_hooks = self._build_default_native_permission_hooks_config(
+            agent_id=agent_id,
+            working_dir=working_dir,
+        )
+        session_hooks = default_permission_hooks
+        if self._native_hook_adapter and self._massgen_hooks_config:
+            session_hooks = self._native_hook_adapter.merge_native_configs(
+                default_permission_hooks,
+                self._massgen_hooks_config,
+            )
+        elif self._massgen_hooks_config:
+            session_hooks = self._massgen_hooks_config
+
+        # Collect writable paths for session signature cache invalidation
+        writable_paths: list[str] = []
+        fm = getattr(self, "filesystem_manager", None)
+        if fm:
+            ppm = getattr(fm, "path_permission_manager", None)
+            if ppm:
+                writable_paths = sorted(str(mp.path) for mp in getattr(ppm, "managed_paths", []) if getattr(mp, "permission", None) == Permission.WRITE)
+
         session_signature = self._build_session_signature(
             model=model,
             system_message=system_message,
@@ -800,6 +1018,7 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
             available_tools=available_tools,
             excluded_tools=excluded_tools,
             permission_policy=permission_policy,
+            writable_paths=writable_paths,
         )
 
         session = self.sessions.get(agent_id)
@@ -829,6 +1048,8 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
                 session_config["available_tools"] = available_tools
             if excluded_tools is not None:
                 session_config["excluded_tools"] = excluded_tools
+            if session_hooks:
+                session_config["hooks"] = session_hooks
 
             mcp_names = list(session_config.get("mcp_servers", {}).keys())
             logger.info(f"[Copilot] Creating session for {agent_id} with MCP servers: {mcp_names}")

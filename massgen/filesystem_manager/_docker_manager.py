@@ -112,6 +112,7 @@ class DockerManager:
         self.mount_pypi_config = "pypi_config" in mount_list
         self.mount_claude_config = "claude_config" in mount_list
         self.mount_codex_config = "codex_config" in mount_list
+        self.mount_gemini_config = "gemini_config" in mount_list
         self.additional_mounts = credentials.get("additional_mounts", {})
         self.env_file_path = credentials.get("env_file")
         self.pass_env_vars = credentials.get("env_vars", [])
@@ -379,6 +380,16 @@ class DockerManager:
                 logger.info(f"🔐 [Docker] Mounting Codex config: {codex_config} → /home/massgen/.codex (ro)")
             else:
                 logger.warning(f"⚠️ [Docker] Codex config directory not found: {codex_config}")
+
+        # Mount Gemini CLI config (read-only). Passes cached login credentials
+        # and settings to Gemini CLI running inside Docker containers.
+        if self.mount_gemini_config:
+            gemini_config = home_dir / ".gemini"
+            if gemini_config.exists():
+                mounts[str(gemini_config)] = {"bind": "/home/massgen/.gemini", "mode": "ro"}
+                logger.info(f"🔐 [Docker] Mounting Gemini config: {gemini_config} → /home/massgen/.gemini (ro)")
+            else:
+                logger.warning(f"⚠️ [Docker] Gemini config directory not found: {gemini_config}")
 
         # Mount pypi config (read-only)
         if self.mount_pypi_config:

@@ -42,6 +42,41 @@ async def test_stream_agent_execution_emits_answer_result_for_new_answer(mock_or
 
 
 @pytest.mark.asyncio
+async def test_stream_agent_execution_coerces_structured_new_answer_content(mock_orchestrator):
+    orchestrator = mock_orchestrator(num_agents=2)
+    orchestrator.current_task = "Read the file and report its contents."
+    orchestrator.config.disable_injection = True
+
+    agent_id = "agent_a"
+    structured_answer = {
+        "title": "Content",
+        "description": "The contents of the requested file is:\n```\nSECRET_READONLY_af83d722\n```",
+    }
+    _configure_agent_script(
+        orchestrator.agents[agent_id],
+        scripted_tool_calls=[
+            [{"name": "new_answer", "arguments": {"content": structured_answer}}],
+        ],
+    )
+
+    emitted = await _collect_stream(
+        orchestrator._stream_agent_execution(agent_id, orchestrator.current_task, {}),
+    )
+
+    assert (
+        "result",
+        (
+            "answer",
+            "The contents of the requested file is:\n```\nSECRET_READONLY_af83d722\n```",
+        ),
+    ) in emitted
+    string_payloads = [item[1] for item in emitted if len(item) > 1 and isinstance(item[1], str)]
+    assert any("SECRET_READONLY_af83d722" in payload for payload in string_payloads)
+    assert not any("{'title': 'Content'" in payload for payload in string_payloads)
+    assert emitted[-1] == ("done", None)
+
+
+@pytest.mark.asyncio
 async def test_stream_agent_execution_emits_vote_result_for_valid_vote(mock_orchestrator):
     orchestrator = mock_orchestrator(num_agents=2)
     orchestrator.current_task = "Pick best option."

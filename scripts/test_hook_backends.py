@@ -94,6 +94,18 @@ BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
         "description": "Grok via GrokBackend",
         "api_style": "openai",
     },
+    "copilot": {
+        "type": "copilot",
+        "model": "gpt-5-mini",
+        "description": "GitHub Copilot (SDK)",
+        "api_style": "openai",
+    },
+    "gemini_cli": {
+        "type": "gemini_cli",
+        "model": "gemini-3.1-pro-preview",
+        "description": "Gemini CLI subprocess backend",
+        "api_style": "gemini",
+    },
 }
 
 
@@ -136,6 +148,24 @@ def create_backend(
         from massgen.backend.grok import GrokBackend
 
         return GrokBackend(model=config["model"], custom_tools=custom_tools)
+    elif backend_type == "copilot":
+        try:
+            from massgen.backend.copilot import COPILOT_SDK_AVAILABLE, CopilotBackend
+        except ImportError:
+            raise ValueError("massgen.backend.copilot not available")
+        if not COPILOT_SDK_AVAILABLE:
+            raise ValueError("Copilot SDK not installed (pip install github-copilot-sdk)")
+        return CopilotBackend(model=config["model"], custom_tools=custom_tools or [])
+    elif backend_type == "gemini_cli":
+        import shutil
+        import tempfile
+
+        if not shutil.which("gemini"):
+            raise ValueError("Gemini CLI not in PATH (npm install -g @google/gemini-cli)")
+        from massgen.backend.gemini_cli import GeminiCLIBackend
+
+        tmpdir = tempfile.mkdtemp(prefix="massgen_hook_test_")
+        return GeminiCLIBackend(model=config["model"], cwd=tmpdir)
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
 
@@ -228,9 +258,12 @@ def test_hook_manager_integration(backend_name: str, config: dict[str, Any]) -> 
         backend = create_backend(backend_name, config)
         backend.agent_id = f"test_agent_{backend_name}"
 
-        # Check if backend has set_general_hook_manager method
+        # Native-hook backends (e.g. gemini_cli) use supports_native_hooks() instead
+        # of the general hook manager path.
         if not hasattr(backend, "set_general_hook_manager"):
-            return False, "Backend missing set_general_hook_manager method"
+            if hasattr(backend, "supports_native_hooks") and backend.supports_native_hooks():
+                return True, "Native-hook backend: supports_native_hooks() = True"
+            return False, "Backend missing set_general_hook_manager and supports_native_hooks()"
 
         # Create and set hook manager
         manager = GeneralHookManager()
@@ -267,7 +300,8 @@ async def test_mid_stream_injection_hook(
         mid_stream_hook.set_callback(lambda: injection_content)
 
         manager.register_global_hook(HookType.POST_TOOL_USE, mid_stream_hook)
-        backend.set_general_hook_manager(manager)
+        if hasattr(backend, "set_general_hook_manager"):
+            backend.set_general_hook_manager(manager)
 
         # Execute hooks directly
         tool_output = '{"result": "ok"}'
@@ -332,7 +366,8 @@ async def test_high_priority_task_reminder_hook(
         reminder_hook = HighPriorityTaskReminderHook()
 
         manager.register_global_hook(HookType.POST_TOOL_USE, reminder_hook)
-        backend.set_general_hook_manager(manager)
+        if hasattr(backend, "set_general_hook_manager"):
+            backend.set_general_hook_manager(manager)
 
         # Execute hooks with complete_task output for high-priority task
         tool_output = json.dumps(
@@ -419,7 +454,8 @@ async def test_combined_hooks(
         reminder_hook = HighPriorityTaskReminderHook()
         manager.register_global_hook(HookType.POST_TOOL_USE, reminder_hook)
 
-        backend.set_general_hook_manager(manager)
+        if hasattr(backend, "set_general_hook_manager"):
+            backend.set_general_hook_manager(manager)
 
         # Execute hooks with complete_task output for high-priority task
         tool_output = json.dumps(
@@ -430,7 +466,7 @@ async def test_combined_hooks(
         )
         result = await manager.execute_hooks(
             HookType.POST_TOOL_USE,
-            "complete_task",  # Must match reminder hook pattern
+            "update_task_status",  # Must match HighPriorityTaskReminderHook pattern (*update_task_status)
             "{}",
             {},
             tool_output=tool_output,
@@ -500,6 +536,22 @@ async def run_tests(backend_names: list[str]) -> dict[str, dict[str, tuple[bool,
         elif backend_name == "grok":
             if not os.environ.get("XAI_API_KEY"):
                 print(f"Skipping {backend_name}: XAI_API_KEY not set")
+                continue
+        elif backend_name == "copilot":
+            try:
+                from massgen.backend.copilot import COPILOT_SDK_AVAILABLE
+
+                if not COPILOT_SDK_AVAILABLE:
+                    print(f"Skipping {backend_name}: copilot SDK not installed")
+                    continue
+            except ImportError:
+                print(f"Skipping {backend_name}: copilot module not importable")
+                continue
+        elif backend_name == "gemini_cli":
+            import shutil
+
+            if not shutil.which("gemini"):
+                print(f"Skipping {backend_name}: gemini CLI not in PATH")
                 continue
 
         print(f"\n{'='*60}")
@@ -707,7 +759,8 @@ async def run_e2e_test(
         reminder_hook = InjectionCapturingReminderHook()
         manager.register_global_hook(HookType.POST_TOOL_USE, reminder_hook)
 
-        backend.set_general_hook_manager(manager)
+        if hasattr(backend, "set_general_hook_manager"):
+            backend.set_general_hook_manager(manager)
 
         # Build prompt that will trigger tool use (complete_task matches the reminder hook)
         prompt = "Please use the complete_task tool with task_id 'e2e_test_task'"
@@ -810,6 +863,147 @@ async def run_e2e_test(
         logging.getLogger("massgen.backend").removeHandler(log_capture)
 
 
+async def run_e2e_test_copilot(
+    backend_name: str,
+    config: dict[str, Any],
+) -> tuple[bool, str]:
+    """
+    Verify the Copilot native hook adapter infrastructure.
+
+    Copilot uses native hooks (CopilotNativeHookAdapter) rather than
+    set_general_hook_manager(), so the standard run_e2e_test() approach
+    doesn't apply. This test verifies the adapter wiring:
+
+    1. supports_native_hooks() returns True
+    2. build_native_hooks_config() produces on_pre_tool_use / on_post_tool_use handlers
+    3. The generated handlers actually fire and return injection content
+    """
+    try:
+        from massgen.backend.copilot import COPILOT_SDK_AVAILABLE, CopilotBackend
+
+        if not COPILOT_SDK_AVAILABLE:
+            return False, "Skipped: copilot SDK not installed"
+
+        backend = CopilotBackend(model=config["model"])
+        backend.agent_id = f"e2e_test_{backend_name}"
+
+        # Step 1: native hooks supported
+        if not (hasattr(backend, "supports_native_hooks") and backend.supports_native_hooks()):
+            return False, "supports_native_hooks() returned False"
+
+        # Step 2: build config from a real hook manager with injection hook
+        manager = GeneralHookManager()
+        mid_stream_hook = MidStreamInjectionHook()
+        injection_content = "[INJECTED] Copilot hook adapter test"
+        mid_stream_hook.set_callback(lambda: injection_content)
+        manager.register_global_hook(HookType.POST_TOOL_USE, mid_stream_hook)
+
+        adapter = backend._native_hook_adapter
+        if adapter is None:
+            return False, "Backend has no _native_hook_adapter"
+
+        hooks_config = adapter.build_native_hooks_config(manager, agent_id=backend.agent_id)
+
+        if "on_post_tool_use" not in hooks_config:
+            return False, f"build_native_hooks_config() missing on_post_tool_use. Got keys: {list(hooks_config)}"
+
+        # Step 3: invoke the generated handler directly and verify injection fires
+        post_handler = hooks_config["on_post_tool_use"]
+        input_data = {
+            "toolName": "complete_task",
+            "toolArgs": {"task_id": "test"},
+            "toolResult": '{"status": "done"}',
+        }
+        sdk_context = {"session_id": "test_session"}
+        result = await post_handler(input_data, sdk_context)
+
+        if result is None:
+            return False, "Post-tool handler returned None — injection hook did not fire"
+
+        additional_context = result.get("additionalContext", "")
+        if injection_content not in additional_context:
+            return False, f"additionalContext missing injection. Got: {result!r}"
+
+        if VERBOSE:
+            print()
+            print(f"      hooks_config keys: {list(hooks_config)}")
+            print(f"      handler result: {result!r}")
+
+        return True, "Copilot native hook adapter verified"
+
+    except Exception as e:
+        import traceback
+
+        if VERBOSE:
+            traceback.print_exc()
+        return False, f"Error: {type(e).__name__}: {e}"
+
+
+async def run_e2e_test_gemini_cli(
+    backend_name: str,
+    config: dict[str, Any],
+) -> tuple[bool, str]:
+    """
+    Verify the Gemini CLI file-based hook IPC channel.
+
+    Gemini CLI hooks run as subprocesses and use file-based IPC rather than
+    in-process callbacks, so the standard run_e2e_test() approach (which relies
+    on set_general_hook_manager()) won't populate E2E_HOOK_LOG during streaming.
+
+    Instead we test the IPC infrastructure directly:
+    1. write_hook_payload() writes the injection file
+    2. collect_unconsumed_hook() reads and returns it
+    3. clear_hook_files() removes the file
+    """
+    import shutil
+    import tempfile
+
+    if not shutil.which("gemini"):
+        return False, "Skipped: gemini CLI not in PATH"
+
+    try:
+        from massgen.backend.gemini_cli import GeminiCLIBackend
+
+        tmpdir = tempfile.mkdtemp(prefix="massgen_gemini_cli_e2e_")
+        backend = GeminiCLIBackend(model=config["model"], cwd=tmpdir)
+        backend.agent_id = f"e2e_test_{backend_name}"
+
+        test_content = "[INJECTED] Cross-agent update: Agent2 says hello!"
+
+        # Step 1: write hook payload
+        if not hasattr(backend, "write_post_tool_use_hook"):
+            return False, "GeminiCLIBackend missing write_post_tool_use_hook()"
+        backend.write_post_tool_use_hook(test_content, ttl_seconds=30)
+
+        # Step 2: collect — should return the content
+        if not hasattr(backend, "read_unconsumed_hook_content"):
+            return False, "GeminiCLIBackend missing read_unconsumed_hook_content()"
+        collected = backend.read_unconsumed_hook_content()
+        if collected is None:
+            return False, "read_unconsumed_hook_content() returned None after write_post_tool_use_hook()"
+        if test_content not in str(collected):
+            return False, f"Collected payload missing expected content. Got: {collected!r}"
+
+        # Step 3: clear — file should be gone
+        if not hasattr(backend, "clear_hook_files"):
+            return False, "GeminiCLIBackend missing clear_hook_files()"
+        backend.clear_hook_files()
+        after_clear = backend.read_unconsumed_hook_content()
+        if after_clear is not None:
+            return False, f"clear_hook_files() did not remove payload. Got: {after_clear!r}"
+
+        return True, "Gemini CLI IPC hook channel verified"
+
+    except Exception as e:
+        import traceback
+
+        if VERBOSE:
+            traceback.print_exc()
+        return False, f"Error: {type(e).__name__}: {e}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 async def run_e2e_tests(backend_names: list[str]) -> dict[str, tuple[bool, str]]:
     """Run e2e tests on specified backends."""
     results = {}
@@ -838,6 +1032,21 @@ async def run_e2e_tests(backend_names: list[str]) -> dict[str, tuple[bool, str]]
         elif backend_name == "gemini":
             if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
                 skip_reason = "GEMINI_API_KEY or GOOGLE_API_KEY not set"
+        elif backend_name == "copilot":
+            try:
+                from massgen.backend.copilot import COPILOT_SDK_AVAILABLE
+
+                if not COPILOT_SDK_AVAILABLE:
+                    skip_reason = "copilot SDK not installed"
+            except ImportError:
+                skip_reason = "copilot module not importable"
+        elif backend_name == "gemini_cli":
+            import shutil
+
+            if not shutil.which("gemini"):
+                skip_reason = "gemini CLI not in PATH"
+            elif not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+                skip_reason = "GEMINI_API_KEY or GOOGLE_API_KEY not set"
 
         if skip_reason:
             print(f"\nSkipping {backend_name}: {skip_reason}")
@@ -852,11 +1061,15 @@ async def run_e2e_tests(backend_names: list[str]) -> dict[str, tuple[bool, str]]
         print(f"{'='*60}")
 
         print("\n  Running end-to-end hook test...", end="" if not VERBOSE else "\n")
-        success, msg = await run_e2e_test(backend_name, config)
+        if backend_name == "gemini_cli":
+            success, msg = await run_e2e_test_gemini_cli(backend_name, config)
+        elif backend_name == "copilot":
+            success, msg = await run_e2e_test_copilot(backend_name, config)
+        else:
+            success, msg = await run_e2e_test(backend_name, config)
         results[backend_name] = (success, msg)
 
-        if not VERBOSE:
-            print("PASS" if success else f"FAIL: {msg}")
+        print("PASS" if success else f"FAIL: {msg}")
 
     return results
 
@@ -943,7 +1156,10 @@ def main():
                 total_tests += 1
                 if success:
                     total_passed += 1
-            print(f"  {backend_name}: {status}")
+            if not success and status == "FAIL":
+                print(f"  {backend_name}: {status} — {msg}")
+            else:
+                print(f"  {backend_name}: {status}")
 
         print(f"\nTotal: {total_passed}/{total_tests} tests passed ({total_skipped} skipped)")
         sys.exit(0 if total_passed == total_tests else 1)

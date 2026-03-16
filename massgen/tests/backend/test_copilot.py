@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -174,3 +175,71 @@ async def test_stream_with_tools_reuses_existing_session(copilot_backend):
     # Session was reused — create_session should NOT have been called
     copilot_backend.client.create_session.assert_not_called()
     mock_session.send.assert_called_with({"prompt": "[user]: Again"})
+
+
+@pytest.mark.asyncio
+async def test_stream_with_tools_adds_default_permission_hooks_for_direct_filesystem_use(
+    mock_copilot_client,
+    tmp_path,
+):
+    """Direct backend usage should still attach PRE_TOOL_USE permission hooks."""
+    from massgen.backend.copilot import CopilotBackend
+
+    workspace = tmp_path / "workspace"
+    writable = tmp_path / "writable"
+    workspace.mkdir()
+    writable.mkdir()
+
+    with patch("massgen.backend.copilot.COPILOT_SDK_AVAILABLE", True):
+        backend = CopilotBackend(
+            api_key="dummy",
+            cwd=str(workspace),
+            context_paths=[{"path": str(writable), "permission": "write"}],
+            context_write_access_enabled=True,
+        )
+
+    backend.client = mock_copilot_client
+    backend._ensure_started = AsyncMock()
+    backend._ensure_authenticated_with_retry = AsyncMock(return_value=(True, None))
+
+    created_session_config: dict = {}
+    mock_session = _make_session()
+    mock_session.send = AsyncMock(side_effect=RuntimeError("stop after session creation"))
+
+    async def create_session(config):
+        created_session_config.update(config)
+        return mock_session
+
+    backend.client.create_session.side_effect = create_session
+
+    chunks = await _consume_generator(
+        backend.stream_with_tools([{"role": "user", "content": "Hello"}], []),
+    )
+
+    assert any(chunk.type == "error" for chunk in chunks)
+    hooks = created_session_config.get("hooks")
+    assert hooks is not None
+    assert callable(hooks.get("on_pre_tool_use"))
+
+    outside_result = await hooks["on_pre_tool_use"](
+        {
+            "timestamp": 1_700_000_000,
+            "cwd": str(workspace),
+            "toolName": "writeFile",
+            "toolArgs": {"path": "/etc/passwd"},
+        },
+        {"session_id": "test-session"},
+    )
+    assert outside_result is not None
+    assert outside_result["permissionDecision"] == "deny"
+
+    writable_result = await hooks["on_pre_tool_use"](
+        {
+            "timestamp": 1_700_000_000,
+            "cwd": str(workspace),
+            "toolName": "writeFile",
+            "toolArgs": {"path": str(Path(writable) / "output.txt")},
+        },
+        {"session_id": "test-session"},
+    )
+    assert writable_result is None

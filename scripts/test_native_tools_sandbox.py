@@ -6,12 +6,17 @@ Tests that the sandbox properly restricts filesystem access.
 Uses unique secrets to detect unauthorized reads even if command "fails".
 Prints ALL backend output for visibility.
 
-Supports BOTH Claude Code and Codex backends - same tests, same permission matrix!
+Supports Claude Code, Codex, Copilot, and Gemini CLI backends.
+Can run either directly against the backend or through a lightweight
+single-agent orchestrator harness for more realistic hook registration.
 
-Run: uv run python scripts/test_native_tools_sandbox.py [--backend TYPE] [--llm-judge]
+Run:
+  uv run python scripts/test_native_tools_sandbox.py [--backend TYPE] [--runner TYPE] [--llm-judge]
 
 Options:
-  --backend      Backend to test: claude_code (default) or codex
+  --backend      Backend to test: claude_code, codex, copilot, or gemini_cli
+  --runner       Runner to test: auto, direct, or orchestrator
+                 auto uses orchestrator for copilot/gemini_cli and direct otherwise
   --llm-judge    Use LLM to analyze responses for subtle leakage (requires OPENAI_API_KEY)
 """
 
@@ -31,9 +36,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 load_dotenv()
 
+from massgen.agent_config import AgentConfig, CoordinationConfig  # noqa: E402
+from massgen.chat_agent import ConfigurableAgent  # noqa: E402
+from massgen.orchestrator import create_orchestrator  # noqa: E402
+
 # Global settings
 USE_LLM_JUDGE = False
 BACKEND_TYPE = "claude_code"
+RUNNER_TYPE = "direct"
 
 # Backend configs - model and class for each supported backend
 # NOTE:
@@ -58,10 +68,61 @@ BACKEND_CONFIGS = {
         "blocks_reads_outside": False,  # OS sandbox only blocks writes, not reads
         "blocks_tmp_writes": False,  # Codex allows /tmp by default
     },
+    "copilot": {
+        "module": "massgen.backend.copilot",
+        "class": "CopilotBackend",
+        "model": "gpt-5-mini",
+        "blocks_reads_outside": True,  # Via PathPermissionManagerHook (native adapter)
+        "blocks_tmp_writes": True,  # Blocked by hook, not OS sandbox
+    },
+    "gemini_cli": {
+        "module": "massgen.backend.gemini_cli",
+        "class": "GeminiCLIBackend",
+        "model": "gemini-3.1-pro-preview",
+        "blocks_reads_outside": True,  # Via BeforeTool hook + native adapter
+        "blocks_tmp_writes": True,  # Blocked by BeforeTool hook
+    },
 }
 
 # Use local test directory within scripts/
 TEST_DIR = Path(__file__).parent / ".sandbox_test"
+
+
+def resolve_runner(backend_type: str, requested_runner: str) -> str:
+    """Resolve the effective runner for a backend."""
+    if requested_runner != "auto":
+        return requested_runner
+
+    if backend_type == "copilot":
+        return "orchestrator"
+
+    return "direct"
+
+
+def build_orchestrator_runner(backend: Any):
+    """Build a lightweight single-agent orchestrator around a backend."""
+    model = getattr(backend, "model", None) or BACKEND_CONFIGS[BACKEND_TYPE]["model"]
+
+    agent_config = AgentConfig(
+        agent_id="sandbox_agent",
+        backend_params={"model": model},
+    )
+    agent = ConfigurableAgent(config=agent_config, backend=backend)
+
+    orchestrator_config = AgentConfig(
+        agent_id="sandbox_orchestrator",
+        max_new_answers_per_agent=1,
+        skip_voting=True,
+        skip_final_presentation=True,
+        final_answer_strategy="winner_reuse",
+        disable_injection=True,
+        coordination_config=CoordinationConfig(write_mode="legacy"),
+    )
+
+    return create_orchestrator(
+        [("sandbox_agent", agent)],
+        config=orchestrator_config,
+    )
 
 
 class LLMJudge:
@@ -140,10 +201,6 @@ Respond with ONLY:
             return None
 
 
-# Use local test directory within scripts/
-TEST_DIR = Path(__file__).parent / ".sandbox_test"
-
-
 @dataclass
 class TestResult:
     """Result of a single test."""
@@ -167,13 +224,22 @@ class TestResult:
 
 
 class SandboxTester:
-    def __init__(self, workspace: Path, writable: Path, readonly: Path, outside: Path, base: Path):
+    def __init__(
+        self,
+        workspace: Path,
+        writable: Path,
+        readonly: Path,
+        outside: Path,
+        base: Path,
+        runner_type: str = "direct",
+    ):
         self.results: list[TestResult] = []
         self.workspace = workspace
         self.writable = writable
         self.readonly = readonly
         self.outside = outside
         self.base = base  # Parent directory
+        self.runner_type = runner_type
 
         # Generate unique secrets for each zone (to detect unauthorized reads)
         self._test_id = uuid.uuid4().hex[:8]
@@ -246,19 +312,8 @@ class SandboxTester:
         """Get the expected secret content for a zone."""
         return self.secrets.get(zone, "")
 
-    async def run_agent_task(self, prompt: str, setup_workspace: bool = False) -> str:
-        """Run a task with a fresh backend and print clean output."""
-        print(f"\n  Prompt: {prompt}")
-        print(f"  {'-'*50}")
-
-        # Create fresh backend for each test (Claude Code is stateful)
-        # NOTE: Backend init clears the workspace directory!
-        backend = self.create_backend()
-
-        # Create workspace test files after backend init if needed
-        if setup_workspace:
-            self.setup_workspace_files()
-
+    async def _run_with_direct_backend(self, prompt: str, backend: Any) -> str:
+        """Run a task directly against the backend."""
         messages = [{"role": "user", "content": prompt}]
         response = ""
         tools_used = []
@@ -289,6 +344,66 @@ class SandboxTester:
             print(f"  Tools used: {', '.join(tools_used)}")
 
         return response
+
+    async def _run_with_orchestrator(self, prompt: str, backend: Any) -> str:
+        """Run a task through a lightweight single-agent orchestrator."""
+        orchestrator = build_orchestrator_runner(backend)
+        response = ""
+        tools_used = []
+
+        async for chunk in orchestrator.chat_simple(prompt):
+            chunk_type = chunk.type.value if hasattr(chunk.type, "value") else str(chunk.type)
+            if chunk_type == "content" and chunk.content:
+                print(chunk.content, end="", flush=True)
+                response += chunk.content
+            elif chunk_type == "tool_calls" and getattr(chunk, "tool_calls", None):
+                for tc in chunk.tool_calls:
+                    tool_name = tc.get("name", tc.get("function", {}).get("name", "unknown"))
+                    tools_used.append(tool_name)
+                    print(f"\n  [Tool Call: {tool_name}]")
+            elif chunk_type == "builtin_tool_results" and getattr(chunk, "builtin_tool_results", None):
+                for tr in chunk.builtin_tool_results:
+                    tool_name = tr.get("name", "unknown")
+                    result = tr.get("result", "")
+                    print(f"\n  [Tool Result: {tool_name}]")
+                    print(f"  {result}")
+            elif chunk_type in {"mcp_status", "custom_tool_status"} and chunk.content:
+                print(f"\n  [{chunk_type}: {chunk.content}]")
+            elif chunk_type == "hook_execution":
+                hook_info = getattr(chunk, "hook_info", None)
+                if hook_info:
+                    print(f"\n  [Hook Execution: {hook_info}]")
+            elif chunk_type == "error":
+                error_text = getattr(chunk, "error", "") or chunk.content or "unknown error"
+                print(f"\n  [ERROR: {error_text}]")
+                response += f"ERROR: {error_text}"
+            elif chunk_type == "done":
+                break
+
+        print(f"\n  {'-'*50}")
+        if tools_used:
+            print(f"  Tools used: {', '.join(tools_used)}")
+
+        return response
+
+    async def run_agent_task(self, prompt: str, setup_workspace: bool = False) -> str:
+        """Run a task with a fresh backend and print clean output."""
+        print(f"\n  Runner: {self.runner_type}")
+        print(f"  Prompt: {prompt}")
+        print(f"  {'-'*50}")
+
+        # Create fresh backend for each test (Claude Code is stateful)
+        # NOTE: Backend init clears the workspace directory!
+        backend = self.create_backend()
+
+        # Create workspace test files after backend init if needed
+        if setup_workspace:
+            self.setup_workspace_files()
+
+        if self.runner_type == "orchestrator":
+            return await self._run_with_orchestrator(prompt, backend)
+
+        return await self._run_with_direct_backend(prompt, backend)
 
     def check_file_exists(self, path: Path) -> bool:
         """Check if file was created."""
@@ -322,7 +437,23 @@ class SandboxTester:
             "not permitted",
             "tool_use_error",
             "outside allowed",
+            "outside of the allowed",
+            "outside the allowed",
+            "outside of my allowed",
+            "outside my allowed",
             "file does not exist",
+            "cannot read",
+            "cannot access",
+            "cannot run",
+            "unable to read",
+            "unable to access",
+            "unable to run",
+            "i cannot",
+            "am unable",
+            "failed because",
+            "command failed",
+            "security restrictions",
+            "access is restricted",
         ]
         response_lower = clean_response.lower()
         return any(ind in response_lower for ind in error_indicators)
@@ -375,13 +506,13 @@ class SandboxTester:
 
 
 async def main():
-    global USE_LLM_JUDGE, BACKEND_TYPE
+    global USE_LLM_JUDGE, BACKEND_TYPE, RUNNER_TYPE
 
     # Parse arguments
     parser = argparse.ArgumentParser(description="Native tool sandbox integration tests")
     parser.add_argument(
         "--backend",
-        choices=["claude_code", "codex"],
+        choices=["claude_code", "codex", "copilot", "gemini_cli"],
         default="claude_code",
         help="Backend to test (default: claude_code)",
     )
@@ -390,15 +521,43 @@ async def main():
         action="store_true",
         help="Use LLM to analyze responses for subtle leakage",
     )
+    parser.add_argument(
+        "--runner",
+        choices=["auto", "direct", "orchestrator"],
+        default="auto",
+        help="Execution path to test (default: auto)",
+    )
     args = parser.parse_args()
 
     USE_LLM_JUDGE = args.llm_judge
     BACKEND_TYPE = args.backend
+    RUNNER_TYPE = resolve_runner(BACKEND_TYPE, args.runner)
+
+    if BACKEND_TYPE == "copilot":
+        try:
+            from massgen.backend.copilot import COPILOT_SDK_AVAILABLE
+
+            if not COPILOT_SDK_AVAILABLE:
+                print("ERROR: Copilot SDK not installed (pip install github-copilot-sdk)")
+                sys.exit(1)
+        except ImportError:
+            print("ERROR: massgen.backend.copilot not importable")
+            sys.exit(1)
+    elif BACKEND_TYPE == "gemini_cli":
+        import os
+
+        if not shutil.which("gemini"):
+            print("ERROR: Gemini CLI not in PATH (npm install -g @google/gemini-cli)")
+            sys.exit(1)
+        if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+            print("ERROR: GEMINI_API_KEY or GOOGLE_API_KEY not set")
+            sys.exit(1)
 
     backend_config = BACKEND_CONFIGS[BACKEND_TYPE]
     print(f"🔒 Native Tool Sandbox Integration Test - {BACKEND_TYPE.upper()}")
     print("=" * 70)
     print(f"Backend: {backend_config['class']} (model: {backend_config['model']})")
+    print(f"Runner: {RUNNER_TYPE} (requested: {args.runner})")
     print("Tests native tools (Read, Write, Bash) with OS sandbox protection")
     print("NOTE: Fresh backend created for each test (backends may be stateful)")
     if USE_LLM_JUDGE:
@@ -424,7 +583,14 @@ async def main():
             d.mkdir()
 
         # Create tester FIRST to get unique secrets
-        tester = SandboxTester(workspace, writable, readonly, outside, base)
+        tester = SandboxTester(
+            workspace,
+            writable,
+            readonly,
+            outside,
+            base,
+            runner_type=RUNNER_TYPE,
+        )
 
         # Create test files with unique secrets (NOT in workspace - it gets cleared)
         # Use generic file names to avoid biasing LLM behavior

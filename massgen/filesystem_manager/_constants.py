@@ -12,6 +12,8 @@ excluded from various operations like logging, sharing, and path permissions.
 # These directories can contain thousands of files and slow down operations
 SKIP_DIRS_FOR_LOGGING = frozenset(
     {
+        # Backend config directories
+        ".gemini",
         # Package managers / dependencies
         "node_modules",
         ".pnpm",
@@ -46,6 +48,7 @@ SKIP_DIRS_FOR_LOGGING = frozenset(
 CRITICAL_DIRS = frozenset(
     {
         ".git",
+        ".gemini",
         ".env",
         ".massgen",
         "massgen_logs",
@@ -64,6 +67,7 @@ CRITICAL_DIRS = frozenset(
 DEFAULT_EXCLUDED_DIRS = frozenset(
     {
         ".massgen",
+        ".gemini",
         ".env",
         ".git",
         "node_modules",

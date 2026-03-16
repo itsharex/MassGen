@@ -52,6 +52,7 @@ def docker_manager(mock_docker_client):
             manager.mount_pypi_config = False
             manager.mount_codex_config = False
             manager.mount_claude_config = False
+            manager.mount_gemini_config = False
             manager.additional_mounts = {}
             manager.env_file_path = None
             manager.pass_env_vars = []

@@ -124,7 +124,7 @@ def git_commit_if_changed(workspace: Path, message: str) -> bool:
         return False
 
 
-_WORKSPACE_METADATA_DIRS = frozenset({".git", ".codex", ".massgen", "memory"})
+_WORKSPACE_METADATA_DIRS = frozenset({".git", ".codex", ".gemini", ".massgen", "memory"})
 
 
 def has_meaningful_content(path: Path | None) -> bool:

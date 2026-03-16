@@ -20,8 +20,8 @@ Backend Type Decision:
   Stateless + OpenAI-compatible API   → subclass ChatCompletionsBackend
   Stateless + custom API              → subclass CustomToolAndMCPBackend
   Stateless + Response API format     → subclass ResponseBackend
-  Stateful CLI wrapper (like Codex)   → subclass LLMBackend directly
-  Stateful SDK wrapper (like Claude Code) → subclass LLMBackend directly
+  Stateful CLI wrapper (like Codex, Gemini CLI) → subclass LLMBackend directly
+  Stateful SDK wrapper (like Claude Code, Copilot) → subclass LLMBackend directly
 ```
 
 ## Complete Checklist
@@ -54,10 +54,20 @@ def get_filesystem_support(self) -> FilesystemSupport:
 |------|------|------------|
 | `"content"` | Text output | `content="..."` |
 | `"tool_calls"` | Tool invocation | `tool_calls=[{id, name, arguments}]` |
-| `"reasoning"` | Thinking/reasoning | `reasoning_delta="..."` |
+| `"reasoning"` | Thinking/reasoning delta | `reasoning_delta="..."` |
+| `"reasoning_done"` | Reasoning complete | `reasoning_text="..."` |
+| `"reasoning_summary"` | Reasoning summary delta | `reasoning_summary_delta="..."` |
+| `"reasoning_summary_done"` | Reasoning summary complete | `reasoning_summary_text="..."` |
+| `"complete_message"` | Full assistant message | `complete_message={...}` |
+| `"complete_response"` | Raw API response | `response={...}` |
 | `"done"` | Stream complete | `usage={prompt_tokens, completion_tokens, total_tokens}` |
 | `"error"` | Error occurred | `error="..."` |
 | `"agent_status"` | Status update | `status="...", detail="..."` |
+| `"backend_status"` | Backend-level status | `status="...", detail="..."` |
+| `"compression_status"` | Compression event | `status="...", detail="..."` |
+| `"hook_execution"` | Hook ran | `hook_info={...}, tool_call_id="..."` |
+
+**Common fields on all chunks**: `source` (agent/orchestrator ID), `display` (bool, default True).
 
 **Token tracking** — call one of:
 ```python
@@ -94,6 +104,7 @@ Existing formatters:
 - `_claude_formatter.py` — Anthropic Messages API
 - `_gemini_formatter.py` — Gemini API
 - `_chat_completions_formatter.py` — OpenAI/generic (reuse for compatible APIs)
+- `_response_formatter.py` — OpenAI Response API format
 
 #### 1.3 API Params Handler (if needed)
 **File**: `massgen/api_params_handler/<name>_api_params_handler.py`
@@ -515,32 +526,84 @@ BACKEND_CONFIGS = {
 }
 ```
 
-#### 7.3 Native Tool Permission Testing (CLI/SDK backends)
+#### 7.3 Hook Firing Test (CLI/SDK backends) ⚠️ REQUIRED
+**Script**: `scripts/test_hook_backends.py`
+
+**This is mandatory for every new CLI/SDK backend.** The script verifies that the full hook pipeline actually fires during real streaming — not just that the hook data structures are correct.
+
+Two modes:
+
+**Unit mode** (no API calls — runs in CI):
+```bash
+uv run python scripts/test_hook_backends.py --backend your_backend
+```
+Verifies: backend stores `GeneralHookManager`, `MidStreamInjectionHook` returns injection content, `HighPriorityTaskReminderHook` fires, combined hooks aggregate correctly.
+
+**E2E mode** (real API calls):
+```bash
+uv run python scripts/test_hook_backends.py --backend your_backend --e2e
+uv run python scripts/test_hook_backends.py --backend your_backend --e2e --verbose
+```
+Verifies the complete live flow: PreToolUse hook fires → tool executes → PostToolUse hook fires → injection content is fed back to the model and acknowledged.
+
+**Adding your backend**: Add an entry to `BACKEND_CONFIGS` in the script:
+```python
+"your_backend": {
+    "type": "your_backend",
+    "model": "your-model",
+    "description": "Your Backend description",
+    "api_style": "openai",  # or "anthropic", "gemini"
+},
+```
+
+**Currently covered**: `claude`, `openai`, `gemini` (native SDK), `openrouter`, `grok`
+**Not yet covered**: `codex`, `claude_code`, `copilot`, `gemini_cli` — these use file-based IPC or SDK-native hooks and need separate E2E hook verification.
+
+**Why this matters**: Unit tests verify that hook data structures are correct. This script verifies that hooks actually fire during a real streaming turn. A backend can pass all unit tests and still silently drop hooks during live execution.
+
+#### 7.4 Sandbox / Path Permission Test (CLI/SDK backends) ⚠️ REQUIRED
 **Script**: `scripts/test_native_tools_sandbox.py`
 
-For backends with built-in tools (CLI/SDK wrappers), run the sandbox permission test script to verify that:
-- Native tools respect MassGen's permission boundaries
-- Read-only paths cannot be written to
-- Workspace isolation works correctly
-- Docker mode sandboxing is enforced
+**This is mandatory for every new CLI/SDK backend with built-in file/shell tools.** It runs real agents against a real filesystem with unique secrets and verifies that permission boundaries are actually enforced — not just that the enforcement code exists.
 
 ```bash
 # Test your new backend
 uv run python scripts/test_native_tools_sandbox.py --backend your_backend
 
-# Test with Docker mode
-uv run python scripts/test_native_tools_sandbox.py --backend your_backend --docker
+# Use LLM judge to detect subtle leakage
+uv run python scripts/test_native_tools_sandbox.py --backend your_backend --llm-judge
 ```
 
-This script:
-- Attempts file operations at various permission levels
-- Verifies that disallowed operations are blocked
-- Reports which sandbox restrictions are enforced vs bypassed
-- Is essential for understanding the limitations of each native backend
+The script verifies the full permission matrix:
 
-**Note**: Run this for both local and Docker modes to understand how sandboxing differs.
+| Zone | Expected reads | Expected writes |
+|------|---------------|-----------------|
+| Workspace (cwd) | ✅ allowed | ✅ allowed |
+| Writable context path | ✅ allowed | ✅ allowed |
+| Read-only context path | ✅ allowed | ❌ blocked |
+| Outside all contexts | depends on backend | ❌ blocked |
+| Parent directory | depends on backend | ❌ blocked |
+| `/tmp` | ✅ allowed | depends on backend |
 
-#### 7.4 Config Validation
+It uses **unique secrets** (UUIDs written to each zone's files) to detect unauthorized reads even when the operation "fails" — if the secret string appears in the model's response, there's a leak regardless of error messages.
+
+**Adding your backend**: Add an entry to `BACKEND_CONFIGS` in the script:
+```python
+"your_backend": {
+    "module": "massgen.backend.your_backend",
+    "class": "YourBackend",
+    "model": "your-model",
+    "blocks_reads_outside": True,   # Does your enforcement block reads?
+    "blocks_tmp_writes": True,      # Does your enforcement block /tmp writes?
+},
+```
+
+**Currently covered**: `claude_code`, `codex`
+**Not yet covered**: `copilot`, `gemini_cli` — must be added when those backends are used in production.
+
+**Why this matters**: Permission callback and hook unit tests verify the enforcement logic in isolation. This script verifies that enforcement actually stops a live agent from accessing restricted paths. A backend can have correct hook logic and still allow unauthorized access if the hook isn't wired into the right execution path.
+
+#### 7.5 Config Validation
 ```bash
 uv run python scripts/validate_all_configs.py
 ```
@@ -588,6 +651,8 @@ The system prompt is assembled by `massgen/system_message_builder.py` using prio
 | `PostEvaluationSection` | submit/restart |
 | `FileSearchSection` | rg/sg universal CLI tools |
 | `TaskContextSection` | CONTEXT.md creation |
+| `NoveltyPressureSection` | Novelty/diversity pressure across agents |
+| `ChangedocSection` | Change documentation |
 
 **Conditional on config flags**:
 | Section | Gate |
@@ -597,6 +662,14 @@ The system prompt is assembled by `massgen/system_message_builder.py` using prio
 | `PlanningModeSection` | `planning_mode_enabled=True` |
 | `CodeBasedToolsSection` | `enable_code_based_tools=True` (CodeAct paradigm) |
 | `CommandExecutionSection` | `enable_mcp_command_line=True` |
+| `DecompositionSection` | Decomposition mode active |
+| `MultimodalToolsSection` | `enable_multimodal_tools=True` |
+
+**Model-specific**:
+| Section | Gate |
+|---------|------|
+| `GPT5GuidanceSection` | GPT-5 models only |
+| `GrokGuidanceSection` | Grok models only |
 
 **Adapted for native backends**:
 | Section | Adaptation |
@@ -626,9 +699,23 @@ Currently used by `system_message_builder.py` to:
 
 **Note**: MCP server injection filtering (which MCP servers to attach) is handled individually by each CLI/SDK backend (`codex.py`, `claude_code.py`). The `get_tool_category_overrides()` method serves as documentation and controls system prompt section behavior. Non-mixin backends (API-based) return `{}` by default via `system_message_builder.py`'s fallback.
 
-#### 10.3 Path Permission Caveat
+#### 10.3 Path Permission Integration
 
-Native CLI tools (Read/Write/Bash in Claude Code, file_read/file_write in Codex) may not support MassGen's granular per-path permissions via `PathPermissionManager`. When `filesystem: "skip"`, the backend relies on its own sandboxing. See `massgen/filesystem_manager/_path_permission_manager.py`.
+When `filesystem: "skip"`, the backend's native tools handle file ops — but they may not enforce MassGen's granular per-path permissions from `PathPermissionManager` (PPM). Each backend addresses this differently:
+
+**Two-layer defense** (recommended for SDK backends with permission callbacks):
+1. **Layer 1 — Permission callback** (coarse gate): Extract paths from the SDK's permission request, validate against PPM. Fail-open if no path extractable (defer to Layer 2).
+2. **Layer 2 — PreToolUse hook** (fine-grained): The orchestrator auto-registers `PathPermissionManagerHook` as `PRE_TOOL_USE` for non-Claude-Code native backends. Full `toolName`/`toolArgs` available for precise validation.
+
+**Backend-specific approaches**:
+| Backend | PPM Strategy |
+|---------|-------------|
+| Claude Code | Own `add_dirs` sandboxing — PPM hook skipped by orchestrator |
+| Copilot | Two-layer defense (permission callback + PPM PreToolUse hook). In Docker mode, container provides isolation + PPM as defense-in-depth |
+| Codex | No native hook support — relies on Docker/workspace isolation |
+| API backends | PPM enforced via `ToolManager` automatically |
+
+**Reference**: `copilot.py` (`_build_permission_callback`) and `orchestrator.py` (`_setup_native_hooks_for_agent`) for the two-layer pattern. See `massgen/filesystem_manager/_path_permission_manager.py` for PPM internals.
 
 ### Phase 11: Hooks
 
@@ -636,15 +723,26 @@ MassGen supports hooks for intercepting tool execution and other lifecycle event
 
 Note that some backends may not support hooks (e.g., Codex). In this case, hooks will only be applied where possible within MassGen's tool execution framework.
 
-#### 11.1 Hook Types
+#### 11.1 Hook Types and Built-in Hooks
 
-| Hook | Trigger | Purpose |
-|------|---------|---------|
-| `PreToolUse` | Before tool execution | Validate/modify inputs, enforce permissions |
-| `PostToolUse` | After tool execution | Inject content into results (MidStreamInjection) |
-| `PathPermissionManagerHook` | On filesystem tool calls | Enforce per-path read/write permissions |
-| `MidStreamInjectionHook` | Post tool use | Inject coordination messages (voting reminders, etc.) |
-| `HighPriorityTaskReminderHook` | Post tool use | Remind agent of current task |
+**Hook types** (`HookType` enum in `massgen/mcp_tools/hooks.py`):
+| HookType | Trigger |
+|----------|---------|
+| `PRE_TOOL_USE` | Before tool execution |
+| `POST_TOOL_USE` | After tool execution |
+
+**Built-in hook classes** (`PatternHook` subclasses — registered by the orchestrator):
+| Hook Class | Type | Purpose |
+|------------|------|---------|
+| `PathPermissionManagerHook` | PreToolUse | Enforce per-path read/write permissions (in `_path_permission_manager.py`) |
+| `RoundTimeoutPreHook` | PreToolUse | Enforce round time limits |
+| `HumanInputHook` | PreToolUse | Inject human input into agent flow |
+| `MidStreamInjectionHook` | PostToolUse | Inject coordination messages (voting reminders, etc.) |
+| `SubagentCompleteHook` | PostToolUse | Notify when subagent completes |
+| `BackgroundToolCompleteHook` | PostToolUse | Notify when background tool completes |
+| `HighPriorityTaskReminderHook` | PostToolUse | Remind agent of current task |
+| `MediaCallLedgerHook` | PostToolUse | Track media generation calls |
+| `RoundTimeoutPostHook` | PostToolUse | Enforce round time limits |
 
 #### 11.2 Hook Architecture
 
@@ -725,6 +823,7 @@ def set_native_hooks_config(self, config):
 - Hook framework: `massgen/mcp_tools/hooks/`
 - Adapter base: `massgen/mcp_tools/native_hook_adapters/base.py`
 - Claude Code adapter: `massgen/mcp_tools/native_hook_adapters/claude_code_adapter.py`
+- Copilot adapter: `massgen/mcp_tools/native_hook_adapters/copilot_adapter.py`
 - Path permissions: `massgen/filesystem_manager/_path_permission_manager.py`
 - Orchestrator hook setup: `massgen/orchestrator.py` (search for `native_hook`)
 
@@ -765,6 +864,68 @@ if backend_type == "your_backend":
 
 **Reference**: `codex.py` implements this pattern with `_stream_docker()` / `_stream_local()` branching.
 
+#### Docker Execution for SDK Backends (like Copilot)
+
+SDK-based backends (in-process Python clients) cannot run inside Docker — the SDK stays on host. Instead, Docker isolates file/shell operations by:
+
+1. **Disable built-in tools** in Docker mode via `excluded_tools` so the SDK doesn't use its native file/shell tools
+2. **Route all file/shell ops through MCP servers** that execute inside the Docker container
+3. **Point `working_directory`** to the Docker-mounted workspace path
+
+```python
+# In __init__:
+self._docker_execution = (
+    kwargs.get("command_line_execution_mode") == "docker"
+    or self.config.get("command_line_execution_mode") == "docker"
+)
+
+# Property to check if Docker is actually active:
+@property
+def _is_docker_mode(self) -> bool:
+    if not self._docker_execution:
+        return False
+    if not self.filesystem_manager:
+        return False
+    dm = getattr(self.filesystem_manager, "docker_manager", None)
+    if dm is None:
+        return False
+    agent_id = self.config.get("agent_id")
+    if agent_id and dm.get_container(agent_id):
+        return True
+    return False
+
+# In get_disallowed_tools():
+def get_disallowed_tools(self, config):
+    if self._docker_execution:
+        return ["editFile", "createFile", "deleteFile",
+                "readFile", "listDirectory",
+                "runShellCommand", "shellCommand"]
+    return []
+
+# In stream_with_tools(), merge Docker-excluded tools into session config:
+if self._docker_execution:
+    docker_excluded = self.get_disallowed_tools(self.config)
+    if docker_excluded:
+        excluded_tools = list(set((excluded_tools or []) + docker_excluded))
+```
+
+**Key differences from CLI Docker pattern**:
+- SDK stays on host (no `exec_create` / `exec_start`)
+- Built-in tools disabled via SDK session config (`excluded_tools`), not by running inside container
+- MCP servers still execute inside container (same as CLI pattern)
+- PPM permission callback still active as defense-in-depth
+
+**Config validation**: Same pattern — require `command_line_docker_network_mode`:
+```python
+if backend_type == "copilot":
+    execution_mode = backend_config.get("command_line_execution_mode")
+    if execution_mode == "docker":
+        if "command_line_docker_network_mode" not in backend_config:
+            result.add_error(...)
+```
+
+**Reference**: `copilot.py` implements this pattern.
+
 #### Docker MCP Path Resolution
 MCP server configs are built by the orchestrator on the host with absolute host file paths (e.g., `fastmcp run /host/path/massgen/mcp_tools/planning/_server.py:create_server`). Inside Docker, these paths don't exist unless explicitly mounted.
 
@@ -786,13 +947,15 @@ The workspace is typically writable by default. Read access to the full filesyst
 
 **Docker mode**: Skip backend sandbox config — the container IS the sandbox. Grant full access inside the container.
 
-### SDK Wrapper Backend (like Claude Code)
+### SDK Wrapper Backend (like Claude Code, Copilot)
 ```
-__init__: import SDK, configure options
+__init__: import SDK, configure options, detect Docker mode
 stream_with_tools: call SDK with messages -> iterate events -> yield StreamChunks
 MCP: pass mcp_servers dict to SDK options
 Custom tools: create SDK MCP server from tool definitions
 State: SDK manages conversation state internally
+Docker: SDK stays on host; disable built-in file/shell tools via excluded_tools;
+        route file/shell ops through MCP servers in container (see §Docker Execution for SDK Backends)
 ```
 
 ### API Backend (like Claude, Gemini)
@@ -807,13 +970,14 @@ MCP + custom tools handled automatically by base class
 
 | Backend | Lines | Type | Good reference for |
 |---------|-------|------|--------------------|
-| `grok.py` | ~80 | Subclass of ChatCompletions | Minimal API backend |
-| `chat_completions.py` | ~500 | OpenAI-compatible | Standard API backend |
-| `codex.py` | ~500 | CLI wrapper | CLI-based backend |
-| `response.py` | ~600 | Response API | Reasoning models |
-| `gemini.py` | ~800 | Custom API | Non-OpenAI API |
-| `claude_code.py` | ~1700 | SDK wrapper | Full-featured stateful |
-| `claude.py` | ~1700 | Custom API | Full-featured API |
+| `grok.py` | ~81 | Subclass of ChatCompletions | Minimal API backend |
+| `chat_completions.py` | ~1150 | OpenAI-compatible | Standard API backend |
+| `response.py` | ~1600 | Response API | Reasoning models |
+| `claude.py` | ~1830 | Custom API | Full-featured API |
+| `copilot.py` | ~1250 | SDK wrapper | SDK-based + PPM permission callback + Docker mode |
+| `codex.py` | ~2090 | CLI wrapper | CLI-based + Docker |
+| `gemini.py` | ~2460 | Custom API | Non-OpenAI API |
+| `claude_code.py` | ~3530 | SDK wrapper | Full-featured stateful |
 
 ## File Summary
 

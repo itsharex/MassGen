@@ -678,3 +678,13 @@ class TestFinalSnapshotWithWorkspaceContent:
         target.write_text("data")
         (d / "link").symlink_to(target)
         assert has_meaningful_content(d) is False
+
+    def test_gemini_config_dir_excluded(self, tmp_path):
+        """A workspace with only .gemini/ should NOT be considered meaningful."""
+        from massgen.filesystem_manager import has_meaningful_content
+
+        d = tmp_path / "ws"
+        d.mkdir()
+        (d / ".gemini").mkdir()
+        (d / ".gemini" / "settings.json").write_text("{}")
+        assert has_meaningful_content(d) is False

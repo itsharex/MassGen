@@ -43,6 +43,9 @@ MassGen supports these backend types (configured via ``type`` field in YAML):
    * - ``gemini``
      - Google
      - Gemini 2.5 Flash, Gemini 2.5 Pro
+   * - ``gemini_cli``
+     - Google (CLI)
+     - Gemini 3, Gemini 2.5 Models (via Gemini CLI)
    * - ``grok``
      - xAI
      - Grok-4, Grok-3, Grok-3-mini
@@ -58,9 +61,15 @@ MassGen supports these backend types (configured via ``type`` field in YAML):
    * - ``lmstudio``
      - LM Studio
      - Local open-source models
+   * - ``codex``
+     - OpenAI (CLI)
+     - GPT-5.4, GPT-5.3-Codex, GPT-5.2-Codex, GPT-5.1-Codex, GPT-4.1
    * - ``copilot``
      - GitHub Copilot
-     - GPT-5-mini, GPT-4, Claude Sonnet 4, Gemini 2.5 Pro
+     - GPT-5-mini, GPT-4.1, Claude Sonnet 4, Gemini 2.5 Pro
+   * - ``inference``
+     - vLLM / SGLang
+     - Any locally served model
    * - ``chatcompletion``
      - Generic
      - Any OpenAI-compatible API
@@ -118,22 +127,22 @@ Different backends support different built-in tools:
      - ⭐
      - ❌
      - ⭐
-     - ⭐
-     - ❌
-     - ❌
+     - 🔧
+     - 🔧
+     - 🔧
      - ✅
      - ⭐
      - ✅
    * - ``copilot``
      - ⭐
      - ❌
-     - ❌
+     - ✅
      - 🔧
      - 🔧
      - 🔧
      - ✅
-     - ❌
-     - ❌
+     - ✅
+     - ✅
    * - ``gemini``
      - ⭐
      - ⭐
@@ -143,6 +152,16 @@ Different backends support different built-in tools:
      - 🔧
      - ✅
      - ✅
+     - ✅
+   * - ``gemini_cli``
+     - ⭐
+     - ⭐
+     - ⭐
+     - 🔧
+     - 🔧
+     - 🔧
+     - ✅
+     - ⭐
      - ✅
    * - ``grok``
      - ⭐
@@ -175,6 +194,16 @@ Different backends support different built-in tools:
      - ✅
      - ✅
    * - ``lmstudio``
+     - ❌
+     - ❌
+     - ✅
+     - 🔧
+     - 🔧
+     - 🔧
+     - ✅
+     - ✅
+     - ✅
+   * - ``zai``
      - ❌
      - ❌
      - ✅
@@ -217,7 +246,7 @@ Different backends support different built-in tools:
 * **Custom Tools:**
 
   * Custom tools allow you to give agents access to your own Python functions
-  * Most backends support custom tools (OpenAI, Claude, Claude Code, Codex, Gemini, Grok, Chat Completions, LM Studio, Inference)
+  * Most backends support custom tools (OpenAI, Claude, Claude Code, Codex, Copilot, Gemini, Grok, Chat Completions, LM Studio, ZAI, Inference)
   * **Azure OpenAI** and **AG2** do not support custom tools as they inherit from the base backend class without the custom tools layer
   * Custom tools are essential for multimodal understanding features (``understand_image``, ``understand_video``, ``understand_audio``, ``understand_file``)
   * See :doc:`tools/custom_tools` for complete documentation on creating and using custom tools
@@ -238,7 +267,7 @@ Different backends support different built-in tools:
 
   * **Bash/Shell**: MassGen-level feature with **direct workspace access**
 
-    * ⭐ (``claude_code``, ``codex``): Native shell tools built into Claude Code and Codex
+    * ⭐ (``claude_code``, ``codex``, ``gemini_cli``): Native shell/bash tools built into the backend CLI/SDK
     * ✅ (all MCP-enabled backends): Universal bash/shell via ``enable_mcp_command_line: true``
     * **When to use**: Code that needs to interact with your project files, run tests, execute scripts
     * See :doc:`tools/code_execution` for detailed setup and comparison
@@ -247,9 +276,7 @@ Different backends support different built-in tools:
 
 * **Filesystem:**
 
-  * ⭐ (``claude_code``, ``codex``): Native filesystem tools provided by the backend
-  * ``claude_code``: Read, Write, Edit, Bash, Grep, Glob
-  * ``codex``: shell, file_read, file_write, file_edit
+  * ⭐ (``claude_code``, ``codex``, ``gemini_cli``): Native filesystem tools via CLI/SDK (Read, Write, Edit, Bash, etc.)
   * ✅ (all backends with ``cwd`` parameter): Filesystem operations handled automatically through workspace configuration
   * See :doc:`files/file_operations` for detailed filesystem configuration
 
@@ -460,6 +487,36 @@ If both ``model_reasoning_effort`` and ``reasoning.effort`` are provided,
          enable_mcp_command_line: true
          command_line_execution_mode: "docker"
          command_line_docker_network_mode: "bridge"  # Required for Codex
+
+Gemini CLI Backend
+~~~~~~~~~~~~~~~~~~
+
+The ``gemini_cli`` backend (alias: ``gemini-cli``) wraps Google's Gemini CLI (``@google/gemini-cli``) for local or Docker execution.
+
+**Basic Configuration (Local):**
+
+.. code-block:: yaml
+
+   agents:
+     - id: "gemini_cli_agent"
+       backend:
+         type: "gemini_cli"
+         model: "gemini-2.5-pro"
+         cwd: "workspace"
+
+**Authentication:**
+
+* **CLI login**: Run ``gemini`` interactively to login with Google (preferred)
+* **API key**: Set ``GOOGLE_API_KEY`` or ``GEMINI_API_KEY`` environment variable
+
+**Installation:** ``npm install -g @google/gemini-cli``
+
+**Docker Mode:** Requires ``command_line_docker_network_mode: "bridge"``. Add ``@google/gemini-cli`` to
+``command_line_docker_packages.preinstall.npm`` or use an image with Gemini CLI pre-installed.
+
+**Supported Models:** gemini-2.5-pro (default), gemini-2.5-flash, gemini-2.5-flash-lite, gemini-3-flash-preview, gemini-3-pro-preview, gemini-3.1-pro-preview
+
+**Example configs:** ``massgen/configs/providers/gemini/gemini_cli_local.yaml``, ``gemini_cli_docker.yaml``
 
 GitHub Copilot Backend
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1077,8 +1134,10 @@ Ensure the backend type is correct:
    # Correct backend types
    type: "openai"         # ✅
    type: "claude_code"    # ✅
+   type: "codex"          # ✅
    type: "copilot"        # ✅
    type: "gemini"         # ✅
+   type: "gemini_cli"     # ✅
 
    # Incorrect (common mistakes)
    type: "gpt"            # ❌ Use "openai"
@@ -1095,9 +1154,12 @@ Check your ``.env`` file has the correct variable name:
    openai       → OPENAI_API_KEY
    claude       → ANTHROPIC_API_KEY
    claude_code  → CLAUDE_CODE_API_KEY (falls back to ANTHROPIC_API_KEY)
+   codex        → OPENAI_API_KEY (or use `codex login` for OAuth)
    copilot      → GH_TOKEN or GITHUB_TOKEN (or use /login in Copilot CLI)
    gemini       → GOOGLE_API_KEY
+   gemini_cli   → GOOGLE_API_KEY or GEMINI_API_KEY (or use `gemini` login)
    grok         → XAI_API_KEY
+   zai          → ZAI_API_KEY
    azure_openai → AZURE_OPENAI_API_KEY
 
 .. note::
