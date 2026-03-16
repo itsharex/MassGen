@@ -15,12 +15,13 @@ import re
 import shlex
 import shutil
 import sys
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
-from ..logger_config import logger
+from ..logger_config import get_event_emitter, logger
 from ._streaming_buffer_mixin import StreamingBufferMixin
 from .base import (
     FilesystemSupport,
@@ -93,6 +94,7 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
         self._managed_workspace_file_backups: dict[Path, tuple[bool, bytes | None]] = {}
         self._pending_workflow_instructions = ""
         self._tool_call_context: dict[str, dict[str, Any]] = {}
+        self._tool_start_times: dict[str, float] = {}
         self._workflow_call_mode = "any"
         self._workflow_call_emitted_this_turn = False
         self._workflow_mcp_active = False
@@ -941,6 +943,21 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
                     ),
                 ]
 
+            # Track timing for elapsed calculation in tool_result
+            if item_id:
+                self._tool_start_times[item_id] = time.time()
+
+            # Emit structured tool_start event for TUI event pipeline
+            _emitter = get_event_emitter()
+            if _emitter:
+                _emitter.emit_tool_start(
+                    tool_id=item_id or f"gemini_{tool_name}",
+                    tool_name=tool_name,
+                    args=args if isinstance(args, dict) else {},
+                    server_name=None,
+                    agent_id=self.agent_id,
+                )
+
             return [
                 StreamChunk(
                     type="mcp_status",
@@ -954,8 +971,11 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
         if event_type == "tool_result":
             workflow_call = self._try_extract_workflow_tool_call_from_result(event)
             tool_call_id = event.get("id") or event.get("tool_id") or event.get("toolId") or ""
+            tool_name_from_context = ""
             if tool_call_id and tool_call_id in self._tool_call_context:
+                tool_name_from_context = self._tool_call_context[tool_call_id].get("name", "")
                 self._tool_call_context.pop(tool_call_id, None)
+            elapsed = time.time() - self._tool_start_times.pop(tool_call_id, time.time()) if tool_call_id else 0.0
 
             if workflow_call:
                 if self._workflow_call_emitted_this_turn:
@@ -971,6 +991,27 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
                         source="gemini_cli",
                     ),
                 ]
+
+            # Emit structured tool_complete event for TUI event pipeline
+            if tool_name_from_context:
+                result_content = ""
+                for key in ("result", "tool_result", "output", "content", "response"):
+                    val = event.get(key)
+                    if val is not None:
+                        result_content = str(val) if not isinstance(val, str) else val
+                        break
+                is_error = bool(event.get("is_error") or event.get("error"))
+                _emitter = get_event_emitter()
+                if _emitter:
+                    _emitter.emit_tool_complete(
+                        tool_id=tool_call_id,
+                        tool_name=tool_name_from_context,
+                        result=result_content,
+                        elapsed_seconds=elapsed,
+                        status="error" if is_error else "success",
+                        is_error=is_error,
+                        agent_id=self.agent_id,
+                    )
             return []
 
         if event_type == "result":
@@ -1358,6 +1399,7 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
             logger.info("Gemini CLI: new_answer_only mode active; omitting vote from workflow MCP toolset")
 
         self._tool_call_context.clear()
+        self._tool_start_times.clear()
         self._remove_runtime_mcp_server("massgen_workflow_tools")
 
         config_dir = self._ensure_workspace_config_dir()
@@ -1824,6 +1866,7 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
         self.session_id = None
         self._pending_workflow_instructions = ""
         self._tool_call_context.clear()
+        self._tool_start_times.clear()
         self._workflow_call_mode = "any"
         self._workflow_call_emitted_this_turn = False
         self._workflow_mcp_active = False

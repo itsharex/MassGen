@@ -1,0 +1,33 @@
+# Gemini 3 Flash config - frontier intelligence built for speed
+# Run with: uv run massgen --config massgen/configs/providers/gemini/gemini_cli_docker.yaml "What's the deep learning about?"
+
+agents:
+  - id: "agent_a"
+    backend:
+      type: gemini_cli
+      model: "gemini-3-flash-preview"
+      cwd: "workspace"
+      enable_mcp_command_line: true
+      command_line_execution_mode: "docker"
+      command_line_docker_enable_sudo: true
+      command_line_docker_network_mode: bridge
+
+  - id: "agent_b"
+    backend:
+      type: gemini_cli
+      model: "gemini-3-flash-preview"
+      cwd: "workspace"
+      enable_mcp_command_line: true
+      command_line_execution_mode: "docker"
+      command_line_docker_enable_sudo: true
+      command_line_docker_network_mode: bridge
+
+orchestrator:
+  snapshot_storage: "snapshots"
+  agent_temporary_workspace: "temp_workspaces"
+  max_new_answers_per_agent: 3
+
+  coordination:
+    # Enable task planning
+    enable_agent_task_planning: true
+    task_planning_filesystem_mode: true
