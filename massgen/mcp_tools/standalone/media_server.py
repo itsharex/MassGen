@@ -97,8 +97,6 @@ async def generate_media(
         "mode": mode,
         "agent_cwd": str(cwd),
         "allowed_paths": [str(cwd)],
-        "multimodal_config": {},
-        "task_context": "",
     }
 
     # Only pass non-None values to avoid overriding defaults
@@ -210,8 +208,6 @@ async def read_media(
         "max_concurrent": max_concurrent,
         "agent_cwd": str(cwd),
         "allowed_paths": [str(cwd)],
-        "multimodal_config": {},
-        "task_context": "",
     }
     if prompt is not None:
         kwargs["prompt"] = prompt

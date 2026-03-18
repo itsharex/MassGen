@@ -311,6 +311,9 @@ FRAMEWORK_MCPS = frozenset(
         "subagent",  # Subagent spawning (built-in when enabled)
         "skills",  # Skill discovery and reading MCP
         "massgen_checklist",  # Checklist-gated voting tool (must be a direct model tool)
+        "massgen_quality_tools",  # Standalone quality tools MCP (massgen-refinery plugin)
+        "massgen_workflow_tools",  # Standalone workflow tools MCP (massgen-refinery plugin)
+        "massgen_media_tools",  # Standalone media tools MCP (massgen-refinery plugin)
     },
 )
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,12 @@ mcp = fastmcp.FastMCP(SERVER_NAME)
 # ---------------------------------------------------------------------------
 
 
+def _safe_session_id(raw: str) -> str:
+    """Return a filesystem-safe slug for use as a session directory name."""
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_")
+    return slug if slug and slug not in (".", "..") else "default"
+
+
 def _get_session_dir() -> Path:
     """Resolve current session directory from session_metadata.json."""
     quality_root = Path.cwd() / QUALITY_DIR
@@ -41,11 +48,15 @@ def _get_session_dir() -> Path:
         try:
             with open(metadata_path) as f:
                 metadata = json.load(f)
-            session_id = metadata.get("session_id", "default")
+            session_id = _safe_session_id(metadata.get("session_id", "default"))
         except (json.JSONDecodeError, OSError):
             pass
 
     session_dir = quality_root / "sessions" / session_id
+    # Validate the resolved path stays within the sessions root
+    sessions_root = (quality_root / "sessions").resolve()
+    if not session_dir.resolve().is_relative_to(sessions_root):
+        session_dir = quality_root / "sessions" / "default"
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
 
@@ -88,21 +99,26 @@ async def _new_answer_impl(
     # Snapshot deliverable files into the round directory
     snapshot_dir = round_dir / "deliverables"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
+    workspace_root = Path.cwd().resolve()
     copied = []
     for fp in paths:
         src = Path(fp)
         if not src.is_absolute():
             src = Path.cwd() / src
-        if src.exists():
-            dest = snapshot_dir / src.name
+        src_resolved = src.resolve()
+        if not src_resolved.is_relative_to(workspace_root):
+            logger.warning(f"Skipping path outside workspace: {fp}")
+            continue
+        if src_resolved.exists():
+            dest = snapshot_dir / src_resolved.name
             try:
-                if src.is_dir():
-                    shutil.copytree(src, dest, dirs_exist_ok=True)
+                if src_resolved.is_dir():
+                    shutil.copytree(src_resolved, dest, dirs_exist_ok=True)
                 else:
-                    shutil.copy2(src, dest)
+                    shutil.copy2(src_resolved, dest)
                 copied.append(str(dest))
             except OSError as e:
-                logger.warning(f"Could not snapshot {src}: {e}")
+                logger.warning(f"Could not snapshot {src_resolved}: {e}")
 
     # Write submission manifest
     manifest = {

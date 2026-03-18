@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 SERVER_NAME = "massgen_quality_tools"
 QUALITY_DIR = ".massgen-quality"
-DEFAULT_CUTOFF = 70  # Score threshold (0-100) for passing a criterion
+DEFAULT_CUTOFF = 7  # Score threshold (0-10) for passing a criterion
 DEFAULT_REQUIRED_RATIO = 1.0  # Fraction of criteria that must pass
 
 mcp = fastmcp.FastMCP(SERVER_NAME)
@@ -35,6 +36,12 @@ mcp = fastmcp.FastMCP(SERVER_NAME)
 # ---------------------------------------------------------------------------
 # State helpers
 # ---------------------------------------------------------------------------
+
+
+def _safe_session_id(raw: str) -> str:
+    """Return a filesystem-safe slug for use as a session directory name."""
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_")
+    return slug if slug and slug not in (".", "..") else "default"
 
 
 def _get_session_dir() -> Path:
@@ -47,11 +54,15 @@ def _get_session_dir() -> Path:
         try:
             with open(metadata_path) as f:
                 metadata = json.load(f)
-            session_id = metadata.get("session_id", "default")
+            session_id = _safe_session_id(metadata.get("session_id", "default"))
         except (json.JSONDecodeError, OSError):
             pass
 
     session_dir = quality_root / "sessions" / session_id
+    # Validate the resolved path stays within the sessions root
+    sessions_root = (quality_root / "sessions").resolve()
+    if not session_dir.resolve().is_relative_to(sessions_root):
+        session_dir = quality_root / "sessions" / "default"
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
 
@@ -107,7 +118,8 @@ async def _init_session_impl(
     """Create a new timestamped session directory (core logic)."""
     quality_root = Path.cwd() / QUALITY_DIR
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    session_id = f"{timestamp}_{label}" if label else timestamp
+    safe_label = _safe_session_id(label) if label else ""
+    session_id = f"{timestamp}_{safe_label}" if safe_label else timestamp
 
     session_dir = quality_root / "sessions" / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -464,7 +476,7 @@ async def generate_eval_criteria(criteria: list[dict[str, str]]) -> str:
     name="submit_checklist",
     description=(
         "Evaluate work against stored criteria. Submit scores for each "
-        "criterion (E1, E2, etc.) as integers 1-10 or as "
+        "criterion (E1, E2, etc.) as integers 0-10 or as "
         '{"score": N, "reasoning": "..."}. Returns a verdict: '
         '"iterate" (keep improving) or "converge" (quality bar met). '
         "Must call generate_eval_criteria first to register criteria."

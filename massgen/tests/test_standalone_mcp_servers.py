@@ -17,6 +17,7 @@ from massgen.mcp_tools.standalone.quality_server import (
     _read_criteria,
     _read_state,
     _reset_evaluation_impl,
+    _safe_session_id,
     _submit_checklist_impl,
     _write_state,
 )
@@ -77,6 +78,24 @@ class TestFindPlateaued:
         assert len(result) == 0
 
 
+class TestSafeSessionId:
+    def test_valid_id_unchanged(self):
+        assert _safe_session_id("20260318_123456_landing-page") == "20260318_123456_landing-page"
+
+    def test_strips_path_traversal(self):
+        result = _safe_session_id("../../evil")
+        assert ".." not in result
+        assert "/" not in result
+
+    def test_empty_falls_back_to_default(self):
+        assert _safe_session_id("") == "default"
+        assert _safe_session_id("...") == "default"
+
+    def test_dots_only_falls_back_to_default(self):
+        assert _safe_session_id("..") == "default"
+        assert _safe_session_id(".") == "default"
+
+
 class TestSessionDir:
     def test_creates_default_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -94,6 +113,17 @@ class TestSessionDir:
         session_dir = _get_session_dir()
         assert "test-session-123" in str(session_dir)
         assert session_dir.exists()
+
+    def test_sanitizes_malicious_session_id(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        quality_dir = tmp_path / ".massgen-quality"
+        quality_dir.mkdir()
+        (quality_dir / "session_metadata.json").write_text(
+            json.dumps({"session_id": "../../evil"}),
+        )
+        session_dir = _get_session_dir()
+        sessions_root = (quality_dir / "sessions").resolve()
+        assert session_dir.resolve().is_relative_to(sessions_root)
 
 
 class TestCriteriaStorage:
@@ -132,6 +162,7 @@ class TestStateManagement:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_init_session_creates_timestamped_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -146,6 +177,7 @@ async def test_init_session_creates_timestamped_dir(tmp_path, monkeypatch):
     assert metadata["session_id"] == result["session_id"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_init_session_without_label(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -157,6 +189,7 @@ async def test_init_session_without_label(tmp_path, monkeypatch):
     assert len(result["session_id"]) == 15  # YYYYMMDD_HHMMSS
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_init_session_then_tools_use_it(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -173,6 +206,7 @@ async def test_init_session_then_tools_use_it(tmp_path, monkeypatch):
     assert criteria_path.exists()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_generate_eval_criteria(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -190,6 +224,7 @@ async def test_generate_eval_criteria(tmp_path, monkeypatch):
     assert result["criteria_count"] == 3
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_generate_eval_criteria_rejects_invalid(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -202,6 +237,7 @@ async def test_generate_eval_criteria_rejects_invalid(tmp_path, monkeypatch):
     assert result["status"] == "error"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_submit_checklist_iterate(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -219,7 +255,7 @@ async def test_submit_checklist_iterate(tmp_path, monkeypatch):
     # Submit scores below cutoff
     result = json.loads(
         await submit_checklist(
-            scores={"E1": 50, "E2": 80},
+            scores={"E1": 5, "E2": 8},
         ),
     )
 
@@ -229,6 +265,7 @@ async def test_submit_checklist_iterate(tmp_path, monkeypatch):
     assert "E2" not in result["failed_criteria"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_submit_checklist_converge(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -244,7 +281,7 @@ async def test_submit_checklist_converge(tmp_path, monkeypatch):
 
     result = json.loads(
         await submit_checklist(
-            scores={"E1": 80, "E2": 90},
+            scores={"E1": 8, "E2": 9},
         ),
     )
 
@@ -252,6 +289,7 @@ async def test_submit_checklist_converge(tmp_path, monkeypatch):
     assert result["verdict"] == "converge"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_submit_checklist_no_criteria(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -262,6 +300,7 @@ async def test_submit_checklist_no_criteria(tmp_path, monkeypatch):
     assert "No criteria" in result["error"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_submit_checklist_with_reasoning(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -272,7 +311,7 @@ async def test_submit_checklist_with_reasoning(tmp_path, monkeypatch):
 
     result = json.loads(
         await submit_checklist(
-            scores={"E1": {"score": 85, "reasoning": "Meets all requirements"}},
+            scores={"E1": {"score": 8, "reasoning": "Meets all requirements"}},
         ),
     )
 
@@ -280,6 +319,7 @@ async def test_submit_checklist_with_reasoning(tmp_path, monkeypatch):
     assert result["verdict"] == "converge"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_propose_improvements_valid(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -294,7 +334,7 @@ async def test_propose_improvements_valid(tmp_path, monkeypatch):
         ],
     )
 
-    await submit_checklist(scores={"E1": 40, "E2": 80})
+    await submit_checklist(scores={"E1": 4, "E2": 8})
 
     result = json.loads(
         await propose_improvements(
@@ -307,6 +347,7 @@ async def test_propose_improvements_valid(tmp_path, monkeypatch):
     assert result["valid"] is True
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_propose_improvements_missing_coverage(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -321,7 +362,7 @@ async def test_propose_improvements_missing_coverage(tmp_path, monkeypatch):
         ],
     )
 
-    await submit_checklist(scores={"E1": 40, "E2": 40})
+    await submit_checklist(scores={"E1": 4, "E2": 4})
 
     # Only cover E1, not E2
     result = json.loads(
@@ -336,6 +377,7 @@ async def test_propose_improvements_missing_coverage(tmp_path, monkeypatch):
     assert "E2" in result["missing_criteria"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_propose_improvements_rejects_all_incremental(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -344,7 +386,7 @@ async def test_propose_improvements_rejects_all_incremental(tmp_path, monkeypatc
     propose_improvements = _propose_improvements_impl
 
     await generate_eval_criteria([{"id": "E1", "text": "Goal alignment"}])
-    await submit_checklist(scores={"E1": 40})
+    await submit_checklist(scores={"E1": 4})
 
     result = json.loads(
         await propose_improvements(
@@ -358,6 +400,7 @@ async def test_propose_improvements_rejects_all_incremental(tmp_path, monkeypatc
     assert "incremental" in result["error"].lower()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_reset_evaluation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -366,7 +409,7 @@ async def test_reset_evaluation(tmp_path, monkeypatch):
     reset_evaluation = _reset_evaluation_impl
 
     await generate_eval_criteria([{"id": "E1", "text": "Goal alignment"}])
-    await submit_checklist(scores={"E1": 80})
+    await submit_checklist(scores={"E1": 8})
 
     result = json.loads(await reset_evaluation())
     assert result["status"] == "ok"
@@ -382,6 +425,7 @@ async def test_reset_evaluation(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_new_answer_snapshots_deliverables(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -418,6 +462,7 @@ async def test_new_answer_snapshots_deliverables(tmp_path, monkeypatch):
     assert manifest["answer_summary"] == "Built the landing page"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_new_answer_without_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -433,6 +478,7 @@ async def test_new_answer_without_files(tmp_path, monkeypatch):
     assert result["snapshots"] == []
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_vote():
     vote = _vote_impl
@@ -447,3 +493,25 @@ async def test_vote():
     assert result["status"] == "ok"
     assert result["tool_name"] == "vote"
     assert result["arguments"]["choice"] == "accept"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_new_answer_rejects_path_outside_workspace(tmp_path, monkeypatch, tmp_path_factory):
+    monkeypatch.chdir(tmp_path)
+    await _init_session_impl(label="traversal-test")
+
+    # Create a file strictly outside the workspace (tmp_path)
+    outside_dir = tmp_path_factory.mktemp("outside")
+    outside_file = outside_dir / "secret.txt"
+    outside_file.write_text("secret content")
+
+    result = json.loads(
+        await _new_answer_impl(
+            answer="test",
+            file_paths=[str(outside_file)],
+        ),
+    )
+
+    assert result["status"] == "ok"
+    assert len(result["snapshots"]) == 0
