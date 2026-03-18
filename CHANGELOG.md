@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Recent Releases
 
+**v0.1.65 (March 18, 2026)** - MassGen Refinery Plugin
+Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation and multi-round refinement to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
+
 **v0.1.64 (March 16, 2026)** - Gemini CLI Backend
 Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode. Response API duplicate fix.
 
@@ -29,6 +32,18 @@ Planning improvements with auto-added improvements to task plan and plan review 
 
 ---
 
+## [0.1.65] - 2026-03-18
+
+### Added
+- **Quality Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, configurable scoring thresholds, improvement proposals, and coverage validation
+- **Workflow Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_workflow_tools` MCP server with multi-round answer submission, automatic deliverable snapshots, and vote support
+- **Media Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_media_tools` MCP server with image/video/audio generation and critical-first media analysis
+
+### Technical Details
+- **Major Focus**: MassGen Refinery Plugin — standalone MCP servers for Claude Code
+- **PRs Merged**: [#1007](https://github.com/massgen/MassGen/pull/1007)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
 ## [0.1.64] - 2026-03-16
 
 ### Added
@@ -43,7 +58,7 @@ Planning improvements with auto-added improvements to task plan and plan review 
 ### Technical Details
 - **Major Focus**: Gemini CLI Backend
 - **PRs Merged**: [#999](https://github.com/massgen/MassGen/pull/999), [#990](https://github.com/massgen/MassGen/pull/990), [#1002](https://github.com/massgen/MassGen/pull/1002), [#1000](https://github.com/massgen/MassGen/pull/1000)
-- **Contributors**: @ncrispino, @HenryQi, @db-ol and the MassGen team
+- **Contributors**: @praneeth999, @ncrispino, @HenryQi, @db-ol and the MassGen team
 
 ## [0.1.63] - 2026-03-13
 

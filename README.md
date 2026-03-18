@@ -69,7 +69,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.64 Features](#-latest-features-v0164)
+- [v0.1.65 Features](#-latest-features-v0165)
 </details>
 
 <details open>
@@ -122,15 +122,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.64)](#recent-achievements-v0164)
-- [Previous Achievements (v0.0.3 - v0.1.63)](#previous-achievements-v003---v0163)
+- [Recent Achievements (v0.1.65)](#recent-achievements-v0165)
+- [Previous Achievements (v0.0.3 - v0.1.64)](#previous-achievements-v003---v0164)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.65 Roadmap](#v0165-roadmap)
+- [v0.1.66 Roadmap](#v0166-roadmap)
 </details>
 
 <details open>
@@ -155,20 +155,20 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.64)
+## 🆕 Latest Features (v0.1.65)
 
-**🎉 Released: March 16, 2026**
+**🎉 Released: March 18, 2026**
 
-**What's New in v0.1.64:**
-- **🔌 Gemini CLI Backend** - Google's Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support.
-- **⚡ WebSocket Streaming** - Persistent WebSocket transport for OpenAI Response API with auto-reconnection.
-- **🔍 Execution Trace Analyzer** - New subagent type for mechanistic analysis of agent execution traces.
+**What's New in v0.1.65:**
+- **🔧 MassGen Refinery Plugin** - Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation to Claude Code. Single-agent refinement working; multi-agent experimental.
+- **✅ Quality Server** - Session-based checklist evaluation with scoring thresholds and improvement proposals.
+- **📋 Workflow Server** - Multi-round answer submission with automatic deliverable snapshots.
 
-**Try v0.1.64 Features:**
+**Try v0.1.65 Features:**
 ```bash
-pip install massgen==0.1.64
-# Try the Gemini CLI backend
-uv run massgen --config @examples/providers/gemini/gemini_cli_local "Explain quantum computing"
+pip install massgen==0.1.65
+# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
+# https://github.com/massgen/massgen-refinery
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1240,23 +1240,18 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.64)
+### Recent Achievements (v0.1.65)
 
-**🎉 Released: March 16, 2026**
+**🎉 Released: March 18, 2026**
 
-#### Gemini CLI Backend
-- **Gemini CLI** ([#999](https://github.com/massgen/MassGen/pull/999), [#952](https://github.com/massgen/MassGen/issues/952)): New subprocess-based backend for Google's Gemini CLI with session persistence, MCP tools, and Docker support
-- **Native Hook Adapter**: Standardized tool execution for Gemini CLI via hook-based IPC
+#### MassGen Refinery Plugin
+- **Quality Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
+- **Workflow Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
+- **Media Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
 
-#### WebSocket & Trace Analyzer
-- **WebSocket Mode** ([#990](https://github.com/massgen/MassGen/pull/990)): Persistent WebSocket transport for OpenAI Response API with auto-reconnection
-- **Execution Trace Analyzer** ([#1002](https://github.com/massgen/MassGen/pull/1002)): New subagent type for mechanistic analysis of agent execution traces with 7-dimension evaluation
+### Previous Achievements (v0.0.3 - v0.1.64)
 
-#### Copilot Docker & Fixes
-- **Copilot Docker Mode** ([#999](https://github.com/massgen/MassGen/pull/999)): Containerized tool execution for Copilot backend
-- **Response API Fix** ([#1000](https://github.com/massgen/MassGen/pull/1000)): Prevent duplicate item errors in recursive tool loops
-
-### Previous Achievements (v0.0.3 - v0.1.63)
+✅ **Gemini CLI Backend (v0.1.64)**: Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode.
 
 ✅ **Ensemble & Contracts (v0.1.63)**: Subagent ensemble pattern with `disable_injection` and `defer_voting_until_all_answered` as defaults. Round evaluator transformation pressure and success contracts. Lighter refinement for subagents. Killed agent handling.
 
@@ -1529,9 +1524,9 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.65 Roadmap
+### v0.1.66 Roadmap
 
-Version 0.1.65 focuses on cloud execution:
+Version 0.1.66 focuses on cloud execution:
 
 #### Planned Features
 - **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal

@@ -1,4 +1,4 @@
-# MassGen v0.1.64 Release Announcement
+# MassGen v0.1.65 Release Announcement
 
 <!--
 This is the current release announcement. Copy this + feature-highlights.md to LinkedIn/X.
@@ -7,17 +7,17 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.64 — Gemini CLI Backend! 🚀 MassGen now supports Google's Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. Plus: WebSocket streaming for OpenAI Response API, execution trace analyzer subagent, and Copilot Docker mode.
+We're excited to release MassGen v0.1.65 — MassGen Refinery Plugin! 🚀 Checklist-based evaluation and multi-round refinement now available in Claude Code via standalone MCP servers. Single-agent is fully working; multi-agent experimental. Plugin: https://github.com/massgen/massgen-refinery
 
 ## Install
 
 ```bash
-pip install massgen==0.1.64
+pip install massgen==0.1.65
 ```
 
 ## Links
 
-- **Release notes:** https://github.com/massgen/MassGen/releases/tag/v0.1.64
+- **Release notes:** https://github.com/massgen/MassGen/releases/tag/v0.1.65
 - **X post:** [TO BE ADDED AFTER POSTING]
 - **LinkedIn post:** [TO BE ADDED AFTER POSTING]
 
@@ -29,31 +29,24 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.64 — Gemini CLI Backend! 🚀 MassGen now supports Google's Gemini CLI as a backend with session persistence, MCP tools, and Docker support. Plus: WebSocket streaming for OpenAI Response API, execution trace analyzer subagent, and Copilot Docker mode.
+We're excited to release MassGen v0.1.65 — MassGen Refinery Plugin! 🚀 Checklist-based evaluation and multi-round refinement now available in Claude Code via standalone MCP servers. Single-agent is fully working; multi-agent experimental. Plugin: https://github.com/massgen/massgen-refinery
 
 **Key Improvement:**
 
-🔌 **Gemini CLI Backend** - Google's Gemini CLI as a native MassGen backend:
-- Subprocess-based integration with Gemini 2.5 and 3.x model families
-- Session persistence via CLI session IDs for multi-turn conversations
-- MCP tools wired through `.gemini/settings.json` configuration
-- Docker support for containerized execution
-
-**Plus:**
-- ⚡ **WebSocket streaming** — persistent `wss://` transport for OpenAI Response API with auto-reconnection and real-time event streaming
-- 🔍 **Execution trace analyzer** — new subagent type for mechanistic analysis of agent execution traces with 7-dimension evaluation framework
-- 🐳 **Copilot Docker mode** — containerized tool execution for Copilot backend with sudo and network configuration
-- 🔧 **Response API fix** — prevent duplicate item errors in recursive tool loops
+🔧 **MassGen Refinery Plugin** - Standalone MCP servers for Claude Code:
+- **Quality Server** (`massgen_quality_tools`): Session-based checklist evaluation with configurable scoring thresholds, improvement proposals, and coverage validation
+- **Workflow Server** (`massgen_workflow_tools`): Multi-round answer submission with automatic deliverable snapshots per round for traceable iteration
+- **Media Server** (`massgen_media_tools`): Image, video, and audio generation with full parameter control and critical-first media analysis
 
 **Getting Started:**
 
 ```bash
-pip install massgen==0.1.64
-# Try the Gemini CLI backend
-uv run massgen --config @examples/providers/gemini/gemini_cli_local "Explain quantum computing"
+pip install massgen==0.1.65
+# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
+# https://github.com/massgen/massgen-refinery
 ```
 
-Release notes: https://github.com/massgen/MassGen/releases/tag/v0.1.64
+Release notes: https://github.com/massgen/MassGen/releases/tag/v0.1.65
 
 Feature highlights:
 

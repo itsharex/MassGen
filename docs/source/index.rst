@@ -200,6 +200,10 @@ Key Features
 Recent Releases
 ---------------
 
+**v0.1.65 (March 18, 2026)** - MassGen Refinery Plugin
+
+Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation and multi-round refinement to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
+
 **v0.1.64 (March 16, 2026)** - Gemini CLI Backend
 
 Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode.
@@ -207,10 +211,6 @@ Gemini CLI as a first-class backend with session persistence, MCP tools, and Doc
 **v0.1.63 (March 13, 2026)** - Ensemble & Contracts
 
 Subagent ensemble pattern with ``disable_injection`` and ``defer_voting_until_all_answered`` as defaults. Round evaluator transformation pressure and success contracts. Lighter refinement for subagents. Killed agent handling.
-
-**v0.1.62 (March 11, 2026)** - MassGen Skill & Viewer
-
-New general-purpose MassGen Skill with 4 modes (general, evaluate, plan, spec) for use from Claude Code and other AI agents. Session viewer for real-time observation of automation runs. Backend improvements for Claude Code, Codex, and Copilot. Headless and web quickstart modes for automated setup.
 
 :doc:`Full changelog → <changelog>`
 

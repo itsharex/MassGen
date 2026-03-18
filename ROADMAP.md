@@ -1,10 +1,10 @@
 # MassGen Roadmap
 
-**Current Version:** v0.1.64
+**Current Version:** v0.1.65
 
 **Release Schedule:** Mondays, Wednesdays, Fridays @ 9am PT
 
-**Last Updated:** March 16, 2026
+**Last Updated:** March 18, 2026
 
 This roadmap outlines MassGen's development priorities for upcoming releases. Each release focuses on specific capabilities with real-world use cases.
 
@@ -42,11 +42,22 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 | Release | Target | Feature | Owner | Use Case |
 |---------|--------|---------|-------|----------|
-| **v0.1.65** | 03/18/26 | Cloud Modal MVP | @ncrispino | Run MassGen as a cloud job on Modal ([#982](https://github.com/massgen/MassGen/issues/982)) |
-| **v0.1.66** | 03/20/26 | OpenAI Audio API | @ncrispino | Support OpenAI audio API for audio understanding ([#960](https://github.com/massgen/MassGen/issues/960)) |
-| **v0.1.67** | 03/23/26 | Image/Video Edit Capabilities | @ncrispino | Check and support img/video editing capabilities ([#959](https://github.com/massgen/MassGen/issues/959)) |
+| **v0.1.66** | 03/20/26 | Cloud Modal MVP | @ncrispino | Run MassGen as a cloud job on Modal ([#982](https://github.com/massgen/MassGen/issues/982)) |
+| **v0.1.67** | 03/23/26 | OpenAI Audio API | @ncrispino | Support OpenAI audio API for audio understanding ([#960](https://github.com/massgen/MassGen/issues/960)) |
+| **v0.1.68** | 03/25/26 | Image/Video Edit Capabilities | @ncrispino | Check and support img/video editing capabilities ([#959](https://github.com/massgen/MassGen/issues/959)) |
 
 *All releases ship on MWF @ 9am PT when ready*
+
+---
+
+## ✅ v0.1.65 - MassGen Refinery Plugin (Completed)
+
+**Released:** March 18, 2026 | PR: [#1007](https://github.com/massgen/MassGen/pull/1007)
+
+### Features
+- **Quality Server**: Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
+- **Workflow Server**: Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
+- **Media Server**: Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
 
 ---
 
@@ -63,7 +74,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ---
 
-## 📋 v0.1.65 - Cloud Modal MVP
+## 📋 v0.1.66 - Cloud Modal MVP
 
 ### Features
 
@@ -79,7 +90,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ---
 
-## 📋 v0.1.66 - OpenAI Audio API
+## 📋 v0.1.67 - OpenAI Audio API
 
 ### Features
 
@@ -95,7 +106,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ---
 
-## 📋 v0.1.67 - Image/Video Edit Capabilities
+## 📋 v0.1.68 - Image/Video Edit Capabilities
 
 ### Features
 

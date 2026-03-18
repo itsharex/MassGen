@@ -227,21 +227,27 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.64 - Latest
+### v0.1.65 - Latest
+**New Features:** MassGen Refinery Plugin
+
+**Key Features:**
+- **Quality Server**: Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
+- **Workflow Server**: Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
+- **Media Server**: Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
+
+**Try It:**
+```bash
+pip install massgen==0.1.65
+# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
+```
+
+### v0.1.64
 **New Features:** Gemini CLI Backend
 
 **Key Features:**
 - **Gemini CLI Backend**: New subprocess-based backend for Google's Gemini CLI with session persistence, MCP tools, and Docker support
 - **WebSocket Mode**: Persistent WebSocket transport for OpenAI Response API with auto-reconnection
 - **Execution Trace Analyzer**: New subagent type for mechanistic analysis of agent execution traces
-- **Copilot Docker Mode**: Containerized tool execution for Copilot backend
-
-**Try It:**
-```bash
-pip install massgen==0.1.64
-# Try the Gemini CLI backend
-uv run massgen --config @examples/providers/gemini/gemini_cli_local "Explain quantum computing"
-```
 
 ### v0.1.63
 **New Features:** Ensemble & Contracts
