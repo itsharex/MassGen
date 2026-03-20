@@ -52,10 +52,10 @@ class _EncodingCheckedStream:
 
 @pytest.mark.usefixtures("_isolate_test_logs")
 def test_sanitize_console_text_preserves_utf8_content() -> None:
-    import massgen.logger_config as logger_config
+    from massgen.utils.sanitize_console_text import sanitize_console_text_for_encoding
 
     text = "❌ Retry (1/3): Choose best answer → then stop"
-    assert logger_config._sanitize_console_text_for_encoding(text, "utf-8") == text
+    assert sanitize_console_text_for_encoding(text, "utf-8") == text
 
 
 @pytest.mark.usefixtures("_isolate_test_logs")
