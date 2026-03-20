@@ -68,7 +68,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.65 Features](#-latest-features-v0165)
+- [v0.1.66 Features](#-latest-features-v0166)
 </details>
 
 <details open>
@@ -121,15 +121,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.65)](#recent-achievements-v0165)
-- [Previous Achievements (v0.0.3 - v0.1.64)](#previous-achievements-v003---v0164)
+- [Recent Achievements (v0.1.66)](#recent-achievements-v0166)
+- [Previous Achievements (v0.0.3 - v0.1.65)](#previous-achievements-v003---v0165)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.66 Roadmap](#v0166-roadmap)
+- [v0.1.67 Roadmap](#v0167-roadmap)
 </details>
 
 <details open>
@@ -154,20 +154,20 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.65)
+## 🆕 Latest Features (v0.1.66)
 
-**🎉 Released: March 18, 2026**
+**🎉 Released: March 20, 2026**
 
-**What's New in v0.1.65:**
-- **🔧 MassGen Refinery Plugin** - Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation to Claude Code. Single-agent refinement working; multi-agent experimental.
-- **✅ Quality Server** - Session-based checklist evaluation with scoring thresholds and improvement proposals.
-- **📋 Workflow Server** - Multi-round answer submission with automatic deliverable snapshots.
+**What's New in v0.1.66:**
+- **🔄 Step Mode** - New `--step` CLI flag runs one agent for one step then exits — building block for external orchestrators.
+- **🔧 massgen-refinery** - The Claude Code plugin (https://github.com/massgen/massgen-refinery) now supports step mode.
+- **🪟 Codex Windows Fixes** - UTF-8 encoding and console text sanitization.
 
-**Try v0.1.65 Features:**
+**Try v0.1.66 Features:**
 ```bash
-pip install massgen==0.1.65
-# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
-# https://github.com/massgen/massgen-refinery
+pip install massgen==0.1.66
+# Run one step of a configured agent
+uv run massgen --step --config your_config.yaml --session-dir ./my_session "Your task"
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1239,16 +1239,21 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.65)
+### Recent Achievements (v0.1.66)
 
-**🎉 Released: March 18, 2026**
+**🎉 Released: March 20, 2026**
 
-#### MassGen Refinery Plugin
-- **Quality Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
-- **Workflow Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
-- **Media Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
+#### Step Mode
+- **Step Mode** ([#1011](https://github.com/massgen/MassGen/pull/1011)): New `--step` CLI flag runs one agent for one iteration then exits — building block for external orchestrators like massgen-refinery
+- **massgen-refinery Step Mode**: The Claude Code plugin now supports step mode for step-by-step execution
 
-### Previous Achievements (v0.0.3 - v0.1.64)
+#### Codex Windows Fixes
+- **UTF-8 Encoding** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Ensure UTF-8 when writing files in Codex backend
+- **Console Sanitization** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Text sanitization utility for safe TUI and logger rendering
+
+### Previous Achievements (v0.0.3 - v0.1.65)
+
+✅ **MassGen Refinery Plugin (v0.1.65)**: Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
 
 ✅ **Gemini CLI Backend (v0.1.64)**: Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode.
 
@@ -1523,9 +1528,9 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.66 Roadmap
+### v0.1.67 Roadmap
 
-Version 0.1.66 focuses on cloud execution:
+Version 0.1.67 focuses on cloud execution:
 
 #### Planned Features
 - **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal

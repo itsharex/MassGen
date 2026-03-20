@@ -9,28 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Recent Releases
 
+**v0.1.66 (March 20, 2026)** - Step Mode
+New `--step` CLI mode for external orchestrators to run one agent for one step then exit. Powers massgen-refinery plugin step mode. Codex Windows UTF-8 fixes and console text sanitization.
+
 **v0.1.65 (March 18, 2026)** - MassGen Refinery Plugin
 Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation and multi-round refinement to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
 
 **v0.1.64 (March 16, 2026)** - Gemini CLI Backend
 Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode. Response API duplicate fix.
 
-**v0.1.63 (March 13, 2026)** - Ensemble & Contracts
-Subagent ensemble pattern with `disable_injection` and `defer_voting_until_all_answered` as defaults. Round evaluator transformation pressure and success contracts. Lighter refinement for subagents. Killed agent handling.
-
-**v0.1.62 (March 11, 2026)** - MassGen Skill & Viewer
-New general-purpose MassGen Skill with 4 modes (general, evaluate, plan, spec) for use from Claude Code and other AI agents. Session viewer for real-time observation. Backend improvements for Claude Code, Codex, and Copilot. Headless and web quickstart modes.
-
-**v0.1.61 (March 9, 2026)** - Round Evaluator Paradigm
-New round evaluator subagent type that delegates evaluation to specialized evaluator subagents for deeper quality assessment. Major orchestrator refactoring with improved evaluation prompts, task plan injection, and subagent fixes.
-
-**v0.1.60 (March 6, 2026)** - Multimodal Tools, Subagent Enhancements & GPT-5.4
-Rewritten read_media with clearer schema and MediaCallLedgerHook for media call tracking. Subagent enhancements: inherit_spawning_agent_backend, final_answer_strategy, per-agent subagent_agents. GPT-5.4 as default OpenAI flagship. Decomp mode cooperates with checklist workflow. Codex prompt caching calculation fix for pricing accuracy.
-
-**v0.1.59 (March 4, 2026)** - Quality Round Improvements
-Planning improvements with auto-added improvements to task plan and plan review enhancements. Checklist and evaluation enhancements with better eval gen config and Gemini tool name normalization. Subagent behavior adjustments and media generation fixes.
-
 ---
+
+## [0.1.66] - 2026-03-20
+
+### Added
+- **Step Mode** ([#1011](https://github.com/massgen/MassGen/pull/1011)): New `--step` CLI flag runs a single agent for one iteration then exits, loading/writing state from a session directory — building block for external orchestrators like massgen-refinery
+- **Console Text Sanitization** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Reusable `sanitize_console_text` utility for safe TUI and logger rendering
+
+### Fixed
+- **Codex Windows UTF-8** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Ensure UTF-8 encoding when writing files in Codex backend
+- **TUI Event Pipeline** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Console safety features for logger and text sanitization in event pipeline
+
+### Technical Details
+- **Major Focus**: Step Mode — building block for external orchestrators
+- **PRs Merged**: [#1011](https://github.com/massgen/MassGen/pull/1011), [#1010](https://github.com/massgen/MassGen/pull/1010)
+- **Contributors**: @ncrispino, @praneeth999, @HenryQi and the MassGen team
 
 ## [0.1.65] - 2026-03-18
 

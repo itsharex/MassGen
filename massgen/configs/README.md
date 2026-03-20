@@ -227,19 +227,28 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.65 - Latest
-**New Features:** MassGen Refinery Plugin
+### v0.1.66 - Latest
+**New Features:** Step Mode
 
 **Key Features:**
-- **Quality Server**: Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
-- **Workflow Server**: Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
-- **Media Server**: Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
+- **Step Mode**: New `--step` CLI flag runs one agent for one iteration then exits — building block for external orchestrators
+- **massgen-refinery Step Mode**: The Claude Code plugin now supports step mode
+- **Codex Windows Fixes**: UTF-8 encoding for file writes and console text sanitization
 
 **Try It:**
 ```bash
-pip install massgen==0.1.65
-# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
+pip install massgen==0.1.66
+# Run one step of a configured agent
+uv run massgen --step --config your_config.yaml --session-dir ./my_session "Your task"
 ```
+
+### v0.1.65
+**New Features:** MassGen Refinery Plugin
+
+**Key Features:**
+- **Quality Server**: Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation
+- **Workflow Server**: Multi-round answer submission with deliverable snapshots
+- **Media Server**: Image/video/audio generation and media analysis
 
 ### v0.1.64
 **New Features:** Gemini CLI Backend
