@@ -1,7 +1,7 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import { useAgentStore } from '../../../stores/agentStore';
-import { useMessageStore, type ChannelMessage, type ToolCallMessage } from '../../../stores/v2/messageStore';
+import { useMessageStore, type ChannelMessage, type ToolCallMessage, type ContentMessage } from '../../../stores/v2/messageStore';
 import { useTileStore } from '../../../stores/v2/tileStore';
 import { getAgentColor } from '../../../utils/agentColors';
 import { MessageRenderer } from './messages/MessageRenderer';
@@ -9,6 +9,7 @@ import { ToolBatchView } from './messages/ToolBatchView';
 import { ModeBar } from './ModeBar';
 import { TaskPlanPanel } from './TaskPlanPanel';
 import { StreamingIndicator } from './StreamingIndicator';
+import { FinalAnswerSection } from './FinalAnswerSection';
 import { TileDragHandle } from '../tiles/TileDragHandle';
 import { useTileDrag } from '../tiles/TileDragContext';
 
@@ -39,10 +40,10 @@ export function AgentChannel({ agentId }: AgentChannelProps) {
     isAutoScrollRef.current = atBottom;
   };
 
-  // Streaming indicator: show when agent is working and last msg isn't a pending tool call
+  // Streaming indicator: show when agent is working and the last message isn't a pending tool call
   const lastMsg = messages[messages.length - 1];
   const lastIsPending = lastMsg?.type === 'tool-call' && lastMsg.result === undefined;
-  const showStreaming = agent?.status === 'working' && messages.length > 0 && !lastIsPending;
+  const showStreaming = agent?.status === 'working' && !lastIsPending;
 
   if (!agent) {
     return (
@@ -60,44 +61,50 @@ export function AgentChannel({ agentId }: AgentChannelProps) {
       {/* Mode bar */}
       <ModeBar />
 
-      {/* Message stream + plan overlay */}
-      <div className="flex-1 overflow-hidden relative min-h-0">
-        <TaskPlanPanel />
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          className="h-full overflow-y-auto v2-scrollbar"
-        >
-          {messages.length === 0 ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center space-y-3 animate-v2-welcome-fade-in">
-                {/* Pulsing accent ring */}
-                <div className="w-12 h-12 mx-auto rounded-full border-2 border-v2-accent/20 flex items-center justify-center">
-                  {agent.status === 'working' ? (
-                    <div className="w-8 h-8 rounded-full border-2 border-v2-border border-t-v2-accent animate-spin" />
-                  ) : (
-                    <div className="w-3 h-3 rounded-full bg-v2-accent/40 animate-pulse" />
-                  )}
-                </div>
-                <p className="text-sm text-v2-text-secondary">
-                  {agent.status === 'working' ? 'Preparing response...' : 'Connecting to agent...'}
-                </p>
-                <div className="flex justify-center gap-1">
-                  <span className="w-1 h-1 rounded-full bg-v2-text-muted streaming-dot" style={{ animationDelay: '0s' }} />
-                  <span className="w-1 h-1 rounded-full bg-v2-text-muted streaming-dot" style={{ animationDelay: '0.15s' }} />
-                  <span className="w-1 h-1 rounded-full bg-v2-text-muted streaming-dot" style={{ animationDelay: '0.3s' }} />
+      {/* Message stream + docked plan strip */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* Messages */}
+        <div className="flex-1 min-w-0">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="h-full overflow-y-auto v2-scrollbar"
+          >
+            {messages.length === 0 ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center space-y-3 animate-v2-welcome-fade-in">
+                  <div className="w-12 h-12 mx-auto rounded-full border-2 border-v2-accent/20 flex items-center justify-center">
+                    {agent.status === 'working' ? (
+                      <div className="w-8 h-8 rounded-full border-2 border-v2-border border-t-v2-accent animate-spin" />
+                    ) : (
+                      <div className="w-3 h-3 rounded-full bg-v2-accent/40 animate-pulse" />
+                    )}
+                  </div>
+                  <p className="text-sm text-v2-text-secondary">
+                    {agent.status === 'working' ? 'Preparing response...' : 'Connecting to agent...'}
+                  </p>
+                  <div className="flex justify-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-v2-text-muted streaming-dot" style={{ animationDelay: '0s' }} />
+                    <span className="w-1 h-1 rounded-full bg-v2-text-muted streaming-dot" style={{ animationDelay: '0.15s' }} />
+                    <span className="w-1 h-1 rounded-full bg-v2-text-muted streaming-dot" style={{ animationDelay: '0.3s' }} />
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
-            <div className="py-1">
-              <GroupedMessages messages={messages} />
-            </div>
-          )}
+            ) : (
+              <div className="py-1">
+                <GroupedMessages messages={messages} />
+              </div>
+            )}
 
-          {/* Active generation indicator */}
-          <StreamingIndicator visible={showStreaming} />
+            <StreamingIndicator visible={showStreaming} />
+
+            {/* Final answer rendered inline at bottom of stream */}
+            <FinalAnswerSection />
+          </div>
         </div>
+
+        {/* Plan — docked right strip */}
+        <TaskPlanPanel />
       </div>
     </div>
   );
@@ -211,14 +218,20 @@ function isVisibleToolCall(msg: ChannelMessage): boolean {
 
 type RenderItem =
   | { kind: 'message'; message: ChannelMessage }
-  | { kind: 'batch'; tools: ToolCallMessage[] };
+  | { kind: 'batch'; tools: ToolCallMessage[] }
+  | { kind: 'thinking-group'; messages: ContentMessage[] };
+
+function isThinking(msg: ChannelMessage): msg is ContentMessage {
+  return msg.type === 'content' && (msg as ContentMessage).contentType === 'thinking';
+}
 
 function GroupedMessages({ messages }: { messages: ChannelMessage[] }) {
   const items = useMemo(() => {
     const result: RenderItem[] = [];
     let toolBatch: ToolCallMessage[] = [];
+    let thinkBatch: ContentMessage[] = [];
 
-    const flushBatch = () => {
+    const flushTools = () => {
       if (toolBatch.length === 0) return;
       if (toolBatch.length === 1) {
         result.push({ kind: 'message', message: toolBatch[0] });
@@ -228,18 +241,33 @@ function GroupedMessages({ messages }: { messages: ChannelMessage[] }) {
       toolBatch = [];
     };
 
+    const flushThinking = () => {
+      if (thinkBatch.length === 0) return;
+      if (thinkBatch.length === 1) {
+        result.push({ kind: 'message', message: thinkBatch[0] });
+      } else {
+        result.push({ kind: 'thinking-group', messages: [...thinkBatch] });
+      }
+      thinkBatch = [];
+    };
+
     for (const msg of messages) {
-      // Skip hidden planning tools
       if (msg.type === 'tool-call' && !isVisibleToolCall(msg)) continue;
 
       if (msg.type === 'tool-call') {
+        flushThinking();
         toolBatch.push(msg as ToolCallMessage);
+      } else if (isThinking(msg)) {
+        flushTools();
+        thinkBatch.push(msg);
       } else {
-        flushBatch();
+        flushTools();
+        flushThinking();
         result.push({ kind: 'message', message: msg });
       }
     }
-    flushBatch();
+    flushTools();
+    flushThinking();
 
     return result;
   }, [messages]);
@@ -250,9 +278,65 @@ function GroupedMessages({ messages }: { messages: ChannelMessage[] }) {
         if (item.kind === 'batch') {
           return <ToolBatchView key={item.tools[0].id} tools={item.tools} />;
         }
+        if (item.kind === 'thinking-group') {
+          return <MergedThinkingView key={item.messages[0].id} messages={item.messages} />;
+        }
         return <MessageRenderer key={item.message.id} message={item.message} />;
       })}
     </>
+  );
+}
+
+/** Merged view for consecutive reasoning blocks */
+function MergedThinkingView({ messages }: { messages: ContentMessage[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Extract first line from each as a label
+  const labels = messages.map((m) => {
+    const first = m.content.trim().split('\n')[0];
+    return first.length > 60 ? first.slice(0, 57) + '\u2026' : first;
+  });
+
+  return (
+    <div className="px-4 py-1">
+      <div
+        className={cn(
+          'border-l-2 border-violet-400/30 pl-3 cursor-pointer',
+          'hover:border-violet-400/50 transition-colors duration-150',
+        )}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-1.5">
+          <svg
+            className={cn(
+              'w-2.5 h-2.5 text-v2-text-muted transition-transform duration-150 shrink-0',
+              expanded && 'rotate-90'
+            )}
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <path d="M4 2l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className="text-[11px] font-medium uppercase tracking-wider text-violet-400/70">
+            Reasoning
+          </span>
+          <span className="text-[11px] text-v2-text-muted">
+            ×{messages.length} blocks
+          </span>
+        </div>
+        {expanded && (
+          <div className="mt-1 space-y-1 animate-v2-fade-in">
+            {messages.map((m, i) => (
+              <p key={m.id} className="text-xs text-v2-text-muted italic">
+                {labels[i]}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

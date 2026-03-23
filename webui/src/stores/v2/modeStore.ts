@@ -2,42 +2,69 @@
  * Mode Configuration Store
  *
  * Manages runtime mode overrides for coordination, agent mode, refinement,
- * personas, agent count, per-agent provider/model selection, and docker toggle.
+ * personas, plan mode, agent count, per-agent provider/model/features, and docker toggle.
  * Mirrors TuiModeState from massgen/frontend/displays/tui_modes.py.
  */
 
 import { create } from 'zustand';
-import type { ProviderInfo } from '../wizardStore';
+import type { ProviderInfo, ProviderCapabilities, ReasoningEffort, ReasoningProfile } from '../wizardStore';
 
 export type CoordinationMode = 'parallel' | 'decomposition';
 export type AgentMode = 'multi' | 'single';
 export type PersonasMode = 'off' | 'perspective' | 'implementation' | 'methodology';
+export type PlanMode = 'normal' | 'plan' | 'spec' | 'analyze';
 
 export interface AgentConfigOverride {
-  provider: string | null;  // null = use config default
-  model: string | null;     // null = use config default
+  provider: string | null;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  enableWebSearch: boolean | null;
+  enableCodeExecution: boolean | null;
 }
 
+const defaultAgentConfig = (): AgentConfigOverride => ({
+  provider: null,
+  model: null,
+  reasoningEffort: null,
+  enableWebSearch: null,
+  enableCodeExecution: null,
+});
+
 interface ModeState {
-  // Row 1: Mode toggles
+  // Mode toggles
   coordinationMode: CoordinationMode;
   agentMode: AgentMode;
   selectedSingleAgent: string | null;
   refinementEnabled: boolean;
   personasMode: PersonasMode;
+  planMode: PlanMode;
 
-  // Row 2: Agent config overrides (null = use YAML config as-is)
+  // Agent config overrides (null = use YAML config as-is)
   agentCount: number | null;
-  agentConfigs: AgentConfigOverride[];       // empty = use config as-is
-  dynamicModels: Record<string, string[]>;   // provider_id → model list cache
-  loadingModels: Record<string, boolean>;    // loading state per provider
+  agentConfigs: AgentConfigOverride[];
+  dynamicModels: Record<string, string[]>;
+  loadingModels: Record<string, boolean>;
+  providerCapabilities: Record<string, ProviderCapabilities>;
+  reasoningProfiles: Record<string, ReasoningProfile | null>;  // "provider/model" → profile
+  maxAnswers: number | null;  // null = use config default (typically 5)
   dockerEnabled: boolean | null;
+  dockerAvailable: boolean | null;  // null = unknown, fetched from /api/setup/status
+  dockerStatus: string | null;      // "ready" | "not_installed" | "not_running"
 
   // Execution lock
   executionLocked: boolean;
 
   // Available providers (fetched from /api/providers)
   providers: ProviderInfo[];
+
+  // Custom config persistence
+  customConfigPath: string | null;
+  needsFirstTimeSetup: boolean;
+
+  // Agents parsed from the selected YAML config (read-only display)
+  configAgents: { id: string; provider: string | null; model: string | null }[];
+  configMaxAnswers: number | null;  // max_new_answers from the config file
+  configLocked: boolean;  // true when a non-custom config is selected (mode bar is read-only)
 }
 
 interface ModeActions {
@@ -46,17 +73,32 @@ interface ModeActions {
   setSelectedSingleAgent: (agentId: string | null) => void;
   setRefinementEnabled: (enabled: boolean) => void;
   setPersonasMode: (mode: PersonasMode) => void;
+  setPlanMode: (mode: PlanMode) => void;
   setAgentCount: (count: number | null) => void;
-  setAgentConfig: (index: number, provider: string | null, model: string | null) => void;
+  setAgentConfig: (index: number, updates: Partial<AgentConfigOverride>) => void;
+  applyToAllAgents: (sourceIndex: number) => void;
+  setMaxAnswers: (count: number | null) => void;
   setDockerEnabled: (enabled: boolean | null) => void;
+  fetchDockerStatus: () => Promise<void>;
   lock: () => void;
   unlock: () => void;
   reset: () => void;
   fetchProviders: () => Promise<void>;
   fetchDynamicModels: (providerId: string) => Promise<string[]>;
+  fetchProviderCapabilities: (providerId: string) => Promise<ProviderCapabilities | null>;
+  fetchReasoningProfile: (providerId: string, model: string) => Promise<ReasoningProfile | null>;
 
   /** Produce overrides dict to send over WebSocket */
   getOverrides: () => Record<string, unknown>;
+
+  /** Persist current state to backend (webui_config.yaml + webui_state.json) */
+  persistState: () => Promise<void>;
+
+  /** Restore state from backend on page load */
+  restoreState: () => Promise<void>;
+
+  /** Fetch agent definitions from a config file and store for display */
+  syncFromConfig: (configPath: string) => Promise<void>;
 }
 
 const initialState: ModeState = {
@@ -65,13 +107,24 @@ const initialState: ModeState = {
   selectedSingleAgent: null,
   refinementEnabled: true,
   personasMode: 'off',
+  planMode: 'normal',
   agentCount: null,
   agentConfigs: [],
+  maxAnswers: null,
   dynamicModels: {},
   loadingModels: {},
+  providerCapabilities: {},
+  reasoningProfiles: {},
   dockerEnabled: null,
+  dockerAvailable: null,
+  dockerStatus: null,
   executionLocked: false,
   providers: [],
+  customConfigPath: null,
+  needsFirstTimeSetup: false,
+  configAgents: [],
+  configMaxAnswers: null,
+  configLocked: false,
 };
 
 export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
@@ -82,6 +135,7 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
   setSelectedSingleAgent: (agentId) => set({ selectedSingleAgent: agentId }),
   setRefinementEnabled: (enabled) => set({ refinementEnabled: enabled }),
   setPersonasMode: (mode) => set({ personasMode: mode }),
+  setPlanMode: (mode) => set({ planMode: mode }),
 
   setAgentCount: (count) => {
     const { agentConfigs } = get();
@@ -90,7 +144,7 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
     } else if (count > agentConfigs.length) {
       const newConfigs = [...agentConfigs];
       for (let i = agentConfigs.length; i < count; i++) {
-        newConfigs.push({ provider: null, model: null });
+        newConfigs.push(defaultAgentConfig());
       }
       set({ agentCount: count, agentConfigs: newConfigs });
     } else if (count < agentConfigs.length) {
@@ -100,15 +154,39 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
     }
   },
 
-  setAgentConfig: (index, provider, model) => {
+  setAgentConfig: (index, updates) => {
     const { agentConfigs } = get();
     if (index < 0 || index >= agentConfigs.length) return;
     const newConfigs = [...agentConfigs];
-    newConfigs[index] = { provider, model };
+    newConfigs[index] = { ...newConfigs[index], ...updates };
     set({ agentConfigs: newConfigs });
   },
 
+  applyToAllAgents: (sourceIndex) => {
+    const { agentConfigs } = get();
+    if (sourceIndex < 0 || sourceIndex >= agentConfigs.length) return;
+    const source = agentConfigs[sourceIndex];
+    const newConfigs = agentConfigs.map(() => ({ ...source }));
+    set({ agentConfigs: newConfigs });
+  },
+
+  setMaxAnswers: (count) => set({ maxAnswers: count }),
   setDockerEnabled: (enabled) => set({ dockerEnabled: enabled }),
+
+  fetchDockerStatus: async () => {
+    try {
+      const response = await fetch('/api/setup/status');
+      if (!response.ok) return;
+      const data = await response.json();
+      set({
+        dockerAvailable: data.docker_available ?? false,
+        dockerStatus: data.docker_status ?? null,
+      });
+    } catch {
+      // Silently ignore
+    }
+  },
+
   lock: () => set({ executionLocked: true }),
   unlock: () => set({ executionLocked: false }),
   reset: () => set(initialState),
@@ -157,6 +235,61 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
     }
   },
 
+  fetchProviderCapabilities: async (providerId: string) => {
+    const { providerCapabilities } = get();
+
+    if (providerCapabilities[providerId]) {
+      return providerCapabilities[providerId];
+    }
+
+    try {
+      const response = await fetch(`/api/providers/${providerId}/capabilities`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch capabilities');
+      }
+      const data = await response.json();
+
+      set({
+        providerCapabilities: { ...get().providerCapabilities, [providerId]: data },
+      });
+
+      return data as ProviderCapabilities;
+    } catch {
+      return null;
+    }
+  },
+
+  fetchReasoningProfile: async (providerId: string, model: string) => {
+    const key = `${providerId}/${model}`;
+    const { reasoningProfiles } = get();
+
+    if (key in reasoningProfiles) {
+      return reasoningProfiles[key];
+    }
+
+    try {
+      const response = await fetch(
+        `/api/quickstart/reasoning-profile?provider_id=${encodeURIComponent(providerId)}&model=${encodeURIComponent(model)}`
+      );
+      if (!response.ok) {
+        throw new Error('Failed to fetch reasoning profile');
+      }
+      const data = await response.json();
+      const profile = data.profile as ReasoningProfile | null;
+
+      set({
+        reasoningProfiles: { ...get().reasoningProfiles, [key]: profile },
+      });
+
+      return profile;
+    } catch {
+      set({
+        reasoningProfiles: { ...get().reasoningProfiles, [key]: null },
+      });
+      return null;
+    }
+  },
+
   getOverrides: () => {
     const state = get();
     const overrides: Record<string, unknown> = {};
@@ -183,12 +316,22 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
         overrides.defer_voting_until_all_answered = true;
         overrides.final_answer_strategy = 'synthesize';
       }
+    } else if (state.maxAnswers !== null) {
+      // Custom max rounds (only applies when refinement is on)
+      overrides.max_new_answers_per_agent = state.maxAnswers;
     }
 
     // Persona overrides
     if (state.personasMode !== 'off') {
       overrides.persona_generator_enabled = true;
       overrides.persona_diversity_mode = state.personasMode;
+    }
+
+    // Plan mode overrides
+    if (state.planMode !== 'normal') {
+      overrides.plan_mode = state.planMode;
+      overrides.enable_agent_task_planning = true;
+      overrides.task_planning_filesystem_mode = true;
     }
 
     // --- Agent config overrides ---
@@ -199,12 +342,20 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
 
     // Per-agent overrides
     const hasOverrides = state.agentConfigs.some(
-      (c) => c.provider !== null || c.model !== null
+      (c) =>
+        c.provider !== null ||
+        c.model !== null ||
+        c.reasoningEffort !== null ||
+        c.enableWebSearch !== null ||
+        c.enableCodeExecution !== null
     );
     if (hasOverrides) {
       overrides.agent_overrides = state.agentConfigs.map((c) => ({
         ...(c.provider && { backend_type: c.provider }),
         ...(c.model && { model: c.model }),
+        ...(c.reasoningEffort && { reasoning_effort: c.reasoningEffort }),
+        ...(c.enableWebSearch !== null && { enable_web_search: c.enableWebSearch }),
+        ...(c.enableCodeExecution !== null && { enable_code_execution: c.enableCodeExecution }),
       }));
     }
 
@@ -214,4 +365,155 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
 
     return overrides;
   },
+
+  persistState: async () => {
+    const state = get();
+
+    // Build agent settings from current state
+    const agents = state.agentConfigs.map((c, i) => ({
+      id: `agent_${String.fromCharCode(97 + i)}`,
+      provider: c.provider || 'openai',
+      model: c.model || 'gpt-4o',
+      ...(c.reasoningEffort && { reasoning_effort: c.reasoningEffort }),
+      ...(c.enableWebSearch !== null && { enable_web_search: c.enableWebSearch }),
+      ...(c.enableCodeExecution !== null && { enable_code_execution: c.enableCodeExecution }),
+    }));
+
+    const agentSettings = {
+      agents: agents.length > 0 ? agents : [{ id: 'agent_a', provider: 'openai', model: 'gpt-4o' }],
+      use_docker: state.dockerEnabled ?? false,
+    };
+
+    const uiState = {
+      coordinationMode: state.coordinationMode,
+      agentMode: state.agentMode,
+      refinementEnabled: state.refinementEnabled,
+      personasMode: state.personasMode,
+      planMode: state.planMode,
+      maxAnswers: state.maxAnswers,
+      agentCount: state.agentCount,
+      dockerEnabled: state.dockerEnabled,
+    };
+
+    try {
+      const response = await fetch('/api/webui/save-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_settings: agentSettings, ui_state: uiState }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.config_path) {
+          set({ customConfigPath: data.config_path, needsFirstTimeSetup: false });
+        }
+      }
+    } catch {
+      // Silently ignore persistence errors
+    }
+  },
+
+  restoreState: async () => {
+    try {
+      const response = await fetch('/api/webui/state');
+      if (!response.ok) return;
+      const data = await response.json();
+
+      if (data.exists && data.config_path) {
+        const updates: Partial<ModeState> = {
+          customConfigPath: data.config_path,
+          needsFirstTimeSetup: false,
+        };
+
+        // Restore UI state if available
+        if (data.ui_state) {
+          const ui = data.ui_state;
+          if (ui.coordinationMode) updates.coordinationMode = ui.coordinationMode;
+          if (ui.agentMode) updates.agentMode = ui.agentMode;
+          if (ui.refinementEnabled !== undefined) updates.refinementEnabled = ui.refinementEnabled;
+          if (ui.personasMode) updates.personasMode = ui.personasMode;
+          if (ui.planMode) updates.planMode = ui.planMode;
+          if (ui.maxAnswers !== undefined) updates.maxAnswers = ui.maxAnswers;
+          if (ui.agentCount !== undefined) updates.agentCount = ui.agentCount;
+          if (ui.dockerEnabled !== undefined) updates.dockerEnabled = ui.dockerEnabled;
+
+          // Rebuild agentConfigs array to match agentCount
+          if (ui.agentCount !== null && ui.agentCount !== undefined) {
+            const configs: AgentConfigOverride[] = [];
+            for (let i = 0; i < ui.agentCount; i++) {
+              configs.push(defaultAgentConfig());
+            }
+            updates.agentConfigs = configs;
+          }
+        }
+
+        set(updates);
+      } else {
+        set({ customConfigPath: null, needsFirstTimeSetup: true, maxAnswers: 5 });
+      }
+    } catch {
+      // Silently ignore
+    }
+  },
+
+  syncFromConfig: async (configPath: string) => {
+    // Check if this is the custom config — if so, unlock
+    const { customConfigPath } = get();
+    const isCustom = configPath === customConfigPath;
+
+    if (isCustom) {
+      set({ configAgents: [], configMaxAnswers: null, configLocked: false });
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/config/agents?path=${encodeURIComponent(configPath)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const updates: Partial<ModeState> = { configLocked: true };
+      if (data.agents && Array.isArray(data.agents)) {
+        updates.configAgents = data.agents;
+      }
+      if (data.max_answers !== undefined && data.max_answers !== null) {
+        updates.configMaxAnswers = data.max_answers;
+      } else {
+        updates.configMaxAnswers = null;
+      }
+      set(updates);
+    } catch {
+      // Silently ignore
+    }
+  },
 }));
+
+// Debounced auto-save subscription
+let persistTimeout: ReturnType<typeof setTimeout> | null = null;
+
+useModeStore.subscribe(
+  (state, prevState) => {
+    // Skip if execution is locked (running a coordination)
+    if (state.executionLocked) return;
+
+    // Check if any persisted fields changed
+    const changed =
+      state.agentCount !== prevState.agentCount ||
+      state.agentConfigs !== prevState.agentConfigs ||
+      state.dockerEnabled !== prevState.dockerEnabled ||
+      state.coordinationMode !== prevState.coordinationMode ||
+      state.agentMode !== prevState.agentMode ||
+      state.refinementEnabled !== prevState.refinementEnabled ||
+      state.personasMode !== prevState.personasMode ||
+      state.planMode !== prevState.planMode ||
+      state.maxAnswers !== prevState.maxAnswers;
+
+    if (!changed) return;
+
+    // Don't auto-save if we haven't done initial setup yet and have no config
+    if (state.needsFirstTimeSetup && !state.customConfigPath) return;
+
+    // Debounce 800ms
+    if (persistTimeout) clearTimeout(persistTimeout);
+    persistTimeout = setTimeout(() => {
+      useModeStore.getState().persistState();
+    }, 800);
+  },
+);

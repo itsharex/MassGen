@@ -32,6 +32,7 @@ import type { Notification } from './stores/notificationStore';
 import { useMessageStore } from './stores/v2/messageStore';
 import { useTileStore } from './stores/v2/tileStore';
 import { AppShell } from './components/v2/layout/AppShell';
+import { useModeStore } from './stores/v2/modeStore';
 
 function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
   const config: Record<ConnectionStatus, { icon: typeof Wifi; color: string; text: string }> = {
@@ -143,6 +144,13 @@ export function App() {
       console.log('[WebUI] URL params detected:', { prompt: initialPrompt, config: initialConfig, session: initialSession });
     }
   }, []); // Only run once on mount
+
+  // Sync config agents on mount and when config changes
+  useEffect(() => {
+    if (selectedConfig) {
+      useModeStore.getState().syncFromConfig(selectedConfig);
+    }
+  }, [selectedConfig]);
 
   // Answer/Vote browser modal state
   const [isAnswerBrowserOpen, setIsAnswerBrowserOpen] = useState(false);
@@ -321,6 +329,7 @@ export function App() {
 
   const handleConfigChange = useCallback((configPath: string) => {
     setSelectedConfig(configPath);
+    useModeStore.getState().syncFromConfig(configPath);
   }, []);
 
   // Handle viewing/editing config

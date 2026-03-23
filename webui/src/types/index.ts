@@ -390,6 +390,11 @@ export interface SessionInfo {
   question?: string;
   status?: 'active' | 'completed';
   completed_at?: number;
+  config?: string;
+  config_path?: string;
+  models?: string[];
+  start_time?: string;
+  log_dir?: string;
 }
 
 // ============================================================================

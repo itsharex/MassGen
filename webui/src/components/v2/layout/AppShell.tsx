@@ -12,7 +12,7 @@ import { useModeStore } from '../../../stores/v2/modeStore';
 import { Sidebar } from '../sidebar/Sidebar';
 import { TileContainer } from '../tiles/TileContainer';
 import { GlobalInputBar } from './GlobalInputBar';
-import { FinalAnswerOverlay } from './FinalAnswerOverlay';
+// FinalAnswerOverlay removed — final answer now renders inline in AgentChannel
 import { ModeConfigBar } from './ModeConfigBar';
 import { V2QuickstartWizard } from './V2QuickstartWizard';
 import { V2SetupOverlay } from './V2SetupOverlay';
@@ -42,7 +42,6 @@ export function AppShell({
   broadcastMessage,
 }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showFinalAnswer, setShowFinalAnswer] = useState(false);
   const [configRefreshTrigger, setConfigRefreshTrigger] = useState(0);
 
   // Wizard state
@@ -52,6 +51,23 @@ export function AppShell({
   // Setup overlay state
   const isSetupOpen = useSetupStore((s) => s.isOpen);
   const openSetup = useSetupStore((s) => s.openSetup);
+
+  // Restore custom config state on mount
+  const restoreState = useModeStore((s) => s.restoreState);
+  const needsFirstTimeSetup = useModeStore((s) => s.needsFirstTimeSetup);
+  const customConfigPath = useModeStore((s) => s.customConfigPath);
+  const [firstTimeDrawerOpened, setFirstTimeDrawerOpened] = useState(false);
+
+  useEffect(() => {
+    restoreState();
+  }, [restoreState]);
+
+  // When restoreState resolves and custom config exists, auto-select it
+  useEffect(() => {
+    if (customConfigPath && !selectedConfig) {
+      onConfigChange(customConfigPath);
+    }
+  }, [customConfigPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check if first-time setup is needed, or if wizard/setup URL params are set
   useEffect(() => {
@@ -74,6 +90,18 @@ export function AppShell({
       })
       .catch(() => {});
   }, [openWizard, openSetup]);
+
+  // First-time setup: auto-set agent count and signal ModeConfigBar to open drawer
+  useEffect(() => {
+    if (needsFirstTimeSetup && !firstTimeDrawerOpened) {
+      const urlParams = new URLSearchParams(window.location.search);
+      // Don't auto-open if a CLI config was passed
+      if (!urlParams.get('config')) {
+        useModeStore.getState().setAgentCount(3);
+        setFirstTimeDrawerOpened(true);
+      }
+    }
+  }, [needsFirstTimeSetup, firstTimeDrawerOpened]);
 
   // Determine temporary mode from URL
   const initialTemporaryQuickstart = new URLSearchParams(window.location.search).get('temporary') === '1';
@@ -121,15 +149,6 @@ export function AppShell({
     prevAgentCountRef.current = agentOrder.length;
   }, [agentOrder, tiles.length, setTile]);
 
-  // Show final answer overlay when consensus is reached
-  const viewMode = useAgentStore((s) => s.viewMode);
-
-  useEffect(() => {
-    if (viewMode === 'finalComplete') {
-      setShowFinalAnswer(true);
-    }
-  }, [viewMode]);
-
   const question = useAgentStore((s) => s.question);
   const isComplete = useAgentStore((s) => s.isComplete);
   const hasRenderableActivity = useMessageStore((s) =>
@@ -161,6 +180,7 @@ export function AppShell({
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         onSessionChange={onSessionChange}
         onNewSession={onNewSession}
+        onConfigChange={onConfigChange}
       />
 
       {/* Main area */}
@@ -190,7 +210,7 @@ export function AppShell({
         </div>
 
         {/* Mode configuration bar */}
-        <ModeConfigBar />
+        <ModeConfigBar configPath={selectedConfig ?? undefined} />
 
         {/* Global input bar — start session or broadcast */}
         <GlobalInputBar
@@ -198,6 +218,7 @@ export function AppShell({
           startCoordination={startCoordination}
           continueConversation={continueConversation}
           cancelCoordination={cancelCoordination}
+          onNewSession={onNewSession}
           selectedConfig={selectedConfig}
           onConfigChange={onConfigChange}
           hasActiveSession={!!question}
@@ -219,12 +240,6 @@ export function AppShell({
         />
       )}
 
-      {/* Final Answer Overlay */}
-      {showFinalAnswer && (
-        <FinalAnswerOverlay
-          onDismiss={() => setShowFinalAnswer(false)}
-        />
-      )}
     </div>
   );
 }

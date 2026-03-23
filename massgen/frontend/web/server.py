@@ -13,6 +13,7 @@ import json
 import logging
 import logging.handlers
 import os
+import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
@@ -105,6 +106,226 @@ def _cache_pdf(workspace: str, file_path: str, mtime: float, pdf_content: str) -
 
     key = _get_pdf_cache_key(workspace, file_path, mtime)
     _pdf_conversion_cache[key] = pdf_content
+
+
+# =========================================================================
+# Log Directory Scanning (historical session replay)
+# =========================================================================
+
+# Cache for _scan_log_dirs: (result_list, timestamp)
+_log_dir_cache: tuple[list[dict[str, Any]], float] | None = None
+_LOG_DIR_CACHE_TTL = 30.0  # seconds
+
+
+def _find_latest_attempt(log_dir: Path) -> Path | None:
+    """Find the latest turn/attempt subdirectory in a log directory.
+
+    Walks turn_N/attempt_N directories and returns the one with the
+    highest turn then highest attempt number.
+    """
+    best = None
+    best_key = (-1, -1)
+    for turn_dir in sorted(log_dir.iterdir()):
+        if not turn_dir.is_dir() or not turn_dir.name.startswith("turn_"):
+            continue
+        try:
+            turn_num = int(turn_dir.name.split("_", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        for attempt_dir in sorted(turn_dir.iterdir()):
+            if not attempt_dir.is_dir() or not attempt_dir.name.startswith("attempt_"):
+                continue
+            try:
+                attempt_num = int(attempt_dir.name.split("_", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            key = (turn_num, attempt_num)
+            if key > best_key:
+                best_key = key
+                best = attempt_dir
+    return best
+
+
+def _scan_log_dirs(logs_root: Path) -> list[dict[str, Any]]:
+    """Scan massgen_logs directory for historical sessions.
+
+    Returns a list of session metadata dicts sorted by timestamp descending.
+    Each dict has: session_id, question, config, start_time, log_dir.
+    """
+    if not logs_root.is_dir():
+        return []
+
+    results: list[dict[str, Any]] = []
+    for entry in logs_root.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("log_"):
+            continue
+        attempt_dir = _find_latest_attempt(entry)
+        if not attempt_dir:
+            continue
+        meta_file = attempt_dir / "execution_metadata.yaml"
+        if not meta_file.exists():
+            continue
+        try:
+            import yaml
+
+            meta = yaml.safe_load(meta_file.read_text())
+            if not meta or not isinstance(meta, dict):
+                continue
+            config_source = None
+            config_path = None
+            cli_args = meta.get("cli_args")
+            if isinstance(cli_args, dict):
+                config_source = cli_args.get("config_source")
+                config_path = cli_args.get("config_path") or cli_args.get("config_source")
+            # Extract model names from agent configs
+            models: list[str] = []
+            config_block = meta.get("config", {})
+            if isinstance(config_block, dict):
+                for agent_cfg in config_block.get("agents", []):
+                    if isinstance(agent_cfg, dict):
+                        backend = agent_cfg.get("backend", {})
+                        if isinstance(backend, dict) and "model" in backend:
+                            m = backend["model"]
+                            if m not in models:
+                                models.append(m)
+            results.append(
+                {
+                    "session_id": entry.name,
+                    "question": meta.get("query", ""),
+                    "config": config_source,
+                    "config_path": config_path,
+                    "models": models,
+                    "start_time": meta.get("timestamp"),
+                    "log_dir": str(attempt_dir),
+                },
+            )
+        except Exception:
+            continue
+
+    results.sort(key=lambda r: r.get("start_time") or "", reverse=True)
+    return results
+
+
+def _scan_log_dirs_cached(logs_root: Path) -> list[dict[str, Any]]:
+    """Cached version of _scan_log_dirs with 30s TTL."""
+    global _log_dir_cache
+    now = time.time()
+    if _log_dir_cache is not None:
+        cached_results, cached_at = _log_dir_cache
+        if now - cached_at < _LOG_DIR_CACHE_TTL:
+            return cached_results
+    results = _scan_log_dirs(logs_root)
+    _log_dir_cache = (results, now)
+    return results
+
+
+def _read_events_jsonl(
+    session_id: str,
+    logs_root: Path,
+) -> list[dict[str, Any]] | None:
+    """Read events.jsonl from a log directory and wrap for frontend replay.
+
+    Returns a list of events suitable for processWSEvent() in the frontend,
+    starting with a synthesized 'init' event followed by 'structured_event'
+    wrappers around each events.jsonl line.
+
+    Returns None if the session_id doesn't match a log dir or no events.jsonl
+    exists.
+    """
+    log_dir = logs_root / session_id
+    if not log_dir.is_dir():
+        return None
+    attempt_dir = _find_latest_attempt(log_dir)
+    if not attempt_dir:
+        return None
+    events_file = attempt_dir / "events.jsonl"
+    if not events_file.exists():
+        return None
+
+    # Read metadata for the init event
+    meta_file = attempt_dir / "execution_metadata.yaml"
+    agents: list[str] = []
+    agent_models: dict[str, str] = {}
+    question = ""
+    if meta_file.exists():
+        try:
+            import yaml
+
+            meta = yaml.safe_load(meta_file.read_text())
+            if meta and isinstance(meta, dict):
+                question = meta.get("query", "")
+                config = meta.get("config", {})
+                if isinstance(config, dict):
+                    for agent_cfg in config.get("agents", []):
+                        if isinstance(agent_cfg, dict) and "id" in agent_cfg:
+                            aid = agent_cfg["id"]
+                            agents.append(aid)
+                            backend = agent_cfg.get("backend", {})
+                            if isinstance(backend, dict) and "model" in backend:
+                                agent_models[aid] = backend["model"]
+        except Exception:
+            pass
+
+    # If we couldn't determine agents from metadata, scan event lines
+    if not agents:
+        try:
+            with open(events_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    ev = json.loads(line)
+                    aid = ev.get("agent_id")
+                    if aid and aid not in agents:
+                        agents.append(aid)
+        except Exception:
+            pass
+        if not agents:
+            return None
+
+    # Build the event list
+    result: list[dict[str, Any]] = []
+
+    # Synthesized init event
+    init_event: dict[str, Any] = {
+        "type": "init",
+        "session_id": session_id,
+        "agents": agents,
+        "question": question,
+    }
+    if agent_models:
+        init_event["agent_models"] = agent_models
+    result.append(init_event)
+
+    # Read and wrap each events.jsonl line
+    seq = 0
+    try:
+        with open(events_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                seq += 1
+                result.append(
+                    {
+                        "type": "structured_event",
+                        "session_id": session_id,
+                        "timestamp": ev.get("timestamp", 0),
+                        "sequence": seq,
+                        "event_type": ev.get("event_type", ""),
+                        "agent_id": ev.get("agent_id"),
+                        "round_number": ev.get("round_number", 0),
+                        "data": ev.get("data", {}),
+                    },
+                )
+    except Exception:
+        pass
+
+    return result if len(result) > 1 else None
 
 
 def _normalize_workspace_path(path: str) -> str:
@@ -679,6 +900,45 @@ def create_app(
                 content={"error": str(e)},
             )
 
+    @app.get("/api/config/agents")
+    async def get_config_agents(path: str):
+        """Parse a config file and return its agent and orchestrator settings."""
+        try:
+            config_path = Path(path)
+            if not config_path.exists():
+                return JSONResponse(status_code=404, content={"error": "Config not found"})
+
+            import yaml as _yaml
+
+            raw = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if not raw or not isinstance(raw, dict):
+                return {"agents": []}
+
+            agents_list = raw.get("agents", [])
+            agents_result = []
+            for agent_cfg in agents_list:
+                if not isinstance(agent_cfg, dict):
+                    continue
+                backend = agent_cfg.get("backend", {})
+                if not isinstance(backend, dict):
+                    backend = {}
+                agents_result.append(
+                    {
+                        "id": agent_cfg.get("id", ""),
+                        "provider": backend.get("type", None),
+                        "model": backend.get("model", None),
+                    },
+                )
+
+            # Extract orchestrator settings
+            orch = raw.get("orchestrator", {}) or {}
+            result: dict[str, Any] = {"agents": agents_result}
+            if "max_new_answers_per_agent" in orch:
+                result["max_answers"] = orch["max_new_answers_per_agent"]
+            return result
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
     @app.get("/api/configs")
     async def list_configs():
         """List all available config files."""
@@ -752,6 +1012,56 @@ def create_app(
             "default": default,
             "quickstart_config": quickstart_config["path"] if quickstart_config else None,
         }
+
+    # =========================================================================
+    # WebUI State Persistence Routes
+    # =========================================================================
+
+    @app.post("/api/webui/save-state")
+    async def save_webui_state(request_data: dict):
+        """Save WebUI state: generates webui_config.yaml and persists UI state.
+
+        Request body:
+        {
+            "agent_settings": {"agents": [...], "use_docker": false},
+            "ui_state": {"coordinationMode": "parallel", ...}
+        }
+        """
+        agent_settings = request_data.get("agent_settings", {})
+        ui_state = request_data.get("ui_state", {})
+
+        if not agent_settings.get("agents"):
+            return JSONResponse(
+                {"error": "No agents provided"},
+                status_code=400,
+            )
+
+        try:
+            result = _save_webui_state(
+                agent_settings=agent_settings,
+                ui_state=ui_state,
+            )
+            return result
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to save state: {e!s}"},
+                status_code=500,
+            )
+
+    @app.get("/api/webui/state")
+    async def get_webui_state():
+        """Get persisted WebUI state.
+
+        Returns:
+            {"exists": bool, "config_path": str|null, "ui_state": object|null}
+        """
+        try:
+            return _load_webui_state()
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to load state: {e!s}"},
+                status_code=500,
+            )
 
     # =========================================================================
     # Quickstart Wizard API Routes
@@ -1404,7 +1714,7 @@ def create_app(
         """Get capabilities for a specific provider.
 
         Returns information about what features the provider supports,
-        such as web search, code execution, etc.
+        such as web search, code execution, reasoning, etc.
         """
         from massgen.backend.capabilities import BACKEND_CAPABILITIES
 
@@ -1420,10 +1730,69 @@ def create_app(
             "supports_web_search": "web_search" in caps.supported_capabilities,
             "supports_code_execution": "code_execution" in caps.supported_capabilities,
             "supports_mcp": "mcp" in caps.supported_capabilities,
+            "supports_reasoning": "reasoning" in caps.supported_capabilities,
             "builtin_tools": caps.builtin_tools,
             "filesystem_support": caps.filesystem_support,
             "all_capabilities": list(caps.supported_capabilities),
         }
+
+    @app.post("/api/config/preview")
+    async def preview_config(request_data: dict):
+        """Preview the resolved config after applying mode overrides.
+
+        Takes an optional config_path and mode_overrides, applies overrides
+        to the base config, and returns the resolved YAML.
+        """
+        import copy
+
+        import yaml
+
+        from massgen.cli import load_config_file, resolve_config_path
+
+        config_path = request_data.get("config_path")
+        mode_overrides = request_data.get("mode_overrides")
+
+        if not config_path:
+            return JSONResponse(
+                {"error": "config_path is required"},
+                status_code=400,
+            )
+
+        try:
+            resolved_path = resolve_config_path(config_path)
+            if resolved_path is None:
+                return JSONResponse(
+                    {"error": f"Could not resolve config: {config_path}"},
+                    status_code=404,
+                )
+
+            config, _ = load_config_file(str(resolved_path))
+            original_yaml = yaml.dump(
+                copy.deepcopy(config),
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+
+            _apply_mode_overrides(config, mode_overrides)
+
+            resolved_yaml = yaml.dump(
+                config,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+
+            return {
+                "original_yaml": original_yaml,
+                "resolved_yaml": resolved_yaml,
+                "config": config,
+            }
+        except Exception as e:
+            return JSONResponse(
+                {"error": str(e)},
+                status_code=500,
+            )
 
     @app.get("/api/quickstart/reasoning-profile")
     async def get_quickstart_reasoning_profile(provider_id: str, model: str):
@@ -1874,6 +2243,22 @@ def create_app(
     async def list_sessions():
         """List all active and completed sessions."""
         sessions = []
+
+        def _display_models(display: WebDisplay | None) -> list[str]:
+            """Extract deduplicated model names from display's agent_models."""
+            if not display or not getattr(display, "agent_models", None):
+                return []
+            seen_m: list[str] = []
+            for m in display.agent_models.values():
+                if m not in seen_m:
+                    seen_m.append(m)
+            return seen_m
+
+        def _models_label(display: WebDisplay | None) -> str | None:
+            """Build a compact model label from display's agent_models."""
+            models = _display_models(display)
+            return ", ".join(models) if models else None
+
         # Active sessions (with WebSocket connections)
         for session_id in manager.active_connections.keys():
             display = manager.get_display(session_id)
@@ -1889,14 +2274,38 @@ def create_app(
                     "is_running": task is not None and not task.done() if task else False,
                     "question": display.question if display and hasattr(display, "question") else None,
                     "status": "active",
+                    "config": _models_label(display),
+                    "models": _display_models(display),
                 },
             )
 
-        # Completed sessions (no longer connected but preserved)
-        for session_id, metadata in manager.completed_sessions.items():
-            # Skip if already in active list
-            if session_id in manager.active_connections:
+        # Sessions with displays but no active WS connection
+        seen = set(manager.active_connections.keys())
+        for session_id, display in manager.displays.items():
+            if session_id in seen:
                 continue
+            seen.add(session_id)
+            task = manager.tasks.get(session_id)
+            completed_meta = manager.completed_sessions.get(session_id)
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "connections": 0,
+                    "has_display": True,
+                    "is_running": task is not None and not task.done() if task else False,
+                    "question": display.question if hasattr(display, "question") else None,
+                    "status": "completed" if completed_meta else "disconnected",
+                    "completed_at": completed_meta.get("completed_at") if completed_meta else None,
+                    "config": _models_label(display),
+                    "models": _display_models(display),
+                },
+            )
+
+        # Completed sessions without displays (from previous server runs, persisted to disk)
+        for session_id, metadata in manager.completed_sessions.items():
+            if session_id in seen:
+                continue
+            seen.add(session_id)
             sessions.append(
                 {
                     "session_id": session_id,
@@ -1909,7 +2318,42 @@ def create_app(
                 },
             )
 
-        return {"sessions": sessions}
+        # Historical sessions from log directories (events.jsonl replay)
+        logs_root = Path(".massgen") / "massgen_logs"
+        try:
+            log_dir_sessions = await asyncio.to_thread(
+                _scan_log_dirs_cached,
+                logs_root,
+            )
+            for log_session in log_dir_sessions:
+                sid = log_session["session_id"]
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                sessions.append(
+                    {
+                        "session_id": sid,
+                        "connections": 0,
+                        "has_display": False,
+                        "is_running": False,
+                        "question": log_session.get("question"),
+                        "status": "completed",
+                        "config": log_session.get("config"),
+                        "config_path": log_session.get("config_path"),
+                        "models": log_session.get("models"),
+                        "start_time": log_session.get("start_time"),
+                        "log_dir": log_session.get("log_dir"),
+                    },
+                )
+        except Exception:
+            pass  # Don't break session list if log scanning fails
+
+        # Sort by start_time/completed_at descending, limit to 50
+        def _sort_key(s: dict) -> str:
+            return s.get("start_time") or s.get("completed_at") or ""
+
+        sessions.sort(key=_sort_key, reverse=True)
+        return {"sessions": sessions[:50]}
 
     @app.post("/api/sessions")
     async def create_session():
@@ -3600,6 +4044,35 @@ def create_app(
             )
         return JSONResponse(display.get_state_snapshot())
 
+    @app.get("/api/sessions/{session_id}/events")
+    async def get_session_events(session_id: str):
+        """Get the full event history for a session (for v2 message replay).
+
+        Tries in-memory display first (live sessions), then falls back to
+        reading events.jsonl from the log directory (historical sessions).
+        """
+        # Try in-memory first (live sessions)
+        display = manager.get_display(session_id)
+        if display:
+            return JSONResponse(
+                {"events": getattr(display, "_event_history", [])},
+            )
+
+        # Fallback: read from events.jsonl on disk
+        logs_root = Path(".massgen") / "massgen_logs"
+        events = await asyncio.to_thread(
+            _read_events_jsonl,
+            session_id,
+            logs_root,
+        )
+        if events is not None:
+            return JSONResponse({"events": events})
+
+        return JSONResponse(
+            {"error": "Session not found"},
+            status_code=404,
+        )
+
     @app.get("/api/sessions/{session_id}/final-answer")
     async def get_final_answer(session_id: str):
         """Get the clean final answer from the saved log file.
@@ -5052,6 +5525,116 @@ async def run_coordination_with_history(
         )
 
 
+def _save_webui_state(
+    *,
+    agent_settings: dict,
+    ui_state: dict,
+    base_dir: Path | None = None,
+) -> dict:
+    """Save WebUI state: generate webui_config.yaml and persist ui_state.json.
+
+    Args:
+        agent_settings: Agent-level config with 'agents' list and 'use_docker'.
+        ui_state: Mode bar UI state (coordination mode, refinement, etc.).
+        base_dir: Override base directory (for testing). Defaults to Path.cwd().
+
+    Returns:
+        Dict with success, config_path, and state_path.
+    """
+    import json
+
+    import yaml
+
+    from massgen.config_builder import ConfigBuilder
+
+    base = base_dir or Path.cwd()
+    massgen_dir = base / ".massgen"
+    massgen_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Generate webui_config.yaml via ConfigBuilder ---
+    agents_config = agent_settings.get("agents", [])
+    use_docker = agent_settings.get("use_docker", False)
+
+    formatted_agents = []
+    agent_tools: dict[str, dict] = {}
+    for agent in agents_config:
+        agent_id = agent.get("id", f"agent_{chr(ord('a') + len(formatted_agents))}")
+        formatted_agents.append(
+            {
+                "id": agent_id,
+                "type": agent.get("provider", "openai"),
+                "model": agent.get("model", "gpt-4o"),
+                **({"reasoning_effort": agent["reasoning_effort"]} if agent.get("reasoning_effort") else {}),
+            },
+        )
+        tool_settings: dict = {}
+        if agent.get("enable_web_search") is not None:
+            tool_settings["enable_web_search"] = agent["enable_web_search"]
+        if agent.get("enable_code_execution") is not None:
+            tool_settings["enable_code_execution"] = agent["enable_code_execution"]
+        if tool_settings:
+            agent_tools[agent_id] = tool_settings
+
+    if not formatted_agents:
+        formatted_agents = [{"id": "agent_a", "type": "openai", "model": "gpt-4o"}]
+
+    builder = ConfigBuilder()
+    config = builder._generate_quickstart_config(
+        formatted_agents,
+        use_docker=use_docker,
+        agent_tools=agent_tools or None,
+    )
+
+    config_path = massgen_dir / "webui_config.yaml"
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    # --- Save UI state to webui_state.json ---
+    state_path = massgen_dir / "webui_state.json"
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(ui_state, f, indent=2)
+
+    return {
+        "success": True,
+        "config_path": str(config_path),
+        "state_path": str(state_path),
+    }
+
+
+def _load_webui_state(*, base_dir: Path | None = None) -> dict:
+    """Load WebUI persisted state.
+
+    Args:
+        base_dir: Override base directory (for testing). Defaults to Path.cwd().
+
+    Returns:
+        Dict with exists, config_path, and ui_state.
+    """
+    import json
+
+    base = base_dir or Path.cwd()
+    massgen_dir = base / ".massgen"
+    config_path = massgen_dir / "webui_config.yaml"
+    state_path = massgen_dir / "webui_state.json"
+
+    if not config_path.exists():
+        return {"exists": False, "config_path": None, "ui_state": None}
+
+    ui_state = None
+    if state_path.exists():
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                ui_state = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            ui_state = None
+
+    return {
+        "exists": True,
+        "config_path": str(config_path),
+        "ui_state": ui_state,
+    }
+
+
 def _apply_agent_overrides(config: dict, overrides: dict) -> None:
     """Apply agent-level overrides (count, model, backend) to config."""
     agents = config.get("agents", [])
@@ -5088,9 +5671,40 @@ def _apply_agent_overrides(config: dict, overrides: dict) -> None:
                 break
             agent = agents[i]
             if agent_override.get("model"):
-                agent.setdefault("backend_params", {})["model"] = agent_override["model"]
+                new_model = agent_override["model"]
+                # Write model to whichever location the config uses:
+                # Some configs use backend.model, others use backend_params.model
+                if "backend_params" in agent:
+                    agent["backend_params"]["model"] = new_model
+                if "backend" in agent and "model" in agent.get("backend", {}):
+                    agent["backend"]["model"] = new_model
+                # If neither existed, write to backend_params (standard path)
+                if "backend_params" not in agent and "model" not in agent.get(
+                    "backend",
+                    {},
+                ):
+                    agent.setdefault("backend_params", {})["model"] = new_model
             if agent_override.get("backend_type"):
                 agent.setdefault("backend", {})["type"] = agent_override["backend_type"]
+
+            # Reasoning effort
+            if agent_override.get("reasoning_effort"):
+                agent.setdefault("backend", {})["reasoning"] = {
+                    "effort": agent_override["reasoning_effort"],
+                    "summary": "auto",
+                }
+
+            # Web search
+            if agent_override.get("enable_web_search") is not None:
+                agent.setdefault("backend", {})["enable_web_search"] = agent_override["enable_web_search"]
+
+            # Code execution (backend-specific field name)
+            if agent_override.get("enable_code_execution") is not None:
+                backend_type = agent.get("backend", {}).get("type", "")
+                if backend_type in ("openai", "chat_completions"):
+                    agent.setdefault("backend", {})["enable_code_interpreter"] = agent_override["enable_code_execution"]
+                else:
+                    agent.setdefault("backend", {})["enable_code_execution"] = agent_override["enable_code_execution"]
 
     # Legacy uniform model override — apply to all agents
     model = overrides.get("agent_model")
@@ -5105,9 +5719,44 @@ def _apply_agent_overrides(config: dict, overrides: dict) -> None:
             agent.setdefault("backend", {})["type"] = backend
 
 
+_DOCKER_BACKEND_KEYS = {
+    "enable_code_based_tools": True,
+    "exclude_file_operation_mcps": True,
+    "enable_mcp_command_line": True,
+    "command_line_execution_mode": "docker",
+    "command_line_docker_image": "ghcr.io/massgen/mcp-runtime-sudo:latest",
+    "command_line_docker_network_mode": "bridge",
+    "command_line_docker_enable_sudo": True,
+    "command_line_docker_credentials": {
+        "env_file": ".env",
+        "env_vars_from_file": [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ],
+    },
+    "shared_tools_directory": "shared_tools",
+    "auto_discover_custom_tools": True,
+    "exclude_custom_tools": [
+        "_computer_use",
+        "_claude_computer_use",
+        "_gemini_computer_use",
+        "_browser_automation",
+    ],
+}
+
+
 def _apply_docker_override(config: dict, use_docker: bool) -> None:
-    """Toggle docker execution mode in config."""
-    config.setdefault("execution", {})["use_docker"] = use_docker
+    """Toggle docker execution mode via per-agent backend keys."""
+    for agent in config.get("agents", []):
+        backend = agent.setdefault("backend", {})
+        if use_docker:
+            backend.update(_DOCKER_BACKEND_KEYS)
+        else:
+            for key in _DOCKER_BACKEND_KEYS:
+                backend.pop(key, None)
+            backend["exclude_file_operation_mcps"] = False
 
 
 def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
@@ -5138,6 +5787,16 @@ def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
         pg["enabled"] = overrides["persona_generator_enabled"]
         if "persona_diversity_mode" in overrides:
             pg["diversity_mode"] = overrides["persona_diversity_mode"]
+
+    # Plan mode overrides
+    if overrides.get("plan_mode") and overrides["plan_mode"] != "normal":
+        coord = orch.setdefault("coordination", {})
+        coord["enable_agent_task_planning"] = True
+        coord["task_planning_filesystem_mode"] = True
+        if overrides["plan_mode"] == "spec":
+            coord["spec_mode"] = True
+        if overrides["plan_mode"] == "analyze":
+            coord["analysis_mode"] = True
 
     # Agent count + model/backend overrides
     if any(
@@ -5249,7 +5908,7 @@ async def run_coordination(
         await send_init_status(f"Setting up {num_agents} agents...", "agents", 30)
 
         # Check if Docker is being used
-        uses_docker = config.get("execution", {}).get("use_docker", False)
+        uses_docker = any(agent.get("backend", {}).get("command_line_execution_mode") == "docker" for agent in config.get("agents", []))
         if uses_docker:
             await emit_preparation_status(
                 "Preparing Docker environment...",

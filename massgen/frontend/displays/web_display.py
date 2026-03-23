@@ -62,6 +62,9 @@ class WebDisplay(BaseDisplay):
         # Timeline events for visualization (answers, votes, final with context sources)
         self._timeline_events: list[dict[str, Any]] = []
 
+        # Full event history for session replay (v2 message store)
+        self._event_history: list[dict[str, Any]] = []
+
         # Track file workspace changes per agent
         self._agent_files: dict[str, list[dict[str, Any]]] = {agent_id: [] for agent_id in agent_ids}
 
@@ -102,6 +105,9 @@ class WebDisplay(BaseDisplay):
             "sequence": self._next_sequence(),
             **data,
         }
+
+        # Store in event history for session replay
+        self._event_history.append(payload)
 
         # If broadcast function is set, use it
         if self._broadcast is not None:

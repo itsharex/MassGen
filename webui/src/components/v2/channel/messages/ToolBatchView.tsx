@@ -35,12 +35,12 @@ export function ToolBatchView({ tools }: ToolBatchViewProps) {
   return (
     <div className="px-4 py-0.5">
       {/* Card header only */}
-      <div className="rounded-lg border border-v2-border-subtle bg-v2-surface overflow-hidden">
+      <div className="rounded-md border border-v2-border-subtle bg-v2-surface overflow-hidden">
         <button
           data-testid="batch-header"
           onClick={() => setTreeOpen(!treeOpen)}
           className={cn(
-            'flex items-center gap-2 w-full text-left px-3 py-1.5',
+            'flex items-center gap-2 w-full text-left px-2.5 py-1',
             'hover:bg-[var(--v2-channel-hover)] transition-colors duration-100',
           )}
         >

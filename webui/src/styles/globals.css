@@ -127,6 +127,31 @@
   background: var(--v2-text-muted);
 }
 
+/* Horizontal scrollbar for agent config drawer */
+.agent-cards-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.agent-cards-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 0 20px;
+}
+
+.agent-cards-scroll::-webkit-scrollbar-thumb {
+  background: var(--v2-border);
+  border-radius: 3px;
+}
+
+.agent-cards-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--v2-text-muted);
+}
+
+/* Firefox horizontal scrollbar */
+.agent-cards-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--v2-border) transparent;
+}
+
 /* Custom scrollbar for agent panels */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;

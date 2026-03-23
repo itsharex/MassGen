@@ -12,7 +12,7 @@ describe('ModeConfigBar', () => {
     cleanup();
   });
 
-  it('renders row 1 mode toggles', () => {
+  it('renders mode toggles', () => {
     render(<ModeConfigBar />);
     expect(screen.getByText('Parallel')).toBeDefined();
     expect(screen.getByText('Decomp')).toBeDefined();
@@ -22,21 +22,34 @@ describe('ModeConfigBar', () => {
     expect(screen.getByText('Quick')).toBeDefined();
   });
 
-  it('renders row 2 agent config controls', () => {
+  it('renders agent config controls', () => {
     render(<ModeConfigBar />);
-    // Agent count stepper
     expect(screen.getByTestId('agent-count-stepper')).toBeDefined();
-    // Docker toggle
+    expect(screen.getByTestId('agent-summary-btn')).toBeDefined();
     expect(screen.getByText('Docker')).toBeDefined();
+  });
+
+  it('renders plan mode dropdown', () => {
+    render(<ModeConfigBar />);
+    expect(screen.getByTestId('dropdown-plan-mode')).toBeDefined();
+    expect(screen.getByText('Normal')).toBeDefined();
+  });
+
+  it('renders personas dropdown', () => {
+    render(<ModeConfigBar />);
+    expect(screen.getByTestId('dropdown-personas')).toBeDefined();
+    expect(screen.getByText('No Personas')).toBeDefined();
   });
 
   it('clicking coordination toggle updates store', () => {
     render(<ModeConfigBar />);
     expect(useModeStore.getState().coordinationMode).toBe('parallel');
 
+    // Inactive option is a button — click to switch
     fireEvent.click(screen.getByText('Decomp'));
     expect(useModeStore.getState().coordinationMode).toBe('decomposition');
 
+    // After switch, "Parallel" is now the inactive button
     fireEvent.click(screen.getByText('Parallel'));
     expect(useModeStore.getState().coordinationMode).toBe('parallel');
   });
@@ -67,15 +80,69 @@ describe('ModeConfigBar', () => {
     expect(bar.className).toContain('pointer-events-none');
   });
 
-  it('personas row hidden in decomposition mode', () => {
+  it('docker toggle changes store', () => {
     render(<ModeConfigBar />);
-    // In parallel mode, persona options should be visible
-    expect(screen.getByTestId('personas-group')).toBeDefined();
+    const dockerBtn = screen.getByTestId('docker-toggle');
+    fireEvent.click(dockerBtn);
+    expect(useModeStore.getState().dockerEnabled).toBe(true);
+  });
 
-    // Switch to decomposition
-    fireEvent.click(screen.getByText('Decomp'));
-    // Personas group should be hidden
-    expect(screen.queryByTestId('personas-group')).toBeNull();
+  describe('plan mode dropdown', () => {
+    it('opens and selects plan mode', () => {
+      render(<ModeConfigBar />);
+      const dropdown = screen.getByTestId('dropdown-plan-mode');
+
+      // Open dropdown
+      fireEvent.click(dropdown.querySelector('button')!);
+      expect(screen.getByTestId('dropdown-plan-mode-menu')).toBeDefined();
+
+      // Select Plan
+      fireEvent.click(screen.getByText('Plan'));
+      expect(useModeStore.getState().planMode).toBe('plan');
+    });
+  });
+
+  describe('personas dropdown', () => {
+    it('opens and selects persona mode', () => {
+      render(<ModeConfigBar />);
+      const dropdown = screen.getByTestId('dropdown-personas');
+
+      // Open dropdown
+      fireEvent.click(dropdown.querySelector('button')!);
+      expect(screen.getByTestId('dropdown-personas-menu')).toBeDefined();
+
+      // Select Perspective
+      fireEvent.click(screen.getByText('Perspective'));
+      expect(useModeStore.getState().personasMode).toBe('perspective');
+    });
+  });
+
+  describe('max rounds selector', () => {
+    it('shows when refinement is enabled', () => {
+      render(<ModeConfigBar />);
+      expect(screen.getByTestId('max-rounds-selector')).toBeDefined();
+    });
+
+    it('hidden when refinement is disabled (Quick mode)', () => {
+      useModeStore.getState().setRefinementEnabled(false);
+      render(<ModeConfigBar />);
+      expect(screen.queryByTestId('max-rounds-selector')).toBeNull();
+    });
+
+    it('changing select updates store', () => {
+      render(<ModeConfigBar />);
+      const select = screen.getByTestId('max-rounds-select') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: '3' } });
+      expect(useModeStore.getState().maxAnswers).toBe(3);
+    });
+
+    it('selecting default value (5) sets maxAnswers to null', () => {
+      useModeStore.getState().setMaxAnswers(3);
+      render(<ModeConfigBar />);
+      const select = screen.getByTestId('max-rounds-select') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: '5' } });
+      expect(useModeStore.getState().maxAnswers).toBeNull();
+    });
   });
 
   describe('agent count stepper', () => {
@@ -123,67 +190,63 @@ describe('ModeConfigBar', () => {
     });
   });
 
-  describe('agent chips', () => {
-    it('shows "from config" when agentCount is null', () => {
-      render(<ModeConfigBar />);
-      expect(screen.getByText('from config')).toBeDefined();
-    });
-
-    it('agent chips appear when agentCount is set', () => {
-      useModeStore.getState().setAgentCount(3);
-      render(<ModeConfigBar />);
-      expect(screen.getByTestId('agent-chip-0')).toBeDefined();
-      expect(screen.getByTestId('agent-chip-1')).toBeDefined();
-      expect(screen.getByTestId('agent-chip-2')).toBeDefined();
-    });
-
-    it('agent chips disappear when agentCount is null', () => {
-      useModeStore.getState().setAgentCount(3);
-      render(<ModeConfigBar />);
-      expect(screen.getByTestId('agent-chip-0')).toBeDefined();
-
-      // Set back to null
-      useModeStore.getState().setAgentCount(null);
-      // Re-render with updated state
-      cleanup();
-      render(<ModeConfigBar />);
-      expect(screen.queryByTestId('agent-chip-0')).toBeNull();
-      expect(screen.getByText('from config')).toBeDefined();
-    });
-
-    it('chips show default label when no config set', () => {
+  describe('first-time setup', () => {
+    it('agent drawer shows save button when needsFirstTimeSetup is true', () => {
+      useModeStore.setState({ needsFirstTimeSetup: true });
       useModeStore.getState().setAgentCount(2);
       render(<ModeConfigBar />);
-      expect(screen.getByTestId('agent-chip-0').textContent).toBe('A: default');
-      expect(screen.getByTestId('agent-chip-1').textContent).toBe('B: default');
+
+      // Open the drawer by clicking the agent summary area
+      const summary = screen.getByTestId('agent-summary-btn');
+      fireEvent.click(summary);
+      expect(screen.getByTestId('agent-drawer')).toBeDefined();
+      expect(screen.getByTestId('save-and-start-btn')).toBeDefined();
+      expect(screen.getByText('Save & Start')).toBeDefined();
     });
 
-    it('chips show provider/model when config set', () => {
+    it('agent drawer does not show save button when not first time', () => {
+      useModeStore.setState({ needsFirstTimeSetup: false });
       useModeStore.getState().setAgentCount(2);
-      useModeStore.getState().setAgentConfig(0, 'openai', 'gpt-4o');
-      render(<ModeConfigBar />);
-      expect(screen.getByTestId('agent-chip-0').textContent).toBe('A: openai/gpt-4o');
-    });
-
-    it('clicking agent chip opens popover', () => {
-      useModeStore.getState().setAgentCount(2);
-      // Seed providers so popover has content
-      useModeStore.setState({
-        providers: [
-          { id: 'openai', name: 'OpenAI', models: [], default_model: 'gpt-4o', env_var: null, has_api_key: true, is_agent_framework: false, capabilities: [], notes: '' },
-        ],
-      });
       render(<ModeConfigBar />);
 
-      fireEvent.click(screen.getByTestId('agent-chip-0'));
-      expect(screen.getByTestId('agent-chip-popover')).toBeDefined();
+      const summary = screen.getByTestId('agent-summary-btn');
+      fireEvent.click(summary);
+      expect(screen.getByTestId('agent-drawer')).toBeDefined();
+      expect(screen.queryByTestId('save-and-start-btn')).toBeNull();
     });
   });
 
-  it('docker toggle changes store', () => {
-    render(<ModeConfigBar />);
-    const dockerBtn = screen.getByTestId('docker-toggle');
-    fireEvent.click(dockerBtn);
-    expect(useModeStore.getState().dockerEnabled).toBe(true);
+  describe('agent summary', () => {
+    it('shows "from config" when count is null', () => {
+      render(<ModeConfigBar />);
+      expect(screen.getByText('from config')).toBeDefined();
+    });
+
+    it('shows model chips when count is set', () => {
+      useModeStore.getState().setAgentCount(2);
+      useModeStore.getState().setAgentConfig(0, { provider: 'openai', model: 'gpt-4o' });
+      render(<ModeConfigBar />);
+      const btn = screen.getByTestId('agent-summary-btn');
+      expect(btn.textContent).toContain('openai');
+      expect(btn.textContent).toContain('gpt-4o');
+    });
+
+    it('clicking agent summary opens drawer', () => {
+      useModeStore.getState().setAgentCount(2);
+      render(<ModeConfigBar />);
+
+      // Clicking anywhere on the agent summary area opens the drawer
+      const summary = screen.getByTestId('agent-summary-btn');
+      fireEvent.click(summary);
+      expect(screen.getByTestId('agent-drawer')).toBeDefined();
+    });
+
+    it('clicking + opens drawer', () => {
+      useModeStore.getState().setAgentCount(2);
+      render(<ModeConfigBar />);
+
+      fireEvent.click(screen.getByTestId('agent-count-increment'));
+      expect(screen.getByTestId('agent-drawer')).toBeDefined();
+    });
   });
 });
