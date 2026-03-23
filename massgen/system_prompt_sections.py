@@ -5870,6 +5870,90 @@ The file will be read automatically and injected into external API calls.
 `generate_media` does not require CONTEXT.md."""
 
 
+@dataclass
+class MainAgentCheckpointSection(SystemPromptSection):
+    """System prompt section for the main agent in checkpoint coordination mode.
+
+    Explains when and how to use the checkpoint tool to delegate tasks
+    to the multi-agent team.
+    """
+
+    title: str = "Checkpoint Coordination"
+    priority: Priority = Priority.HIGH
+    xml_tag: str | None = "checkpoint_coordination"
+    checkpoint_guidance: str = ""
+    gated_patterns: list[str] = field(default_factory=list)
+    checkpoint_mode: str = "conversation"
+
+    def build_content(self) -> str:
+        """Build checkpoint guidance for the main agent."""
+        lines = [
+            "You are the main orchestrating agent with a powerful `checkpoint` tool.",
+            "",
+            "## How checkpoint works",
+            'Call `checkpoint(task="...")` to delegate a task to your multi-agent team.',
+            "All configured agents will activate and work on the task collaboratively.",
+            "They iterate, refine, vote, and reach consensus. The winning answer's",
+            "workspace changes sync back to you, and you continue orchestrating.",
+            "",
+            "## When to call checkpoint",
+            "- Substantial piece of work (building features, writing code)",
+            "- Needs diverse perspectives (architecture decisions, reviews)",
+            "- Quality-critical work (security, performance-sensitive code)",
+            "- Gated actions needed (deploys, deletions via proposed_actions)",
+            "",
+            "## When NOT to call checkpoint",
+            "- Task is trivially small (just do it directly)",
+            "- Pure overhead (reading a file, checking status)",
+            "- You just checkpointed and haven't done meaningful work since",
+            "",
+            "## Using expected_actions",
+            "If agents need to propose tool calls they don't have access to,",
+            "describe them in expected_actions:",
+            '  checkpoint(task="Deploy the app", expected_actions=[',
+            '    {"tool": "mcp__vercel__deploy", "description": "Deploy to production"}',
+            "  ])",
+            "Agents will include these as proposed_actions in their new_answer.",
+            "The winning answer's proposed_actions execute automatically.",
+        ]
+
+        if self.gated_patterns:
+            lines.extend(
+                [
+                    "",
+                    "## Gated tools (require checkpoint approval)",
+                    "These tools cannot be called directly. Use checkpoint with",
+                    "expected_actions to have the team propose them:",
+                ],
+            )
+            for pattern in self.gated_patterns:
+                lines.append(f"  - {pattern}")
+
+        if self.checkpoint_mode == "task":
+            lines.extend(
+                [
+                    "",
+                    "## Task mode",
+                    "When you've completed the overall task, call new_answer() with",
+                    "your final summary to end the session.",
+                ],
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "## Conversation mode",
+                    "You're in a persistent session. The user can send messages",
+                    "between checkpoints. No need to call new_answer to finish.",
+                ],
+            )
+
+        if self.checkpoint_guidance:
+            lines.extend(["", "## Additional guidance", self.checkpoint_guidance])
+
+        return "\n".join(lines)
+
+
 class SystemPromptBuilder:
     """
     Builder for assembling system prompts from sections.

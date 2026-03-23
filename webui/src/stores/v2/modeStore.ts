@@ -9,7 +9,7 @@
 import { create } from 'zustand';
 import type { ProviderInfo, ProviderCapabilities, ReasoningEffort, ReasoningProfile } from '../wizardStore';
 
-export type CoordinationMode = 'parallel' | 'decomposition';
+export type CoordinationMode = 'parallel' | 'decomposition' | 'checkpoint';
 export type AgentMode = 'multi' | 'single';
 export type PersonasMode = 'off' | 'perspective' | 'implementation' | 'methodology';
 export type PlanMode = 'normal' | 'plan' | 'spec' | 'analyze';
@@ -35,6 +35,7 @@ interface ModeState {
   coordinationMode: CoordinationMode;
   agentMode: AgentMode;
   selectedSingleAgent: string | null;
+  selectedMainAgent: string | null;  // Checkpoint mode: which agent orchestrates
   refinementEnabled: boolean;
   personasMode: PersonasMode;
   planMode: PlanMode;
@@ -51,6 +52,10 @@ interface ModeState {
   dockerAvailable: boolean | null;  // null = unknown, fetched from /api/setup/status
   dockerStatus: string | null;      // "ready" | "not_installed" | "not_running"
 
+  // Pre-collab toggles
+  evalCriteriaEnabled: boolean;
+  promptImproverEnabled: boolean;
+
   // Execution lock
   executionLocked: boolean;
 
@@ -64,6 +69,9 @@ interface ModeState {
   // Agents parsed from the selected YAML config (read-only display)
   configAgents: { id: string; provider: string | null; model: string | null }[];
   configMaxAnswers: number | null;  // max_new_answers from the config file
+  configPersonaMode: PersonasMode | null;  // persona mode from the config file
+  configEvalCriteriaEnabled: boolean | null;  // eval criteria from the config file
+  configPromptImproverEnabled: boolean | null;  // prompt improver from the config file
   configLocked: boolean;  // true when a non-custom config is selected (mode bar is read-only)
 }
 
@@ -71,8 +79,11 @@ interface ModeActions {
   setCoordinationMode: (mode: CoordinationMode) => void;
   setAgentMode: (mode: AgentMode) => void;
   setSelectedSingleAgent: (agentId: string | null) => void;
+  setSelectedMainAgent: (agentId: string | null) => void;
   setRefinementEnabled: (enabled: boolean) => void;
   setPersonasMode: (mode: PersonasMode) => void;
+  setEvalCriteriaEnabled: (enabled: boolean) => void;
+  setPromptImproverEnabled: (enabled: boolean) => void;
   setPlanMode: (mode: PlanMode) => void;
   setAgentCount: (count: number | null) => void;
   setAgentConfig: (index: number, updates: Partial<AgentConfigOverride>) => void;
@@ -105,8 +116,11 @@ const initialState: ModeState = {
   coordinationMode: 'parallel',
   agentMode: 'multi',
   selectedSingleAgent: null,
+  selectedMainAgent: null,
   refinementEnabled: true,
   personasMode: 'off',
+  evalCriteriaEnabled: false,
+  promptImproverEnabled: false,
   planMode: 'normal',
   agentCount: null,
   agentConfigs: [],
@@ -124,17 +138,51 @@ const initialState: ModeState = {
   needsFirstTimeSetup: false,
   configAgents: [],
   configMaxAnswers: null,
+  configPersonaMode: null,
+  configEvalCriteriaEnabled: null,
+  configPromptImproverEnabled: null,
   configLocked: false,
 };
 
 export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
   ...initialState,
 
-  setCoordinationMode: (mode) => set({ coordinationMode: mode }),
-  setAgentMode: (mode) => set({ agentMode: mode }),
+  setCoordinationMode: (mode) => {
+    const updates: Partial<ModeState> = { coordinationMode: mode };
+    // When entering checkpoint mode, ensure a main agent is selected
+    if (mode === 'checkpoint' && !get().selectedMainAgent) {
+      const { configAgents, agentConfigs } = get();
+      const firstId = configAgents.length > 0
+        ? configAgents[0].id
+        : agentConfigs.length > 0
+          ? `agent_${String.fromCharCode(97)}`
+          : null;
+      if (firstId) {
+        updates.selectedMainAgent = firstId;
+        updates.selectedSingleAgent = firstId;
+      }
+    }
+    set(updates);
+  },
+  setAgentMode: (mode) => {
+    const { selectedMainAgent, selectedSingleAgent } = get();
+    // When switching to single mode, default to the main agent if set
+    if (mode === 'single' && selectedMainAgent && !selectedSingleAgent) {
+      set({ agentMode: mode, selectedSingleAgent: selectedMainAgent });
+    } else {
+      set({ agentMode: mode });
+    }
+  },
   setSelectedSingleAgent: (agentId) => set({ selectedSingleAgent: agentId }),
+  setSelectedMainAgent: (agentId) => {
+    // Keep selectedSingleAgent in sync — the "main" agent is also
+    // the one that runs in single-agent mode
+    set({ selectedMainAgent: agentId, selectedSingleAgent: agentId });
+  },
   setRefinementEnabled: (enabled) => set({ refinementEnabled: enabled }),
   setPersonasMode: (mode) => set({ personasMode: mode }),
+  setEvalCriteriaEnabled: (enabled) => set({ evalCriteriaEnabled: enabled }),
+  setPromptImproverEnabled: (enabled) => set({ promptImproverEnabled: enabled }),
   setPlanMode: (mode) => set({ planMode: mode }),
 
   setAgentCount: (count) => {
@@ -296,13 +344,21 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
 
     // --- Orchestrator overrides (ported from TuiModeState.get_orchestrator_overrides) ---
 
-    // Coordination mode: decomposition requires multi-agent
+    // Coordination mode: decomposition requires multi-agent, checkpoint is special
     let effectiveCoordination = state.coordinationMode;
     if (state.agentMode === 'single' && effectiveCoordination === 'decomposition') {
       effectiveCoordination = 'parallel';
     }
-    overrides.coordination_mode =
-      effectiveCoordination === 'decomposition' ? 'decomposition' : 'voting';
+    if (effectiveCoordination === 'checkpoint') {
+      overrides.coordination_mode = 'voting';  // Checkpoint uses voting during delegation
+      overrides.checkpoint_enabled = true;
+      if (state.selectedMainAgent) {
+        overrides.main_agent = state.selectedMainAgent;
+      }
+    } else {
+      overrides.coordination_mode =
+        effectiveCoordination === 'decomposition' ? 'decomposition' : 'voting';
+    }
 
     // Refinement disabled = quick mode
     if (!state.refinementEnabled) {
@@ -325,6 +381,16 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
     if (state.personasMode !== 'off') {
       overrides.persona_generator_enabled = true;
       overrides.persona_diversity_mode = state.personasMode;
+    }
+
+    // Eval criteria generator
+    if (state.evalCriteriaEnabled) {
+      overrides.evaluation_criteria_generator_enabled = true;
+    }
+
+    // Prompt improver
+    if (state.promptImproverEnabled) {
+      overrides.prompt_improver_enabled = true;
     }
 
     // Plan mode overrides
@@ -389,10 +455,13 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
       agentMode: state.agentMode,
       refinementEnabled: state.refinementEnabled,
       personasMode: state.personasMode,
+      evalCriteriaEnabled: state.evalCriteriaEnabled,
+      promptImproverEnabled: state.promptImproverEnabled,
       planMode: state.planMode,
       maxAnswers: state.maxAnswers,
       agentCount: state.agentCount,
       dockerEnabled: state.dockerEnabled,
+      agentConfigs: state.agentConfigs,
     };
 
     try {
@@ -431,13 +500,23 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
           if (ui.agentMode) updates.agentMode = ui.agentMode;
           if (ui.refinementEnabled !== undefined) updates.refinementEnabled = ui.refinementEnabled;
           if (ui.personasMode) updates.personasMode = ui.personasMode;
+          if (ui.evalCriteriaEnabled !== undefined) updates.evalCriteriaEnabled = ui.evalCriteriaEnabled;
+          if (ui.promptImproverEnabled !== undefined) updates.promptImproverEnabled = ui.promptImproverEnabled;
           if (ui.planMode) updates.planMode = ui.planMode;
           if (ui.maxAnswers !== undefined) updates.maxAnswers = ui.maxAnswers;
           if (ui.agentCount !== undefined) updates.agentCount = ui.agentCount;
           if (ui.dockerEnabled !== undefined) updates.dockerEnabled = ui.dockerEnabled;
 
-          // Rebuild agentConfigs array to match agentCount
-          if (ui.agentCount !== null && ui.agentCount !== undefined) {
+          // Restore per-agent configs if saved, otherwise rebuild empty defaults
+          if (ui.agentConfigs && Array.isArray(ui.agentConfigs)) {
+            updates.agentConfigs = ui.agentConfigs.map((c: Partial<AgentConfigOverride>) => ({
+              provider: c.provider ?? null,
+              model: c.model ?? null,
+              reasoningEffort: c.reasoningEffort ?? null,
+              enableWebSearch: c.enableWebSearch ?? null,
+              enableCodeExecution: c.enableCodeExecution ?? null,
+            }));
+          } else if (ui.agentCount !== null && ui.agentCount !== undefined) {
             const configs: AgentConfigOverride[] = [];
             for (let i = 0; i < ui.agentCount; i++) {
               configs.push(defaultAgentConfig());
@@ -461,7 +540,7 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
     const isCustom = configPath === customConfigPath;
 
     if (isCustom) {
-      set({ configAgents: [], configMaxAnswers: null, configLocked: false });
+      set({ configAgents: [], configMaxAnswers: null, configPersonaMode: null, configEvalCriteriaEnabled: null, configPromptImproverEnabled: null, configLocked: false });
       return;
     }
 
@@ -472,12 +551,20 @@ export const useModeStore = create<ModeState & ModeActions>()((set, get) => ({
       const updates: Partial<ModeState> = { configLocked: true };
       if (data.agents && Array.isArray(data.agents)) {
         updates.configAgents = data.agents;
+        // Default main agent to first agent so checkpoint mode works immediately
+        if (data.agents.length > 0 && !get().selectedMainAgent) {
+          updates.selectedMainAgent = data.agents[0].id;
+          updates.selectedSingleAgent = data.agents[0].id;
+        }
       }
       if (data.max_answers !== undefined && data.max_answers !== null) {
         updates.configMaxAnswers = data.max_answers;
       } else {
         updates.configMaxAnswers = null;
       }
+      updates.configPersonaMode = data.persona_mode ?? null;
+      updates.configEvalCriteriaEnabled = data.eval_criteria_enabled ?? null;
+      updates.configPromptImproverEnabled = data.prompt_improver_enabled ?? null;
       set(updates);
     } catch {
       // Silently ignore
@@ -502,6 +589,8 @@ useModeStore.subscribe(
       state.agentMode !== prevState.agentMode ||
       state.refinementEnabled !== prevState.refinementEnabled ||
       state.personasMode !== prevState.personasMode ||
+      state.evalCriteriaEnabled !== prevState.evalCriteriaEnabled ||
+      state.promptImproverEnabled !== prevState.promptImproverEnabled ||
       state.planMode !== prevState.planMode ||
       state.maxAnswers !== prevState.maxAnswers;
 

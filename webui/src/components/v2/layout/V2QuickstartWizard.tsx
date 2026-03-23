@@ -1,7 +1,7 @@
 /**
  * V2 Quickstart Wizard Overlay
  *
- * Full-screen overlay for guided config setup, following the FinalAnswerOverlay pattern.
+ * Full-screen overlay for guided config setup.
  * Reuses existing wizard step components and the wizardStore for all state.
  */
 

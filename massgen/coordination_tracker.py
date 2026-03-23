@@ -59,6 +59,14 @@ class EventType(str, Enum):
     BROADCAST_TIMEOUT = "broadcast_timeout"
     HUMAN_BROADCAST_RESPONSE = "human_broadcast_response"
 
+    # Checkpoint coordination events
+    CHECKPOINT_CALLED = "checkpoint_called"
+    CHECKPOINT_AGENTS_ACTIVATED = "checkpoint_agents_activated"
+    CHECKPOINT_CONSENSUS_REACHED = "checkpoint_consensus_reached"
+    CHECKPOINT_ACTION_EXECUTED = "checkpoint_action_executed"
+    CHECKPOINT_ACTION_FAILED = "checkpoint_action_failed"
+    CHECKPOINT_COMPLETED = "checkpoint_completed"
+
 
 ACTION_TO_EVENT = {
     ActionType.ERROR: EventType.AGENT_ERROR,

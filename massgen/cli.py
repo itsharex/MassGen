@@ -3589,6 +3589,10 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
         checklist_criteria_preset=coord_cfg.get("checklist_criteria_preset"),
         checklist_criteria_inline=coord_cfg.get("checklist_criteria_inline"),
         resume_from_log=coord_cfg.get("resume_from_log"),
+        checkpoint_enabled=coord_cfg.get("checkpoint_enabled", False),
+        checkpoint_mode=coord_cfg.get("checkpoint_mode", "conversation"),
+        checkpoint_guidance=coord_cfg.get("checkpoint_guidance", ""),
+        checkpoint_gated_patterns=coord_cfg.get("checkpoint_gated_patterns", []),
     )
 
 
@@ -3958,6 +3962,17 @@ async def run_question_with_history(
     pre_populated_workspaces = kwargs.pop("pre_populated_workspaces", None)
     if pre_populated_workspaces:
         orchestrator._pre_populated_workspaces = pre_populated_workspaces
+
+    # Detect main_agent for checkpoint coordination mode
+    # MCP injection is handled by orchestrator._init_checkpoint_tool() in __init__
+    raw_agents_for_checkpoint = kwargs.get("agents_config", [])
+    if isinstance(raw_agents_for_checkpoint, list):
+        for agent_data in raw_agents_for_checkpoint:
+            if isinstance(agent_data, dict) and agent_data.get("main_agent") is True:
+                main_agent_id = agent_data.get("id")
+                if main_agent_id and main_agent_id in agents:
+                    orchestrator.set_main_agent(main_agent_id)
+                break
 
     # Parse per-agent subtask assignments for decomposition mode
     if orchestrator_config.coordination_mode == "decomposition":

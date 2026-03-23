@@ -118,74 +118,13 @@ describe('TileContainer', () => {
     expect(screen.queryByTestId('panel-group')).toBeNull()
   })
 
-  it('shows prompt banner when question is set and tiles are open', () => {
+  it('does not render prompt banner (removed)', () => {
     act(() => {
       useAgentStore.getState().initSession('s1', 'Write a poem about cats', ['agent_a'], 'dark')
       useTileStore.getState().setTiles([makeTile('a')])
     })
 
     render(<TileContainer />)
-    expect(screen.getByTestId('prompt-banner')).toBeInTheDocument()
-    // Should show truncated question
-    expect(screen.getByTestId('prompt-banner')).toHaveTextContent('Write a poem about cats')
-  })
-
-  it('hides prompt banner when no question is set', () => {
-    act(() => {
-      useTileStore.getState().setTiles([makeTile('a')])
-    })
-
-    render(<TileContainer />)
     expect(screen.queryByTestId('prompt-banner')).toBeNull()
-  })
-
-  it('truncates long prompts with ellipsis', () => {
-    const longQuestion = 'Write a comprehensive analysis of the economic and social impacts of artificial intelligence on global labor markets'
-    act(() => {
-      useAgentStore.getState().initSession('s1', longQuestion, ['agent_a'], 'dark')
-      useTileStore.getState().setTiles([makeTile('a')])
-    })
-
-    render(<TileContainer />)
-    const banner = screen.getByTestId('prompt-banner')
-    // Should contain ellipsis for long text (CSS truncation or JS truncation)
-    expect(banner.textContent!.length).toBeLessThan(longQuestion.length + 20)
-  })
-
-  it('clicking prompt banner opens expanded view with full question', () => {
-    const longQuestion = 'Write a comprehensive analysis of the economic and social impacts of artificial intelligence on global labor markets and future workforce dynamics'
-    act(() => {
-      useAgentStore.getState().initSession('s1', longQuestion, ['agent_a'], 'dark')
-      useTileStore.getState().setTiles([makeTile('a')])
-    })
-
-    render(<TileContainer />)
-    // Expanded view not visible initially
-    expect(screen.queryByTestId('prompt-expanded')).toBeNull()
-
-    // Click the banner
-    fireEvent.click(screen.getByTestId('prompt-banner'))
-
-    // Expanded view shows full question
-    const expanded = screen.getByTestId('prompt-expanded')
-    expect(expanded).toBeInTheDocument()
-    expect(expanded).toHaveTextContent(longQuestion)
-  })
-
-  it('clicking expanded prompt view closes it', () => {
-    act(() => {
-      useAgentStore.getState().initSession('s1', 'Write a poem', ['agent_a'], 'dark')
-      useTileStore.getState().setTiles([makeTile('a')])
-    })
-
-    render(<TileContainer />)
-
-    // Open
-    fireEvent.click(screen.getByTestId('prompt-banner'))
-    expect(screen.getByTestId('prompt-expanded')).toBeInTheDocument()
-
-    // Close by clicking the close button
-    fireEvent.click(screen.getByTestId('prompt-expanded-close'))
-    expect(screen.queryByTestId('prompt-expanded')).toBeNull()
   })
 })

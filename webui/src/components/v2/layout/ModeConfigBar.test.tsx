@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { ModeConfigBar } from './ModeConfigBar';
 import { useModeStore } from '../../../stores/v2/modeStore';
 
@@ -14,12 +14,13 @@ describe('ModeConfigBar', () => {
 
   it('renders mode toggles', () => {
     render(<ModeConfigBar />);
+    // Coordination is now a DropdownToken — shows selected value "Parallel"
+    expect(screen.getByTestId('dropdown-coordination')).toBeDefined();
     expect(screen.getByText('Parallel')).toBeDefined();
-    expect(screen.getByText('Decomp')).toBeDefined();
     expect(screen.getByText('Multi')).toBeDefined();
-    expect(screen.getByText('Single')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Switch to Single' })).toBeInTheDocument();
     expect(screen.getByText('Refine')).toBeDefined();
-    expect(screen.getByText('Quick')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Switch to Quick' })).toBeInTheDocument();
   });
 
   it('renders agent config controls', () => {
@@ -35,41 +36,63 @@ describe('ModeConfigBar', () => {
     expect(screen.getByText('Normal')).toBeDefined();
   });
 
-  it('renders personas dropdown', () => {
+  it('renders pre-collab dropdown', () => {
     render(<ModeConfigBar />);
-    expect(screen.getByTestId('dropdown-personas')).toBeDefined();
-    expect(screen.getByText('No Personas')).toBeDefined();
+    expect(screen.getByTestId('dropdown-precollab')).toBeDefined();
+    expect(screen.getByText('Off')).toBeDefined();
   });
 
-  it('clicking coordination toggle updates store', () => {
+  it('clicking coordination dropdown updates store', () => {
     render(<ModeConfigBar />);
     expect(useModeStore.getState().coordinationMode).toBe('parallel');
 
-    // Inactive option is a button — click to switch
+    // Open the dropdown, then select Decomp
+    const dropdown = screen.getByTestId('dropdown-coordination');
+    fireEvent.click(dropdown.querySelector('button')!);
     fireEvent.click(screen.getByText('Decomp'));
     expect(useModeStore.getState().coordinationMode).toBe('decomposition');
-
-    // After switch, "Parallel" is now the inactive button
-    fireEvent.click(screen.getByText('Parallel'));
-    expect(useModeStore.getState().coordinationMode).toBe('parallel');
   });
 
   it('clicking agent mode toggle updates store', () => {
     render(<ModeConfigBar />);
-    fireEvent.click(screen.getByText('Single'));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Single' }));
     expect(useModeStore.getState().agentMode).toBe('single');
 
-    fireEvent.click(screen.getByText('Multi'));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Multi' }));
     expect(useModeStore.getState().agentMode).toBe('multi');
   });
 
   it('clicking refinement toggle updates store', () => {
     render(<ModeConfigBar />);
-    fireEvent.click(screen.getByText('Quick'));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Quick' }));
     expect(useModeStore.getState().refinementEnabled).toBe(false);
 
-    fireEvent.click(screen.getByText('Refine'));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Refine' }));
     expect(useModeStore.getState().refinementEnabled).toBe(true);
+  });
+
+  it('uses a dedicated peek affordance for inactive toggle options', () => {
+    render(<ModeConfigBar />);
+
+    const agentToggle = screen.getByTestId('toggle-agent-mode');
+    expect(
+      within(agentToggle).getByRole('button', { name: 'Switch to Single' })
+    ).toBeInTheDocument();
+    expect(within(agentToggle).getByTestId('toggle-agent-mode-peek')).toBeInTheDocument();
+    expect(within(agentToggle).getByTestId('toggle-agent-mode-inactive-label')).toHaveTextContent('Single');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Single' }));
+    expect(
+      within(agentToggle).getByRole('button', { name: 'Switch to Multi' })
+    ).toBeInTheDocument();
+    expect(within(agentToggle).getByTestId('toggle-agent-mode-inactive-label')).toHaveTextContent('Multi');
+
+    const refinementToggle = screen.getByTestId('toggle-refinement');
+    expect(
+      within(refinementToggle).getByRole('button', { name: 'Switch to Quick' })
+    ).toBeInTheDocument();
+    expect(within(refinementToggle).getByTestId('toggle-refinement-peek')).toBeInTheDocument();
+    expect(within(refinementToggle).getByTestId('toggle-refinement-inactive-label')).toHaveTextContent('Quick');
   });
 
   it('execution lock dims controls', () => {
@@ -102,18 +125,57 @@ describe('ModeConfigBar', () => {
     });
   });
 
-  describe('personas dropdown', () => {
-    it('opens and selects persona mode', () => {
+  describe('pre-collab dropdown', () => {
+    it('opens and shows all options', () => {
       render(<ModeConfigBar />);
-      const dropdown = screen.getByTestId('dropdown-personas');
+      const dropdown = screen.getByTestId('dropdown-precollab');
 
-      // Open dropdown
       fireEvent.click(dropdown.querySelector('button')!);
-      expect(screen.getByTestId('dropdown-personas-menu')).toBeDefined();
+      expect(screen.getByTestId('dropdown-precollab-menu')).toBeDefined();
+      expect(screen.getByText('No Personas')).toBeDefined();
+      expect(screen.getByText('Perspective')).toBeDefined();
+      expect(screen.getByText('Eval Criteria')).toBeDefined();
+      expect(screen.getByText('Improve Prompt')).toBeDefined();
+    });
 
-      // Select Perspective
+    it('selects persona mode', () => {
+      render(<ModeConfigBar />);
+      const dropdown = screen.getByTestId('dropdown-precollab');
+      fireEvent.click(dropdown.querySelector('button')!);
+
       fireEvent.click(screen.getByText('Perspective'));
       expect(useModeStore.getState().personasMode).toBe('perspective');
+    });
+
+    it('toggles eval criteria', () => {
+      render(<ModeConfigBar />);
+      const dropdown = screen.getByTestId('dropdown-precollab');
+      fireEvent.click(dropdown.querySelector('button')!);
+
+      fireEvent.click(screen.getByTestId('precollab-eval-criteria'));
+      expect(useModeStore.getState().evalCriteriaEnabled).toBe(true);
+    });
+
+    it('toggles prompt improver', () => {
+      render(<ModeConfigBar />);
+      const dropdown = screen.getByTestId('dropdown-precollab');
+      fireEvent.click(dropdown.querySelector('button')!);
+
+      fireEvent.click(screen.getByTestId('precollab-prompt-improver'));
+      expect(useModeStore.getState().promptImproverEnabled).toBe(true);
+    });
+
+    it('shows summary label for active count', () => {
+      useModeStore.getState().setPersonasMode('perspective');
+      useModeStore.getState().setEvalCriteriaEnabled(true);
+      render(<ModeConfigBar />);
+      expect(screen.getByText('2 active')).toBeDefined();
+    });
+
+    it('shows single feature name when only one active', () => {
+      useModeStore.getState().setEvalCriteriaEnabled(true);
+      render(<ModeConfigBar />);
+      expect(screen.getByText('Eval')).toBeDefined();
     });
   });
 

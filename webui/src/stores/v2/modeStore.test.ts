@@ -26,6 +26,8 @@ describe('useModeStore', () => {
       expect(state.dockerAvailable).toBeNull();
       expect(state.dockerStatus).toBeNull();
       expect(state.executionLocked).toBe(false);
+      expect(state.evalCriteriaEnabled).toBe(false);
+      expect(state.promptImproverEnabled).toBe(false);
     });
   });
 
@@ -170,6 +172,24 @@ describe('useModeStore', () => {
       // No setAgentConfig calls — all entries have null provider/model
       const overrides = useModeStore.getState().getOverrides();
       expect(overrides.agent_overrides).toBeUndefined();
+    });
+
+    it('includes eval criteria override when enabled', () => {
+      useModeStore.getState().setEvalCriteriaEnabled(true);
+      const overrides = useModeStore.getState().getOverrides();
+      expect(overrides.evaluation_criteria_generator_enabled).toBe(true);
+    });
+
+    it('includes prompt improver override when enabled', () => {
+      useModeStore.getState().setPromptImproverEnabled(true);
+      const overrides = useModeStore.getState().getOverrides();
+      expect(overrides.prompt_improver_enabled).toBe(true);
+    });
+
+    it('does not include eval/prompt overrides when disabled', () => {
+      const overrides = useModeStore.getState().getOverrides();
+      expect(overrides.evaluation_criteria_generator_enabled).toBeUndefined();
+      expect(overrides.prompt_improver_enabled).toBeUndefined();
     });
 
     it('agent_overrides only includes non-null fields', () => {
@@ -431,6 +451,20 @@ describe('useModeStore', () => {
       useModeStore.getState().setMaxAnswers(null);
       expect(useModeStore.getState().maxAnswers).toBeNull();
     });
+
+    it('setEvalCriteriaEnabled', () => {
+      useModeStore.getState().setEvalCriteriaEnabled(true);
+      expect(useModeStore.getState().evalCriteriaEnabled).toBe(true);
+      useModeStore.getState().setEvalCriteriaEnabled(false);
+      expect(useModeStore.getState().evalCriteriaEnabled).toBe(false);
+    });
+
+    it('setPromptImproverEnabled', () => {
+      useModeStore.getState().setPromptImproverEnabled(true);
+      expect(useModeStore.getState().promptImproverEnabled).toBe(true);
+      useModeStore.getState().setPromptImproverEnabled(false);
+      expect(useModeStore.getState().promptImproverEnabled).toBe(false);
+    });
   });
 
   describe('custom config persistence', () => {
@@ -456,6 +490,11 @@ describe('useModeStore', () => {
           maxAnswers: 3,
           agentMode: 'multi',
           agentCount: 3,
+          agentConfigs: [
+            { provider: 'openai', model: 'gpt-4o', reasoningEffort: null, enableWebSearch: null, enableCodeExecution: null },
+            { provider: 'anthropic', model: 'claude-sonnet-4-5-20250514', reasoningEffort: 'high', enableWebSearch: null, enableCodeExecution: null },
+            { provider: null, model: null, reasoningEffort: null, enableWebSearch: null, enableCodeExecution: null },
+          ],
         },
       };
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
@@ -475,6 +514,13 @@ describe('useModeStore', () => {
       expect(state.maxAnswers).toBe(3);
       expect(state.agentCount).toBe(3);
       expect(state.agentConfigs).toHaveLength(3);
+      // Verify per-agent configs are restored, not empty defaults
+      expect(state.agentConfigs[0].provider).toBe('openai');
+      expect(state.agentConfigs[0].model).toBe('gpt-4o');
+      expect(state.agentConfigs[1].provider).toBe('anthropic');
+      expect(state.agentConfigs[1].model).toBe('claude-sonnet-4-5-20250514');
+      expect(state.agentConfigs[1].reasoningEffort).toBe('high');
+      expect(state.agentConfigs[2].provider).toBeNull();
     });
 
     it('restoreState sets needsFirstTimeSetup when no config exists', async () => {

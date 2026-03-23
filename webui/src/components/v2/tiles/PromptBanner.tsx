@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '../../../lib/utils';
 import { useAgentStore } from '../../../stores/agentStore';
 
-const MAX_DISPLAY_LENGTH = 60;
+const MAX_DISPLAY_LENGTH = 80;
 
 function truncateQuestion(q: string): string {
   const single = q.replace(/\n/g, ' ').trim();
@@ -18,50 +18,48 @@ export function PromptBanner() {
   if (!question) return null;
 
   return (
-    <>
-      {/* Collapsed pill */}
+    <div className="relative shrink-0">
+      {/* Thin inline bar — does not overlap content */}
       <div
         data-testid="prompt-banner"
         className={cn(
-          'absolute top-2 left-1/2 -translate-x-1/2 z-10 max-w-[50%]',
-          'flex items-center gap-2 px-2.5 py-1 rounded cursor-pointer',
-          'bg-v2-surface-raised/90 backdrop-blur-sm border border-v2-border',
-          'text-xs text-v2-text-muted',
-          'opacity-70 hover:opacity-100 transition-opacity duration-150'
+          'flex items-center gap-2 px-4 py-1 cursor-pointer',
+          'bg-v2-surface border-b border-v2-border-subtle',
+          'text-[11px] text-v2-text-muted',
+          'hover:bg-v2-surface-raised transition-colors duration-100'
         )}
         title="Click to view full prompt"
-        onClick={() => setExpanded(true)}
+        onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-v2-accent font-medium shrink-0">
+        <span className="text-v2-accent font-semibold shrink-0">
           Turn {turnNumber}
         </span>
-        <span className="text-v2-border">|</span>
+        <span className="text-v2-border-subtle">|</span>
         <span className="italic truncate">
           {truncateQuestion(question)}
         </span>
       </div>
 
-      {/* Expanded overlay */}
+      {/* Expanded overlay — drops down from the bar */}
       {expanded && (
         <div
           data-testid="prompt-expanded"
           className={cn(
-            'absolute top-2 right-2 z-20 w-[min(480px,60%)]',
-            'rounded-lg border border-v2-border shadow-lg',
+            'absolute top-full left-0 right-0 z-20',
+            'border-b border-v2-border shadow-lg',
             'bg-v2-surface-raised/95 backdrop-blur-sm',
-            'animate-v2-tile-enter'
+            'animate-v2-fade-in'
           )}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-v2-border">
-            <span className="text-xs font-medium text-v2-accent">
-              Turn {turnNumber} — Prompt
-            </span>
+          <div className="flex items-start justify-between px-4 py-2.5">
+            <p className="text-sm text-v2-text whitespace-pre-wrap break-words flex-1 max-h-48 overflow-y-auto v2-scrollbar">
+              {question}
+            </p>
             <button
               data-testid="prompt-expanded-close"
-              onClick={() => setExpanded(false)}
+              onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
               className={cn(
-                'flex items-center justify-center w-5 h-5 rounded',
+                'flex items-center justify-center w-5 h-5 rounded shrink-0 ml-2',
                 'text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover',
                 'transition-colors duration-150'
               )}
@@ -71,15 +69,8 @@ export function PromptBanner() {
               </svg>
             </button>
           </div>
-
-          {/* Full question body */}
-          <div className="px-3 py-2.5 max-h-48 overflow-y-auto v2-scrollbar">
-            <p className="text-sm text-v2-text whitespace-pre-wrap break-words">
-              {question}
-            </p>
-          </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

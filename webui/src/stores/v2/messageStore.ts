@@ -26,7 +26,8 @@ export type ChannelMessageType =
   | 'error'
   | 'subagent-spawn'
   | 'subagent-started'
-  | 'broadcast';
+  | 'broadcast'
+  | 'checkpoint';
 
 interface BaseMessage {
   id: string;
@@ -119,6 +120,15 @@ export interface BroadcastMessage extends BaseMessage {
   targets: string[] | null;
 }
 
+export interface CheckpointMessage extends BaseMessage {
+  type: 'checkpoint';
+  checkpointNumber: number;
+  task: string;
+  status: 'started' | 'completed';
+  consensus?: string;
+  workspaceChanges?: { file: string; change: string }[];
+}
+
 export interface CompletionMessage extends BaseMessage {
   type: 'completion';
   label: string;
@@ -138,6 +148,7 @@ export type ChannelMessage =
   | SubagentSpawnMessage
   | SubagentStartedMessage
   | BroadcastMessage
+  | CheckpointMessage
   | CompletionMessage;
 
 // ============================================================================

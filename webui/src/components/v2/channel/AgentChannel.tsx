@@ -40,10 +40,18 @@ export function AgentChannel({ agentId }: AgentChannelProps) {
     isAutoScrollRef.current = atBottom;
   };
 
-  // Streaming indicator: show when agent is working and the last message isn't a pending tool call
+  // Inline status indicator — shows at bottom of message stream while agent is active
   const lastMsg = messages[messages.length - 1];
   const lastIsPending = lastMsg?.type === 'tool-call' && lastMsg.result === undefined;
-  const showStreaming = agent?.status === 'working' && !lastIsPending;
+  const isDone = agent?.status === 'completed' || agent?.status === 'failed';
+  const statusLabel: Record<string, string> = {
+    working: 'Generating',
+    voting: 'Evaluating',
+    waiting: 'Waiting',
+  };
+  const streamingLabel = statusLabel[agent?.status ?? ''] ?? '';
+  // Show when not done and not on a pending tool call (tool spinner handles that)
+  const showStreaming = !isDone && !lastIsPending && messages.length > 0;
 
   if (!agent) {
     return (
@@ -96,7 +104,7 @@ export function AgentChannel({ agentId }: AgentChannelProps) {
               </div>
             )}
 
-            <StreamingIndicator visible={showStreaming} />
+            <StreamingIndicator visible={showStreaming} label={streamingLabel} />
 
             {/* Final answer rendered inline at bottom of stream */}
             <FinalAnswerSection />

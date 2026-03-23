@@ -162,6 +162,19 @@ export function GlobalInputBar({
 
   return (
     <div className="border-t border-v2-border bg-v2-surface px-4 py-3">
+      {/* Disconnected banner */}
+      {(wsStatus === 'disconnected' || wsStatus === 'error') && (
+        <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded bg-red-500/8 border border-red-500/20 animate-v2-fade-in">
+          <span className="w-2 h-2 rounded-full bg-red-400 shrink-0 animate-pulse" />
+          <span className="text-xs text-red-300 font-medium">
+            Connection lost
+          </span>
+          <span className="text-[10px] text-red-400/60">
+            Reconnecting...
+          </span>
+        </div>
+      )}
+
       {/* Queued broadcast banner */}
       {queuedBroadcast && (
         <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded bg-purple-500/5 border border-purple-500/20 animate-v2-fade-in">

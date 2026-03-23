@@ -18,10 +18,6 @@ vi.mock('./GlobalInputBar', () => ({
   GlobalInputBar: () => <div data-testid="global-input-bar" />,
 }))
 
-vi.mock('./FinalAnswerOverlay', () => ({
-  FinalAnswerOverlay: () => <div data-testid="final-answer-overlay" />,
-}))
-
 vi.mock('./LaunchIndicator', () => ({
   LaunchIndicator: () => <div data-testid="launch-indicator">launch</div>,
 }))

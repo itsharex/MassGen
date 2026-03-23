@@ -112,6 +112,7 @@
 /* v2 Scrollbar */
 .v2-scrollbar::-webkit-scrollbar {
   width: 8px;
+  height: 3px;
 }
 
 .v2-scrollbar::-webkit-scrollbar-track {

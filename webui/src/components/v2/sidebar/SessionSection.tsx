@@ -232,7 +232,7 @@ export function SessionSection({ collapsed, onSessionChange, onNewSession, onCon
             placeholder="Search sessions..."
             className={cn(
               'w-full text-xs px-2 py-1 rounded',
-              'bg-v2-surface border border-v2-border/50',
+              'bg-v2-sidebar border border-v2-border/50',
               'text-v2-text placeholder:text-v2-text-muted/50',
               'outline-none focus:border-v2-accent/50',
               'transition-colors duration-100'

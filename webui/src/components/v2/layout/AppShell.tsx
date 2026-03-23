@@ -12,7 +12,6 @@ import { useModeStore } from '../../../stores/v2/modeStore';
 import { Sidebar } from '../sidebar/Sidebar';
 import { TileContainer } from '../tiles/TileContainer';
 import { GlobalInputBar } from './GlobalInputBar';
-// FinalAnswerOverlay removed — final answer now renders inline in AgentChannel
 import { ModeConfigBar } from './ModeConfigBar';
 import { V2QuickstartWizard } from './V2QuickstartWizard';
 import { V2SetupOverlay } from './V2SetupOverlay';

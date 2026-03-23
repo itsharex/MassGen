@@ -7,7 +7,8 @@ export type TileType =
   | 'subagent-view'
   | 'timeline-view'
   | 'workspace-browser'
-  | 'vote-results';
+  | 'vote-results'
+  | 'checkpoint-view';
 
 export interface TileState {
   id: string;

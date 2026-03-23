@@ -6,7 +6,6 @@ import { useWizardStore } from '../../../stores/wizardStore';
 import { TileWrapper } from './TileWrapper';
 import { EmptyState } from './EmptyState';
 import { OrientationToggle } from './OrientationToggle';
-import { PromptBanner } from './PromptBanner';
 
 interface TileContainerProps {
   hasConfigs?: boolean;
@@ -72,8 +71,7 @@ export function TileContainer({ hasConfigs }: TileContainerProps) {
 
   if (tiles.length === 1) {
     return (
-      <div className="h-full animate-v2-tile-enter relative">
-        <PromptBanner />
+      <div className="h-full animate-v2-tile-enter">
         <TileWrapper tile={tiles[0]} isActive showClose={false} />
       </div>
     );
@@ -82,7 +80,6 @@ export function TileContainer({ hasConfigs }: TileContainerProps) {
   // Multiple tiles: render in a resizable panel group
   return (
     <div className="h-full relative">
-      <PromptBanner />
       <OrientationToggle />
       <Group
         orientation={orientation}

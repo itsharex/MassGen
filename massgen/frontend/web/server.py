@@ -17,7 +17,7 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -34,6 +34,9 @@ from massgen.filesystem_manager._constants import (
     get_language_for_extension,
 )
 from massgen.frontend.displays.web_display import WebDisplay
+
+if TYPE_CHECKING:
+    from massgen.orchestrator import Orchestrator
 
 # Set up logging for workspace browser debugging
 workspace_logger = logging.getLogger("massgen.workspace")
@@ -935,6 +938,20 @@ def create_app(
             result: dict[str, Any] = {"agents": agents_result}
             if "max_new_answers_per_agent" in orch:
                 result["max_answers"] = orch["max_new_answers_per_agent"]
+
+            # Extract pre-collab settings from coordination block
+            coord = orch.get("coordination", {}) or {}
+
+            pg = coord.get("persona_generator", {}) or {}
+            if pg.get("enabled"):
+                result["persona_mode"] = pg.get("diversity_mode", "perspective")
+
+            ecg = coord.get("evaluation_criteria_generator", {}) or {}
+            result["eval_criteria_enabled"] = bool(ecg.get("enabled", False))
+
+            pi = coord.get("prompt_improver", {}) or {}
+            result["prompt_improver_enabled"] = bool(pi.get("enabled", False))
+
             return result
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": str(e)})
@@ -5366,6 +5383,9 @@ async def run_coordination_with_history(
             winning_agents_history=winning_agents_history,
         )
 
+        # Set up checkpoint coordination if main_agent configured
+        _setup_checkpoint_orchestrator(orchestrator, config)
+
         # Set up cancellation manager for WebUI cancellation support
         from massgen.cancellation import CancellationManager
 
@@ -5759,6 +5779,13 @@ def _apply_docker_override(config: dict, use_docker: bool) -> None:
             backend["exclude_file_operation_mcps"] = False
 
 
+# NOTE: Checkpoint MCP injection into agent backends is now handled by
+# orchestrator._init_checkpoint_tool() in Orchestrator.__init__().
+# The old _inject_checkpoint_mcp_into_agent_config() and
+# _inject_checkpoint_mcp_from_yaml_config() functions were removed
+# because they injected at config level before workspace paths existed.
+
+
 def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
     """Apply WebUI mode bar overrides to the loaded config dict."""
     if not overrides:
@@ -5788,6 +5815,18 @@ def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
         if "persona_diversity_mode" in overrides:
             pg["diversity_mode"] = overrides["persona_diversity_mode"]
 
+    # Evaluation criteria generator
+    if "evaluation_criteria_generator_enabled" in overrides:
+        coord = orch.setdefault("coordination", {})
+        ecg = coord.setdefault("evaluation_criteria_generator", {})
+        ecg["enabled"] = overrides["evaluation_criteria_generator_enabled"]
+
+    # Prompt improver
+    if "prompt_improver_enabled" in overrides:
+        coord = orch.setdefault("coordination", {})
+        pi = coord.setdefault("prompt_improver", {})
+        pi["enabled"] = overrides["prompt_improver_enabled"]
+
     # Plan mode overrides
     if overrides.get("plan_mode") and overrides["plan_mode"] != "normal":
         coord = orch.setdefault("coordination", {})
@@ -5810,9 +5849,54 @@ def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
     ):
         _apply_agent_overrides(config, overrides)
 
+    # Checkpoint coordination mode
+    if overrides.get("checkpoint_enabled"):
+        coord = orch.setdefault("coordination", {})
+        coord["checkpoint_enabled"] = True
+        coord["checkpoint_mode"] = overrides.get("checkpoint_mode", "conversation")
+        gated_patterns = overrides.get("checkpoint_gated_patterns", [])
+        if gated_patterns:
+            coord["checkpoint_gated_patterns"] = gated_patterns
+        # Mark the main agent in config (MCP injection handled by orchestrator)
+        main_agent_id = overrides.get("main_agent")
+        if main_agent_id:
+            agents_list = config.get("agents", [])
+            for agent in agents_list:
+                if isinstance(agent, dict):
+                    if agent.get("id") == main_agent_id:
+                        agent["main_agent"] = True
+                    else:
+                        agent.pop("main_agent", None)
+
     # Docker toggle
     if "docker_override" in overrides:
         _apply_docker_override(config, overrides["docker_override"])
+
+
+def _setup_checkpoint_orchestrator(
+    orchestrator: Orchestrator,
+    config: dict,
+) -> None:
+    """Detect main_agent in config and call orchestrator.set_main_agent().
+
+    MCP injection is handled automatically by set_main_agent() which
+    calls _init_checkpoint_tool() internally.
+    """
+    agents_list = config.get("agents", [])
+    if not isinstance(agents_list, list):
+        return
+
+    main_agent_id = None
+    for agent_data in agents_list:
+        if isinstance(agent_data, dict) and agent_data.get("main_agent") is True:
+            main_agent_id = agent_data.get("id")
+            break
+
+    if not main_agent_id or main_agent_id not in orchestrator.agents:
+        return
+
+    # set_main_agent() triggers _init_checkpoint_tool() automatically
+    orchestrator.set_main_agent(main_agent_id)
 
 
 async def run_coordination(
@@ -6079,6 +6163,9 @@ async def run_coordination(
             snapshot_storage=snapshot_storage,
             agent_temporary_workspace=agent_temporary_workspace,
         )
+
+        # Set up checkpoint coordination if main_agent configured
+        _setup_checkpoint_orchestrator(orchestrator, config)
 
         # Set up cancellation manager for WebUI cancellation support
         from massgen.cancellation import CancellationManager
