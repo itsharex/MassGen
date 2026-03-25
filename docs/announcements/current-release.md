@@ -7,7 +7,7 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.68 — Checkpoint Mode! 🚀 New checkpoint coordination mode lets a main agent plan solo then delegate execution to the full multi-agent team via the `checkpoint()` tool. Plus: LLM API circuit breaker for 429 rate limit handling (currently Claude backend only), WebUI checkpoint support, and LiteLLM supply chain fix (if you installed MassGen on March 24, 2026, between 10:39 UTC and 16:00 UTC, please see https://docs.litellm.ai/blog/security-update-march-2026 to check if affected).
+We're excited to release MassGen v0.1.68 — Checkpoint Mode! 🚀 New checkpoint coordination mode lets a main agent plan solo then delegate execution to the full multi-agent team via the `checkpoint()` tool. Plus: LLM API circuit breaker (currently Claude backend only), WebUI checkpoint support, and LiteLLM supply chain fix (if you installed MassGen on March 24, 2026, between 10:39 UTC and 16:00 UTC, please see https://docs.litellm.ai/blog/security-update-march-2026 to check if affected).
 
 ## Install
 
@@ -29,7 +29,7 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.68 — Checkpoint Mode! 🚀 New checkpoint coordination mode lets a main agent plan solo then delegate execution to the full multi-agent team via the `checkpoint()` tool. Plus: LLM API circuit breaker for 429 rate limit handling (currently Claude backend only), WebUI checkpoint support, and LiteLLM supply chain fix (if you installed MassGen on March 24, 2026, between 10:39 UTC and 16:00 UTC, please see https://docs.litellm.ai/blog/security-update-march-2026 to check if affected).
+We're excited to release MassGen v0.1.68 — Checkpoint Mode! 🚀 New checkpoint coordination mode lets a main agent plan solo then delegate execution to the full multi-agent team via the `checkpoint()` tool. Plus: LLM API circuit breaker (currently Claude backend only), WebUI checkpoint support, and LiteLLM supply chain fix (if you installed MassGen on March 24, 2026, between 10:39 UTC and 16:00 UTC, please see https://docs.litellm.ai/blog/security-update-march-2026 to check if affected).
 
 **Key Improvement:**
 

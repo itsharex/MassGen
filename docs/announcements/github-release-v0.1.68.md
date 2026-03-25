@@ -10,7 +10,7 @@
 - **429 rate limit handling** ([#1024](https://github.com/massgen/MassGen/pull/1024)): Automatic circuit breaker pattern for Claude backend — detects 429 rate limits and backs off gracefully
 
 ### ✅ Fixes
-- **LiteLLM supply chain fix** ([#1025](https://github.com/massgen/MassGen/pull/1025)): Pinned litellm<=1.82.6 and committed uv.lock to prevent dependency attacks
+- **LiteLLM supply chain fix** ([#1025](https://github.com/massgen/MassGen/pull/1025)): Pinned litellm<=1.82.6 and committed uv.lock to prevent dependency attacks (if you installed MassGen on March 24, 2026, between 10:39 UTC and 16:00 UTC, please see https://docs.litellm.ai/blog/security-update-march-2026 to check if affected)
 
 ---
 
