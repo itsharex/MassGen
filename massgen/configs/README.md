@@ -238,7 +238,7 @@ Most configurations use environment variables for API keys:so
 **Try It:**
 ```bash
 pip install massgen==0.1.68
-# Try checkpoint mode
+# Try checkpoint mode -- click 'COORD' in the mode bar above the input then the checkpoint box
 uv run massgen --web
 ```
 
