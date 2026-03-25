@@ -39,7 +39,7 @@ interface ErrorMessageViewProps {
 export function ErrorMessageView({ message }: ErrorMessageViewProps) {
   return (
     <div className="v2-step-group py-1">
-      <div className="v2-step-node" style={{ background: 'rgb(248, 113, 113)' }} />
+      <div className="v2-step-node" style={{ background: 'var(--v2-error, rgb(248, 113, 113))' }} />
       <div className="flex items-start gap-2 rounded-v2-card bg-red-500/10 border border-red-500/20 px-3 py-2">
         <svg className="w-4 h-4 text-red-400 mt-0.5 shrink-0" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
           <circle cx="8" cy="8" r="6" />

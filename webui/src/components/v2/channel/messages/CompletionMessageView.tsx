@@ -17,7 +17,7 @@ export function CompletionMessageView({ message }: CompletionMessageViewProps) {
           width: '9px',
           height: '9px',
           borderRadius: '50%',
-          border: '1.5px solid rgb(52, 211, 153)',
+          border: '1.5px solid var(--v2-online, rgb(52, 211, 153))',
           opacity: 0.7,
           transform: 'translate(-50%, -50%)',
         }}

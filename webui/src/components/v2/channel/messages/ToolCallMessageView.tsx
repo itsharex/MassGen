@@ -275,7 +275,7 @@ function HookRow({ hook }: { hook: HookExecutionInfo }) {
         <span className="font-mono text-v2-text-secondary truncate">{hook.hook_name}</span>
 
         {/* Decision badge */}
-        <span className={cn('text-[10px] px-1.5 py-0.5 rounded border', style.bg, style.text, 'border-current/20 shrink-0')}>
+        <span className={cn('text-[11px] px-1.5 py-0.5 rounded border', style.bg, style.text, 'border-current/20 shrink-0')}>
           {style.label}
         </span>
 

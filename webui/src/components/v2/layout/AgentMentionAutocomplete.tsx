@@ -136,7 +136,7 @@ export const AgentMentionAutocomplete = forwardRef<
   return (
     <div
       ref={dropdownRef}
-      className="absolute bottom-full left-0 right-0 mb-1 bg-v2-surface-raised border border-v2-border rounded-v2-card shadow-lg overflow-hidden max-h-48 overflow-y-auto z-50"
+      className="absolute bottom-full left-0 right-0 mb-1 bg-v2-surface-raised border border-v2-border rounded-v2-card shadow-lg overflow-hidden max-h-48 overflow-y-auto v2-scrollbar z-50"
     >
       <div className="py-1">
         {filteredOptions.map((option, index) => {

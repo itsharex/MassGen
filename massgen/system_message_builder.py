@@ -596,11 +596,13 @@ class SystemMessageBuilder:
             # specialized_subagents is only defined when enable_subagents is True;
             # ternary is safe here because Python short-circuits on the False branch.
             _tp_subagents = specialized_subagents if enable_subagents else []
+            _checkpoint_enabled = hasattr(self.config, "coordination_config") and self.config.coordination_config and getattr(self.config.coordination_config, "checkpoint_enabled", False)
             builder.add_section(
                 TaskPlanningSection(
                     filesystem_mode=filesystem_mode,
                     decomposition_mode=is_decomposition,
                     specialized_subagents=_tp_subagents,
+                    checkpoint_mode=_checkpoint_enabled,
                 ),
             )
 

@@ -3369,6 +3369,7 @@ class TaskPlanningSection(SystemPromptSection):
         filesystem_mode: bool = False,
         decomposition_mode: bool = False,
         specialized_subagents=None,
+        checkpoint_mode: bool = False,
     ):
         super().__init__(
             title="Task Planning",
@@ -3378,11 +3379,35 @@ class TaskPlanningSection(SystemPromptSection):
         self.filesystem_mode = filesystem_mode
         self.decomposition_mode = decomposition_mode
         self.specialized_subagents = specialized_subagents or []
+        self.checkpoint_mode = checkpoint_mode
 
     def _build_subagent_classification_step(self) -> str:
-        """Build STEP 2 only when subagents are available, listing actual types."""
-        if not self.specialized_subagents:
+        """Build STEP 2 when subagents or checkpoint mode are available."""
+        if not self.specialized_subagents and not self.checkpoint_mode:
             return ""
+
+        if not self.specialized_subagents:
+            # Checkpoint-only mode (no subagents)
+            return (
+                "## STEP 2 — Classify Tasks for Checkpoint or Inline Execution\n"
+                "\n"
+                "**Before starting execution, classify each task:**\n"
+                "- **Do inline** — quick/trivial work, context gathering, "
+                "orchestration, anything with one correct answer\n"
+                "- **Checkpoint** — nontrivial work that benefits from "
+                "multi-agent refinement: design, building, reviews, "
+                "creative work, anything where diverse perspectives "
+                "improve quality\n"
+                "\n"
+                "Mark execution explicitly when creating tasks:\n"
+                '- `{"execution": {"mode": "inline"}}` — do it yourself\n'
+                '- `{"execution": {"mode": "checkpoint", "eval_criteria": '
+                '["criterion1", "criterion2"]}}` — delegate to team\n'
+                "\n"
+                "When you reach a checkpoint task, call `checkpoint()` with "
+                "the task description and eval_criteria from the plan.\n"
+                "\n"
+            )
         type_names = [t.name for t in self.specialized_subagents]
         types_str = ", ".join(f'`"{n}"` ' for n in type_names)
         step_number_note = "## STEP 2 — Classify Every Task for Delegation or Inline Execution\n"
@@ -3407,7 +3432,23 @@ class TaskPlanningSection(SystemPromptSection):
             '- `{"execution": {"mode": "delegate", "subagent_type": "builder"}}` — delegate by role/type\n'
             '- `{"execution": {"mode": "delegate", "subagent_id": "sub_123"}}` — delegate to a specific running subagent\n'
             "\n"
-            "**Spawn all independent delegated tasks in a single call** — they run in parallel. "
+            + (
+                "\n"
+                "- **Checkpoint** — nontrivial work that benefits from multi-agent "
+                "refinement: design, creative work, reviews, anything where "
+                "diverse perspectives improve quality. Include eval_criteria.\n"
+                "\n"
+                "Mark checkpoint tasks with:\n"
+                '- `{"execution": {"mode": "checkpoint", "eval_criteria": '
+                '["criterion1", "criterion2"]}}`\n'
+                "\n"
+                "When you reach a checkpoint task, call `checkpoint()` with the "
+                "task description and eval_criteria from the plan.\n"
+                "\n"
+                if self.checkpoint_mode
+                else ""
+            )
+            + "**Spawn all independent delegated tasks in a single call** — they run in parallel. "
             "While they run, execute your inline tasks.\n"
             "\n"
             "**Split aggressively for maximum parallelism** when improvements are substantial. "

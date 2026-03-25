@@ -326,7 +326,7 @@ function MergedThinkingView({ messages }: { messages: ContentMessage[] }) {
           </span>
         )}
         {expanded && (
-          <pre className="text-xs text-v2-text-muted italic opacity-70 whitespace-pre-wrap leading-relaxed animate-v2-fade-in flex-1 min-w-0 max-h-[300px] overflow-y-auto">
+          <pre className="text-xs text-v2-text-muted italic opacity-70 whitespace-pre-wrap leading-relaxed animate-v2-fade-in flex-1 min-w-0 max-h-[300px] overflow-y-auto v2-scrollbar">
             {allContent}
           </pre>
         )}

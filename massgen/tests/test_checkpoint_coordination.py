@@ -1262,3 +1262,105 @@ class TestCheckpointSubprocessManager:
         ws = mgr._create_checkpoint_workspace()
         assert ws.exists()
         assert "ckpt_1" in ws.name
+
+
+# ============================================================================
+# Phase: Checkpoint-aware Task Planning
+# ============================================================================
+
+
+class TestCheckpointExecutionMode:
+    """Test checkpoint as a task execution mode in the planning system."""
+
+    def test_normalize_accepts_checkpoint_mode(self):
+        """normalize_task_execution() should accept mode='checkpoint'."""
+        from massgen.mcp_tools.planning.planning_dataclasses import (
+            normalize_task_execution,
+        )
+
+        result = normalize_task_execution({"mode": "checkpoint"})
+        assert result["mode"] == "checkpoint"
+
+    def test_normalize_checkpoint_preserves_eval_criteria(self):
+        """Checkpoint mode should preserve eval_criteria in metadata."""
+        from massgen.mcp_tools.planning.planning_dataclasses import (
+            normalize_task_execution,
+        )
+
+        result = normalize_task_execution(
+            {
+                "mode": "checkpoint",
+                "eval_criteria": ["Clean code", "Tests pass"],
+            },
+        )
+        assert result["mode"] == "checkpoint"
+        assert result["eval_criteria"] == ["Clean code", "Tests pass"]
+
+    def test_normalize_checkpoint_preserves_context(self):
+        """Checkpoint mode should preserve context and personas."""
+        from massgen.mcp_tools.planning.planning_dataclasses import (
+            normalize_task_execution,
+        )
+
+        result = normalize_task_execution(
+            {
+                "mode": "checkpoint",
+                "eval_criteria": ["Good"],
+                "context": "Background info",
+                "personas": {"agent_a": "Designer"},
+            },
+        )
+        assert result["context"] == "Background info"
+        assert result["personas"] == {"agent_a": "Designer"}
+
+    def test_normalize_checkpoint_no_subagent_fields(self):
+        """Checkpoint mode should not require subagent_type or subagent_id."""
+        from massgen.mcp_tools.planning.planning_dataclasses import (
+            normalize_task_execution,
+        )
+
+        # Should not raise
+        result = normalize_task_execution({"mode": "checkpoint"})
+        assert "subagent_type" not in result
+        assert "subagent_id" not in result
+
+    def test_task_roundtrip_with_checkpoint_execution(self):
+        """Task with checkpoint execution should serialize/deserialize."""
+        from massgen.mcp_tools.planning.planning_dataclasses import Task
+
+        task = Task(
+            id="t1",
+            description="Design the API",
+            metadata={
+                "execution": {
+                    "mode": "checkpoint",
+                    "eval_criteria": ["RESTful", "Secure"],
+                },
+            },
+        )
+        data = task.to_dict()
+        restored = Task.from_dict(data)
+        exec_meta = restored.metadata.get("execution", {})
+        assert exec_meta["mode"] == "checkpoint"
+        assert exec_meta["eval_criteria"] == ["RESTful", "Secure"]
+
+
+class TestTaskPlanningCheckpointGuidance:
+    """Test that TaskPlanningSection includes checkpoint guidance."""
+
+    def test_checkpoint_guidance_present_when_enabled(self):
+        """TaskPlanningSection should mention checkpoint when checkpoint_mode=True."""
+        from massgen.system_prompt_sections import TaskPlanningSection
+
+        section = TaskPlanningSection(checkpoint_mode=True)
+        content = section.build_content()
+        assert "checkpoint" in content.lower()
+
+    def test_checkpoint_guidance_absent_when_disabled(self):
+        """TaskPlanningSection should not mention checkpoint execution when disabled."""
+        from massgen.system_prompt_sections import TaskPlanningSection
+
+        section = TaskPlanningSection(checkpoint_mode=False)
+        content = section.build_content()
+        # Should not mention checkpoint as an execution mode
+        assert '"mode": "checkpoint"' not in content

@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── Validate ──────────────────────────────────────────────────────────────────
+# ── Validate args ─────────────────────────────────────────────────────────────
 if [[ -z "$WORK_DIR" ]]; then
     echo "Error: --work-dir is required" >&2
     exit 1
@@ -72,6 +72,37 @@ OUTPUT_LOG="$WORK_DIR/output.log"
 SUMMARY_FILE="$WORK_DIR/run_summary.json"
 MASSGEN_PID=""
 START_TIME=$(date +%s)
+
+# ── Pre-flight: check MassGen installed ──────────────────────────────────────
+if ! command -v massgen &>/dev/null && ! uv run massgen --help &>/dev/null 2>&1; then
+    echo "Error: MassGen is not installed." >&2
+    echo "Install with: uv tool install massgen" >&2
+    exit 1
+fi
+
+# ── Pre-flight: resolve config ───────────────────────────────────────────────
+if [[ -z "$CONFIG_FILE" ]]; then
+    # Auto-discover config
+    if [[ -f ".massgen/config.yaml" ]]; then
+        CONFIG_FILE=".massgen/config.yaml"
+        echo "Using config: $CONFIG_FILE"
+    elif [[ -f "$HOME/.config/massgen/config.yaml" ]]; then
+        CONFIG_FILE="$HOME/.config/massgen/config.yaml"
+        echo "Using config: $CONFIG_FILE"
+    else
+        echo "No MassGen config found. Launching setup wizard..."
+        echo "Complete setup in your browser, then this script will continue."
+        uv run massgen --web-quickstart --web-port "$WEBUI_PORT"
+        # web-quickstart writes .massgen/config.yaml and exits
+        if [[ -f ".massgen/config.yaml" ]]; then
+            CONFIG_FILE=".massgen/config.yaml"
+            echo "Config created: $CONFIG_FILE"
+        else
+            echo "Error: Setup was cancelled or failed. No config created." >&2
+            exit 1
+        fi
+    fi
+fi
 
 # ── Cleanup on exit ──────────────────────────────────────────────────────────
 cleanup() {
