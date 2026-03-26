@@ -3469,6 +3469,24 @@ def build_cli_mode_defaults(args: argparse.Namespace) -> dict[str, Any]:
     return defaults
 
 
+def _build_cli_overrides_dict(args: argparse.Namespace) -> dict[str, Any]:
+    """Build a dict of CLI overrides for forwarding to the WebUI server.
+
+    Extracts config-affecting CLI flags that would otherwise be lost when
+    ``--web`` bypasses ``main()``.  Returns an empty dict when no flags apply.
+    """
+    overrides: dict[str, Any] = {}
+    if getattr(args, "eval_criteria", None):
+        overrides["eval_criteria"] = args.eval_criteria
+    if getattr(args, "checklist_criteria_preset", None):
+        overrides["checklist_criteria_preset"] = args.checklist_criteria_preset
+    if getattr(args, "orchestrator_timeout", None) is not None:
+        overrides["orchestrator_timeout"] = args.orchestrator_timeout
+    if getattr(args, "cwd_context", None):
+        overrides["cwd_context"] = args.cwd_context
+    return overrides
+
+
 def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig":
     """Parse a coordination config dict into a CoordinationConfig object.
 
@@ -4543,6 +4561,34 @@ async def run_single_question(
                 )
         except Exception as e:
             logger.warning(f"Failed to copy final results to turn root: {e}")
+
+        # Print ANSWER: path in automation mode for easy result discovery
+        if ui_config.get("automation_mode"):
+            try:
+                from massgen.logger_config import get_log_session_dir as _get_lsd
+                from massgen.logger_config import (
+                    get_log_session_dir_base as _get_lsd_base,
+                )
+
+                _answer_final_dir = _get_lsd_base() / "final"
+                # Also check attempt-level if turn-level doesn't exist
+                if not _answer_final_dir.exists():
+                    _answer_final_dir = _get_lsd() / "final"
+                winning_agent = getattr(orchestrator, "_selected_agent", None)
+                if winning_agent and _answer_final_dir.exists():
+                    answer_file = _answer_final_dir / winning_agent / "answer.txt"
+                    if answer_file.exists():
+                        _automation_print(f"ANSWER: {answer_file.resolve()}")
+                    else:
+                        # Fallback: find any answer.txt in the final dir
+                        for agent_dir in sorted(_answer_final_dir.iterdir()):
+                            if agent_dir.is_dir():
+                                fallback = agent_dir / "answer.txt"
+                                if fallback.exists():
+                                    _automation_print(f"ANSWER: {fallback.resolve()}")
+                                    break
+            except Exception:
+                pass  # Graceful: don't fail the run if answer path can't be determined
 
         # Handle session persistence for single-question runs
         if session_id:
@@ -11728,6 +11774,12 @@ def _cli_main_continued(args):
             question = getattr(args, "question", None)
             automation_mode = getattr(args, "automation", False)
 
+            # Auto-resolve default config (same as main() does)
+            if not config_path and automation_mode and question:
+                resolved_default = resolve_config_path(None)
+                if resolved_default:
+                    config_path = str(resolved_default)
+
             print(f"{BRIGHT_CYAN}🌐 Starting MassGen Web UI...{RESET}")
             print(
                 f"{BRIGHT_GREEN}   Server: http://{args.web_host}:{args.web_port}{RESET}",
@@ -11739,29 +11791,33 @@ def _cli_main_continued(args):
                     f"{BRIGHT_YELLOW}   No config specified - use --config or select in UI{RESET}",
                 )
 
-            # Build auto-launch URL with question and/or config if provided
+            # Build auto-launch URL — always use v=2.
+            # The frontend auto-starts coordination when both prompt= and config=
+            # are in the URL (see App.tsx useEffect at line ~226).
             import urllib.parse
 
             base_url = f"http://{args.web_host}:{args.web_port}/"
-            url_params = []
+            url_params = ["v=2"]
             if question:
                 url_params.append(f"prompt={urllib.parse.quote(question)}")
             if config_path:
                 url_params.append(f"config={urllib.parse.quote(config_path)}")
-            auto_url = f"{base_url}?{'&'.join(url_params)}" if url_params else base_url
-            if url_params:
-                print(f"{BRIGHT_GREEN}   Auto-launch URL: {auto_url}{RESET}")
+            auto_url = f"{base_url}?{'&'.join(url_params)}"
+            # Print a short URL for the terminal (no giant prompt)
+            short_url_params = ["v=2"]
+            if config_path:
+                short_url_params.append(f"config={urllib.parse.quote(config_path)}")
+            short_url = f"{base_url}?{'&'.join(short_url_params)}"
+            print(f"{BRIGHT_GREEN}   UI: {short_url}{RESET}")
 
             if automation_mode:
-                print(
-                    f"{BRIGHT_YELLOW}   Automation mode enabled - progress visible in web UI{RESET}",
-                )
-                print(
-                    f"{BRIGHT_CYAN}   Status files: .massgen/massgen_logs/log_<timestamp>/turn_N/attempt_N/status.json{RESET}",
-                )
-                if not question:
+                if question:
                     print(
-                        f"{BRIGHT_YELLOW}   (no question provided - use web UI to start coordination){RESET}",
+                        f"{BRIGHT_YELLOW}   Run auto-starts when browser connects{RESET}",
+                    )
+                else:
+                    print(
+                        f"{BRIGHT_YELLOW}   No question provided — open the URL above to start a run{RESET}",
                     )
 
             print(f"{BRIGHT_YELLOW}   Press Ctrl+C to stop{RESET}\n")
@@ -11769,19 +11825,12 @@ def _cli_main_continued(args):
             # Auto-open browser (unless --no-browser or automation mode)
             no_browser = getattr(args, "no_browser", False)
             if not no_browser and not automation_mode:
-                # Use auto_url if available, otherwise just open the base URL
-                browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}"
-                # Remove trailing slash to avoid double slashes
-                browser_url = browser_url.rstrip("/")
-
-                # Default to v2 UI; --quickstart opens the wizard overlay,
-                # --setup opens the setup overlay in v2.
+                # auto_url already has v=2; add overlay params if needed
+                browser_url = auto_url
                 if getattr(args, "setup", False):
-                    browser_url += "/?v=2&setup=open"
+                    browser_url += "&setup=open"
                 elif getattr(args, "quickstart", False):
-                    browser_url += "/?v=2&wizard=open"
-                else:
-                    browser_url += "/?v=2"
+                    browser_url += "&wizard=open"
 
                 def open_browser():
                     import time
@@ -11790,11 +11839,14 @@ def _cli_main_continued(args):
                     webbrowser.open(browser_url)
 
                 threading.Thread(target=open_browser, daemon=True).start()
+            cli_overrides = _build_cli_overrides_dict(args)
             run_server(
                 host=args.web_host,
                 port=args.web_port,
                 config_path=config_path,
                 automation_mode=automation_mode,
+                cli_overrides=cli_overrides or None,
+                question=question if question else None,
             )
         except ImportError as e:
             print(f"{BRIGHT_RED}❌ Web UI dependencies not installed.{RESET}")

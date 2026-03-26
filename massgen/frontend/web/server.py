@@ -791,12 +791,16 @@ def create_app(
     config_path: str | None = None,
     automation_mode: bool = False,
     temporary_quickstart_session: dict[str, Any] | None = None,
+    cli_overrides: dict | None = None,
+    pending_question: str | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config_path: Default config path for coordination sessions
         automation_mode: If True, UI shows automation-friendly timeline view
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
+        pending_question: Question from CLI to auto-start when first client connects
     """
     if not FASTAPI_AVAILABLE:
         raise ImportError(
@@ -813,9 +817,16 @@ def create_app(
         version="0.1.0",
     )
 
-    # Store automation_mode in app state for WebSocket access
+    # Store automation_mode in app state for server-side behavior (log
+    # suppression) but never send it to the frontend — the WebUI should
+    # always render the full UI regardless of how the run was started.
     app.state.automation_mode = automation_mode
     app.state.temporary_quickstart_session = temporary_quickstart_session
+    app.state.cli_overrides = cli_overrides
+    # Pending question from CLI --web "question" — auto-starts coordination
+    # when the first WebSocket client connects, giving the user the full
+    # visual experience (loading screen, preparation, agent cards, etc.).
+    app.state.pending_question = pending_question
 
     # CORS for development
     app.add_middleware(
@@ -4299,7 +4310,12 @@ def create_app(
 
         # Start orchestration in background
         task = asyncio.create_task(
-            run_coordination(session_id, question, cfg_path),
+            run_coordination(
+                session_id,
+                question,
+                cfg_path,
+                cli_overrides=getattr(app.state, "cli_overrides", None),
+            ),
         )
         manager.tasks[session_id] = task
 
@@ -4402,25 +4418,59 @@ def create_app(
         await manager.connect(websocket, session_id)
 
         try:
+            # Send current state if session exists.
             # Send current state if session exists
             display = manager.get_display(session_id)
             if display:
                 await websocket.send_json(
                     {
                         "type": "state_snapshot",
-                        "automation_mode": app.state.automation_mode,
                         **display.get_state_snapshot(),
                     },
                 )
             else:
-                # Send init message with automation_mode even without display
                 await websocket.send_json(
                     {
                         "type": "init",
-                        "automation_mode": app.state.automation_mode,
                         "session_id": session_id,
                     },
                 )
+
+            # Auto-start coordination if a pending question was provided via
+            # CLI (e.g. `massgen --web "question"`).  Pop atomically so only
+            # the first connecting client triggers the run.
+            pending_q = getattr(app.state, "pending_question", None)
+            if pending_q and not display:
+                app.state.pending_question = None  # consume — one-shot
+                cfg_path = get_default_config()
+                if cfg_path and pending_q:
+                    # Send preparation_status with question so the frontend
+                    # can show the launch sequence (LaunchIndicator) immediately.
+                    await websocket.send_json(
+                        {
+                            "type": "preparation_status",
+                            "status": "Received prompt...",
+                            "detail": "Preparing to start coordination",
+                            "question": pending_q,
+                            "session_id": session_id,
+                        },
+                    )
+                    task = asyncio.create_task(
+                        run_coordination(
+                            session_id,
+                            pending_q,
+                            cfg_path,
+                            cli_overrides=getattr(app.state, "cli_overrides", None),
+                        ),
+                    )
+                    manager.tasks[session_id] = task
+                    await websocket.send_json(
+                        {
+                            "type": "coordination_started",
+                            "session_id": session_id,
+                            "config": cfg_path,
+                        },
+                    )
 
             # Handle incoming messages
             while True:
@@ -4495,6 +4545,7 @@ def create_app(
                                 cfg_path,
                                 context_paths,
                                 mode_overrides=mode_overrides or None,
+                                cli_overrides=getattr(app.state, "cli_overrides", None),
                             ),
                         )
                         manager.tasks[session_id] = task
@@ -4644,6 +4695,7 @@ def create_app(
                             turn_number=next_turn,
                             context_paths=context_paths,
                             mode_overrides=cont_mode_overrides or None,
+                            cli_overrides=getattr(app.state, "cli_overrides", None),
                         ),
                     )
                     manager.tasks[session_id] = task
@@ -5112,6 +5164,7 @@ async def run_coordination_with_history(
     turn_number: int,
     context_paths: list | None = None,
     mode_overrides: dict | None = None,
+    cli_overrides: dict | None = None,
 ) -> None:
     """Run coordination with conversation history from previous turns.
 
@@ -5128,13 +5181,18 @@ async def run_coordination_with_history(
         session_log_dir: Path to the session log directory (e.g., .massgen/massgen_logs/log_xxx)
         turn_number: The turn number for this coordination (2, 3, etc.)
         mode_overrides: Optional mode bar overrides from WebUI
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
     """
     import traceback
 
     try:
         # Import here to avoid circular imports
-        from massgen.agent_config import AgentConfig, CoordinationConfig
+        from massgen.agent_config import AgentConfig
         from massgen.cli import (
+            _apply_orchestrator_runtime_params,
+            _parse_coordination_config,
+            _scope_agent_temporary_workspace,
+            _scope_snapshot_storage,
             create_agents_from_config,
             load_config_file,
             resolve_config_path,
@@ -5208,6 +5266,9 @@ async def run_coordination_with_history(
 
         # Apply mode bar overrides from WebUI before any config processing
         _apply_mode_overrides(config, mode_overrides)
+
+        # Apply CLI flag overrides (--eval-criteria, --checklist-criteria-preset, etc.)
+        _apply_cli_overrides(config, cli_overrides)
 
         # Inject context paths from @path syntax if provided
         if context_paths:
@@ -5301,93 +5362,27 @@ async def run_coordination_with_history(
             agent_models,
             main_agent_id=_main_agent_for_display,
         )
+        # Set question early so late-joining clients get it in state_snapshot
+        display.question = question
 
         # Build AgentConfig object for orchestrator
         orchestrator_config = AgentConfig()
+        _apply_orchestrator_runtime_params(orchestrator_config, orchestrator_cfg)
 
-        # Apply voting sensitivity if specified
-        if "voting_sensitivity" in orchestrator_cfg:
-            orchestrator_config.voting_sensitivity = orchestrator_cfg["voting_sensitivity"]
+        # Apply timeout settings if specified in YAML
+        timeout_settings = config.get("timeout_settings", {})
+        if timeout_settings:
+            from massgen.agent_config import TimeoutConfig
 
-        # Apply answer count limit if specified
-        if "max_new_answers_per_agent" in orchestrator_cfg:
-            orchestrator_config.max_new_answers_per_agent = orchestrator_cfg["max_new_answers_per_agent"]
+            orchestrator_config.timeout_config = TimeoutConfig(**timeout_settings)
 
-        # Apply answer novelty requirement if specified
-        if "answer_novelty_requirement" in orchestrator_cfg:
-            orchestrator_config.answer_novelty_requirement = orchestrator_cfg["answer_novelty_requirement"]
-
-        # Apply coordination config from YAML (includes enable_agent_task_planning, etc.)
+        # Apply coordination config from YAML using canonical parser
         coord_cfg = orchestrator_cfg.get("coordination", {})
         if coord_cfg:
-            # Parse persona_generator config if present
-            from massgen.persona_generator import PersonaGeneratorConfig
-
-            persona_generator_config = PersonaGeneratorConfig()
-            if "persona_generator" in coord_cfg:
-                pg_cfg = coord_cfg["persona_generator"]
-                persona_generator_config = PersonaGeneratorConfig(
-                    enabled=pg_cfg.get("enabled", False),
-                    diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
-                    persona_guidelines=pg_cfg.get("persona_guidelines"),
-                    persist_across_turns=pg_cfg.get("persist_across_turns", False),
-                    after_first_answer=pg_cfg.get("after_first_answer", "drop"),
-                )
-
-            orchestrator_config.coordination_config = CoordinationConfig(
-                enable_planning_mode=coord_cfg.get("enable_planning_mode", False),
-                planning_mode_instruction=coord_cfg.get(
-                    "planning_mode_instruction",
-                    "During coordination, describe what you would do without actually executing actions.",
-                ),
-                max_orchestration_restarts=coord_cfg.get(
-                    "max_orchestration_restarts",
-                    0,
-                ),
-                enable_agent_task_planning=coord_cfg.get(
-                    "enable_agent_task_planning",
-                    False,
-                ),
-                max_tasks_per_plan=coord_cfg.get("max_tasks_per_plan", 10),
-                broadcast=coord_cfg.get("broadcast", False),
-                broadcast_sensitivity=coord_cfg.get("broadcast_sensitivity", "medium"),
-                response_depth=coord_cfg.get("response_depth", "medium"),
-                broadcast_timeout=coord_cfg.get("broadcast_timeout", 300),
-                broadcast_wait_by_default=coord_cfg.get(
-                    "broadcast_wait_by_default",
-                    True,
-                ),
-                max_broadcasts_per_agent=coord_cfg.get("max_broadcasts_per_agent", 10),
-                task_planning_filesystem_mode=coord_cfg.get(
-                    "task_planning_filesystem_mode",
-                    False,
-                ),
-                enable_memory_filesystem_mode=coord_cfg.get(
-                    "enable_memory_filesystem_mode",
-                    False,
-                ),
-                learning_capture_mode=coord_cfg.get("learning_capture_mode", "round"),
-                disable_final_only_round_capture_fallback=coord_cfg.get(
-                    "disable_final_only_round_capture_fallback",
-                    False,
-                ),
-                use_skills=coord_cfg.get("use_skills", False),
-                massgen_skills=coord_cfg.get("massgen_skills", []),
-                skills_directory=coord_cfg.get("skills_directory", ".agent/skills"),
-                load_previous_session_skills=coord_cfg.get(
-                    "load_previous_session_skills",
-                    False,
-                ),
-                persona_generator=persona_generator_config,
-                drift_conflict_policy=coord_cfg.get("drift_conflict_policy", "skip"),
-            )
+            orchestrator_config.coordination_config = _parse_coordination_config(coord_cfg)
 
         # Get context sharing parameters — scope by session to avoid
         # concurrent WebUI sessions colliding on shared paths.
-        from massgen.cli import (
-            _scope_agent_temporary_workspace,
-            _scope_snapshot_storage,
-        )
 
         snapshot_storage = _scope_snapshot_storage(orchestrator_cfg.get("snapshot_storage"))
         agent_temporary_workspace = _scope_agent_temporary_workspace(
@@ -5903,6 +5898,42 @@ def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
         _apply_docker_override(config, overrides["docker_override"])
 
 
+def _apply_cli_overrides(config: dict, cli_overrides: dict | None) -> None:
+    """Apply CLI flag overrides forwarded from ``cli_main --web``.
+
+    Reuses the canonical injection helpers from :mod:`massgen.cli` so that
+    ``--eval-criteria``, ``--checklist-criteria-preset``, ``--orchestrator-timeout``,
+    and ``--cwd-context`` behave identically whether the run is started from
+    the terminal or from the WebUI.
+    """
+    if not cli_overrides:
+        return
+
+    from massgen.cli import (
+        _inject_checklist_criteria_preset_into_config,
+        _inject_eval_criteria_into_config,
+        _load_eval_criteria,
+        apply_cli_cwd_context_path,
+    )
+
+    if "eval_criteria" in cli_overrides:
+        criteria = _load_eval_criteria(cli_overrides["eval_criteria"])
+        _inject_eval_criteria_into_config(config, criteria)
+
+    if "checklist_criteria_preset" in cli_overrides:
+        _inject_checklist_criteria_preset_into_config(
+            config,
+            cli_overrides["checklist_criteria_preset"],
+        )
+
+    if "orchestrator_timeout" in cli_overrides:
+        timeout_settings = config.setdefault("timeout_settings", {})
+        timeout_settings["orchestrator_timeout_seconds"] = cli_overrides["orchestrator_timeout"]
+
+    if "cwd_context" in cli_overrides:
+        apply_cli_cwd_context_path(config, cli_overrides["cwd_context"])
+
+
 def _setup_checkpoint_orchestrator(
     orchestrator: Orchestrator,
     config: dict,
@@ -5944,6 +5975,7 @@ async def run_coordination(
     config_path: str | None = None,
     context_paths: list | None = None,
     mode_overrides: dict | None = None,
+    cli_overrides: dict | None = None,
 ) -> None:
     """Run coordination with web display.
 
@@ -5953,6 +5985,7 @@ async def run_coordination(
         config_path: Optional path to config YAML
         context_paths: Optional list of context paths from @path syntax
         mode_overrides: Optional mode bar overrides from WebUI
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
     """
     import traceback
 
@@ -5986,7 +6019,7 @@ async def run_coordination(
         await emit_preparation_status("Loading configuration...", config_path or "")
 
         # Import here to avoid circular imports
-        from massgen.agent_config import AgentConfig, CoordinationConfig
+        from massgen.agent_config import AgentConfig
         from massgen.cli import (
             create_agents_from_config,
             load_config_file,
@@ -6011,6 +6044,9 @@ async def run_coordination(
 
         # Apply mode bar overrides from WebUI before any config processing
         _apply_mode_overrides(config, mode_overrides)
+
+        # Apply CLI flag overrides (--eval-criteria, --checklist-criteria-preset, etc.)
+        _apply_cli_overrides(config, cli_overrides)
 
         # Inject context paths from @path syntax if provided
         if context_paths:
@@ -6116,95 +6152,36 @@ async def run_coordination(
             agent_models,
             main_agent_id=_main_agent_for_display,
         )
+        # Set question early so late-joining clients get it in state_snapshot
+        display.question = question
 
         await send_init_status("Initializing orchestrator...", "orchestrator", 80)
 
         # Build AgentConfig object for orchestrator (required by Orchestrator)
-        orchestrator_config = AgentConfig()
-
-        # Apply voting sensitivity if specified
-        if "voting_sensitivity" in orchestrator_cfg:
-            orchestrator_config.voting_sensitivity = orchestrator_cfg["voting_sensitivity"]
-
-        # Apply answer count limit if specified
-        if "max_new_answers_per_agent" in orchestrator_cfg:
-            orchestrator_config.max_new_answers_per_agent = orchestrator_cfg["max_new_answers_per_agent"]
-
-        # Apply answer novelty requirement if specified
-        if "answer_novelty_requirement" in orchestrator_cfg:
-            orchestrator_config.answer_novelty_requirement = orchestrator_cfg["answer_novelty_requirement"]
-
-        # Apply coordination config from YAML (includes enable_agent_task_planning, etc.)
-        coord_cfg = orchestrator_cfg.get("coordination", {})
-        if coord_cfg:
-            # Parse persona_generator config if present
-            from massgen.persona_generator import PersonaGeneratorConfig
-
-            persona_generator_config = PersonaGeneratorConfig()
-            if "persona_generator" in coord_cfg:
-                pg_cfg = coord_cfg["persona_generator"]
-                persona_generator_config = PersonaGeneratorConfig(
-                    enabled=pg_cfg.get("enabled", False),
-                    diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
-                    persona_guidelines=pg_cfg.get("persona_guidelines"),
-                    persist_across_turns=pg_cfg.get("persist_across_turns", False),
-                    after_first_answer=pg_cfg.get("after_first_answer", "drop"),
-                )
-
-            orchestrator_config.coordination_config = CoordinationConfig(
-                enable_planning_mode=coord_cfg.get("enable_planning_mode", False),
-                planning_mode_instruction=coord_cfg.get(
-                    "planning_mode_instruction",
-                    "During coordination, describe what you would do without actually executing actions.",
-                ),
-                max_orchestration_restarts=coord_cfg.get(
-                    "max_orchestration_restarts",
-                    0,
-                ),
-                enable_agent_task_planning=coord_cfg.get(
-                    "enable_agent_task_planning",
-                    False,
-                ),
-                max_tasks_per_plan=coord_cfg.get("max_tasks_per_plan", 10),
-                broadcast=coord_cfg.get("broadcast", False),
-                broadcast_sensitivity=coord_cfg.get("broadcast_sensitivity", "medium"),
-                response_depth=coord_cfg.get("response_depth", "medium"),
-                broadcast_timeout=coord_cfg.get("broadcast_timeout", 300),
-                broadcast_wait_by_default=coord_cfg.get(
-                    "broadcast_wait_by_default",
-                    True,
-                ),
-                max_broadcasts_per_agent=coord_cfg.get("max_broadcasts_per_agent", 10),
-                task_planning_filesystem_mode=coord_cfg.get(
-                    "task_planning_filesystem_mode",
-                    False,
-                ),
-                enable_memory_filesystem_mode=coord_cfg.get(
-                    "enable_memory_filesystem_mode",
-                    False,
-                ),
-                learning_capture_mode=coord_cfg.get("learning_capture_mode", "round"),
-                disable_final_only_round_capture_fallback=coord_cfg.get(
-                    "disable_final_only_round_capture_fallback",
-                    False,
-                ),
-                use_skills=coord_cfg.get("use_skills", False),
-                massgen_skills=coord_cfg.get("massgen_skills", []),
-                skills_directory=coord_cfg.get("skills_directory", ".agent/skills"),
-                load_previous_session_skills=coord_cfg.get(
-                    "load_previous_session_skills",
-                    False,
-                ),
-                persona_generator=persona_generator_config,
-                drift_conflict_policy=coord_cfg.get("drift_conflict_policy", "skip"),
-            )
-
-        # Get context sharing parameters — scope by session to avoid
-        # concurrent WebUI sessions colliding on shared paths.
         from massgen.cli import (
+            _apply_orchestrator_runtime_params,
+            _parse_coordination_config,
             _scope_agent_temporary_workspace,
             _scope_snapshot_storage,
         )
+
+        orchestrator_config = AgentConfig()
+        _apply_orchestrator_runtime_params(orchestrator_config, orchestrator_cfg)
+
+        # Apply timeout settings if specified in YAML
+        timeout_settings = config.get("timeout_settings", {})
+        if timeout_settings:
+            from massgen.agent_config import TimeoutConfig
+
+            orchestrator_config.timeout_config = TimeoutConfig(**timeout_settings)
+
+        # Apply coordination config from YAML using canonical parser
+        coord_cfg = orchestrator_cfg.get("coordination", {})
+        if coord_cfg:
+            orchestrator_config.coordination_config = _parse_coordination_config(coord_cfg)
+
+        # Get context sharing parameters — scope by session to avoid
+        # concurrent WebUI sessions colliding on shared paths.
 
         snapshot_storage = _scope_snapshot_storage(orchestrator_cfg.get("snapshot_storage"))
         agent_temporary_workspace = _scope_agent_temporary_workspace(
@@ -6389,6 +6366,8 @@ def run_server(
     reload: bool = False,
     config_path: str | None = None,
     automation_mode: bool = False,
+    cli_overrides: dict | None = None,
+    question: str | None = None,
 ) -> None:
     """Run the web server.
 
@@ -6397,7 +6376,9 @@ def run_server(
         port: Port to listen on
         reload: Enable auto-reload for development
         config_path: Default config path for coordination sessions
-        automation_mode: If True, UI shows automation-friendly timeline view
+        automation_mode: If True, suppresses verbose server logs
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
+        question: Question from CLI to auto-start when first client connects
     """
     try:
         import uvicorn
@@ -6411,7 +6392,12 @@ def run_server(
         set_default_config(config_path)
 
     # Create app directly with automation_mode (can't pass args via factory string)
-    app = create_app(config_path=config_path, automation_mode=automation_mode)
+    app = create_app(
+        config_path=config_path,
+        automation_mode=automation_mode,
+        cli_overrides=cli_overrides,
+        pending_question=question,
+    )
 
     # In automation mode, suppress verbose logging to keep stdout clean
     if automation_mode:

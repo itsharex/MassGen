@@ -4472,7 +4472,23 @@ class Orchestrator(ChatAgent):
         if action == "new_answer" and answer_text is not None:
             final_dir = log_dir / "final" / agent_id
             final_dir.mkdir(parents=True, exist_ok=True)
-            (final_dir / "answer.txt").write_text(answer_text)
+
+            # Normalize workspace paths so answer references the adjacent workspace/
+            normalized_answer = answer_text
+            if workspace_path:
+                dest_workspace = str(final_dir / "workspace")
+                normalized_answer = normalized_answer.replace(
+                    str(workspace_path),
+                    dest_workspace,
+                )
+                resolved_ws = str(Path(workspace_path).resolve())
+                if resolved_ws != str(workspace_path):
+                    normalized_answer = normalized_answer.replace(
+                        resolved_ws,
+                        dest_workspace,
+                    )
+
+            (final_dir / "answer.txt").write_text(normalized_answer)
 
             # Copy workspace to final/ if available
             if workspace_path:
@@ -7092,6 +7108,25 @@ Your answer:"""
 
                     # Write the answer content (even if empty for final snapshots)
                     content_to_write = answer_content if answer_content is not None else ""
+
+                    # Normalize workspace paths in final answer so they reference
+                    # the adjacent workspace/ directory in the log structure
+                    if is_final and content_to_write and agent.backend.filesystem_manager:
+                        original_cwd = getattr(agent.backend.filesystem_manager, "cwd", None)
+                        if original_cwd:
+                            dest_workspace = str(timestamped_dir / "workspace")
+                            content_to_write = content_to_write.replace(
+                                str(original_cwd),
+                                dest_workspace,
+                            )
+                            # Also try resolved path in case they differ
+                            resolved_cwd = str(Path(original_cwd).resolve())
+                            if resolved_cwd != str(original_cwd):
+                                content_to_write = content_to_write.replace(
+                                    resolved_cwd,
+                                    dest_workspace,
+                                )
+
                     answer_file.write_text(content_to_write)
                     logger.info(
                         f"[Orchestrator._save_agent_snapshot] Saved answer to {answer_file}",
@@ -18091,7 +18126,27 @@ Then call either submit(confirmed=True) if the answer is satisfactory, or restar
             # Write answer.txt alongside workspace
             answer_data = answers.get(selected)
             if answer_data and answer_data.get("answer"):
-                (final_dir / "answer.txt").write_text(answer_data["answer"])
+                answer_content = answer_data["answer"]
+                # Normalize workspace paths to reference adjacent workspace/
+                dest_workspace = str(final_dir / "workspace")
+                original_cwd = getattr(fm, "cwd", None)
+                if original_cwd:
+                    answer_content = answer_content.replace(
+                        str(original_cwd),
+                        dest_workspace,
+                    )
+                    resolved_cwd = str(Path(original_cwd).resolve())
+                    if resolved_cwd != str(original_cwd):
+                        answer_content = answer_content.replace(
+                            resolved_cwd,
+                            dest_workspace,
+                        )
+                if str(source) != dest_workspace:
+                    answer_content = answer_content.replace(
+                        str(source),
+                        dest_workspace,
+                    )
+                (final_dir / "answer.txt").write_text(answer_content)
 
             logger.info(
                 "[Orchestrator] Created final/ directory on shutdown for %s at %s",

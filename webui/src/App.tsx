@@ -68,6 +68,7 @@ export function App() {
   const [selectedConfig, setSelectedConfig] = useState<string | null>(initialConfig);
   const [inputQuestion, setInputQuestion] = useState(initialPrompt || '');
   const [followUpQuestion, setFollowUpQuestion] = useState('');
+  const [isQuestionExpanded, setIsQuestionExpanded] = useState(false);
 
   const question = useAgentStore(selectQuestion);
   const isComplete = useAgentStore(selectIsComplete);
@@ -398,23 +399,34 @@ export function App() {
         </div>
       </header>
 
-      {/* Question Display */}
+      {/* Question Display — truncated by default, click to expand */}
       {question && (
         <div className="bg-gray-100/30 dark:bg-gray-800/30 border-b border-gray-200 dark:border-gray-700 px-6 py-3">
-          <div className="max-w-7xl mx-auto flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
               {/* Conversation history dropdown (floating, doesn't affect layout) */}
               {turnNumber > 1 && (
                 <ConversationHistory
                   onViewResponse={handleViewHistoryResponse}
                 />
               )}
-              <div>
-                <span className="text-gray-500 dark:text-gray-500 text-sm">Question: </span>
-                <span className="text-gray-800 dark:text-gray-200">{question}</span>
+              <div className="min-w-0 flex-1">
+                <button
+                  onClick={() => setIsQuestionExpanded(!isQuestionExpanded)}
+                  className="text-left w-full group"
+                  title={isQuestionExpanded ? 'Click to collapse' : 'Click to expand full question'}
+                >
+                  <span className="text-gray-500 dark:text-gray-500 text-sm">Question: </span>
+                  <span className={`text-gray-800 dark:text-gray-200 text-sm ${isQuestionExpanded ? '' : 'line-clamp-1'}`}>
+                    {question}
+                  </span>
+                  {!isQuestionExpanded && question.length > 120 && (
+                    <span className="text-gray-400 dark:text-gray-500 text-xs ml-1 group-hover:text-blue-400 transition-colors">▸ more</span>
+                  )}
+                </button>
               </div>
             </div>
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-gray-500 shrink-0">
               Config: <span className="text-gray-600 dark:text-gray-400">{configName}</span>
             </div>
           </div>
