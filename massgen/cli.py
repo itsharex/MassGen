@@ -11844,7 +11844,7 @@ def _cli_main_continued(args):
             if automation_mode:
                 if question:
                     print(
-                        f"{BRIGHT_YELLOW}   Run auto-starts when browser connects{RESET}",
+                        f"{BRIGHT_YELLOW}   Run starting immediately — open browser anytime to monitor{RESET}",
                     )
                 else:
                     print(

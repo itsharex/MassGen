@@ -126,6 +126,9 @@ function AnswersPanel({ focusAnswerLabel }: { focusAnswerLabel?: string }) {
                 {answer.agentModel && <span className="text-v2-text-muted"> · {answer.agentModel}</span>}
               </span>
               <div className="flex-1" />
+              <span className="text-[10px] text-v2-text-muted/50 tabular-nums shrink-0">
+                {formatTimestamp(answer.timestamp)}
+              </span>
               {hasWorkspace && (
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-v2-text-muted/50 shrink-0">
                   <path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5V4.5z" strokeLinecap="round" strokeLinejoin="round" />
@@ -246,4 +249,13 @@ function VotesPanel() {
       </div>
     </div>
   );
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts < 1e12 ? ts * 1000 : ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }

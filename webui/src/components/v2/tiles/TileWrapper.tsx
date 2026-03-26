@@ -87,13 +87,13 @@ export function TileWrapper({ tile, isActive, showClose, onDragStart, onDragEnd 
 
 function TileContent({ tile }: { tile: TileState }) {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
-  const workspacePath = Object.keys(workspaces)[0] || '';
+  const workspacePath = tile.workspacePath || Object.keys(workspaces)[0] || '';
 
   switch (tile.type) {
     case 'agent-channel':
       return <AgentChannel agentId={tile.targetId} />;
     case 'file-viewer':
-      return <FileViewerTile filePath={tile.targetId} />;
+      return <FileViewerTile filePath={tile.targetId} workspacePath={tile.workspacePath} />;
     case 'artifact-preview':
       return workspacePath ? (
         <div className="h-full overflow-auto v2-scrollbar bg-v2-surface">
@@ -109,7 +109,7 @@ function TileContent({ tile }: { tile: TileState }) {
     case 'timeline-view':
       return <TimelineTile />;
     case 'workspace-browser':
-      return <WorkspaceBrowserTile />;
+      return <WorkspaceBrowserTile initialWorkspacePath={tile.targetId !== 'workspace' ? tile.targetId : undefined} />;
     case 'vote-results':
       return <VoteResultsTile />;
     case 'answer-browser':

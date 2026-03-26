@@ -69,8 +69,10 @@ export function SessionSection({ collapsed, onSessionChange, onNewSession, onCon
   const currentSessionId = useAgentStore((s) => s.sessionId);
   const question = useAgentStore((s) => s.question);
   const isComplete = useAgentStore((s) => s.isComplete);
-  // Prevent session switching while a coordination run is active
-  const runLocked = !!question && !isComplete;
+  const automationMode = useAgentStore((s) => s.automationMode);
+  // Only lock session switching during active automation runs.
+  // Interactive mode (--web without --automation) should always allow browsing.
+  const runLocked = automationMode && !!question && !isComplete;
 
   const handleSwitchSession = useCallback((session: SessionInfo) => {
     const sessionId = session.session_id;
@@ -83,32 +85,6 @@ export function SessionSection({ collapsed, onSessionChange, onNewSession, onCon
     if (session.config_path && onConfigChange) {
       onConfigChange(session.config_path);
     }
-
-    // Fetch and replay event history for v2 message store
-    fetch(`/api/sessions/${sessionId}/events`)
-      .then((res) => res.json())
-      .then((data: { events?: Array<Record<string, unknown>> }) => {
-        if (data.events && data.events.length > 0) {
-          const msgStore = useMessageStore.getState();
-          const agentSt = useAgentStore.getState();
-
-          for (const event of data.events) {
-            const ev = event as Record<string, unknown>;
-            // Initialize agentStore from the synthesized init event
-            if (ev.type === 'init' && ev.agents && ev.question) {
-              agentSt.initSession(
-                sessionId,
-                ev.question as string,
-                ev.agents as string[],
-                'dark',
-                ev.agent_models as Record<string, string> | undefined,
-              );
-            }
-            msgStore.processWSEvent(ev as unknown as import('../../../types').WSEvent);
-          }
-        }
-      })
-      .catch(() => {});
   }, [onSessionChange, onConfigChange, currentSessionId]);
 
   const fetchSessions = useCallback(() => {

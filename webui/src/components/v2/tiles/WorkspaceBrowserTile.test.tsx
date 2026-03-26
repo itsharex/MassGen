@@ -2,6 +2,7 @@ import { act } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentStore } from '../../../stores/agentStore'
+import { useTileStore } from '../../../stores/v2/tileStore'
 import { useWorkspaceStore } from '../../../stores/workspaceStore'
 import { WorkspaceBrowserTile } from './WorkspaceBrowserTile'
 
@@ -34,6 +35,7 @@ vi.mock('../../InlineArtifactPreview', () => ({
 describe('WorkspaceBrowserTile', () => {
   beforeEach(() => {
     useAgentStore.getState().reset()
+    useTileStore.getState().reset()
     useWorkspaceStore.getState().reset()
 
     act(() => {
@@ -51,6 +53,23 @@ describe('WorkspaceBrowserTile', () => {
         },
       ])
     })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          files: [
+            {
+              path: 'historical/report.md',
+              size: 128,
+              modified: 10,
+            },
+          ],
+          workspace_path: '/tmp/logs/agent_b/20260102/workspace',
+        }),
+      }))
+    )
   })
 
   it('auto-previews the main artifact and marks previewable files in the tree', () => {
@@ -67,5 +86,76 @@ describe('WorkspaceBrowserTile', () => {
 
     expect(screen.getByTestId('inline-artifact-preview')).toHaveTextContent('tasks/plan.json')
     expect(screen.getByTestId('panel-group')).toHaveAttribute('data-orientation', 'horizontal')
+  })
+
+  it('stores the active workspace path when opening a file in a new tile', () => {
+    render(<WorkspaceBrowserTile />)
+
+    fireEvent.click(screen.getByTitle('Open in new tile'))
+
+    expect(useTileStore.getState().tiles).toContainEqual(
+      expect.objectContaining({
+        type: 'file-viewer',
+        targetId: 'deliverables/index.html',
+        workspacePath: '/tmp/workspace',
+      })
+    )
+  })
+
+  it('shows an agent-level version selector with human-readable history labels', () => {
+    act(() => {
+      useAgentStore.getState().reset()
+      useWorkspaceStore.getState().reset()
+      useTileStore.getState().reset()
+
+      useAgentStore.getState().initSession(
+        'session-2',
+        'Inspect history',
+        ['agent_a', 'agent_b'],
+        'dark'
+      )
+      useWorkspaceStore.getState().setInitialFiles('/tmp/workspace1', [
+        {
+          path: 'deliverables/agent-a.html',
+          size: 1100,
+          modified: 1,
+        },
+      ])
+      useWorkspaceStore.getState().setInitialFiles('/tmp/workspace2', [
+        {
+          path: 'deliverables/agent-b.html',
+          size: 1200,
+          modified: 2,
+        },
+      ])
+      useAgentStore.getState().addAnswer({
+        id: 'answer-b-1',
+        agentId: 'agent_b',
+        answerNumber: 1,
+        content: 'Answer one',
+        timestamp: 1700000000000,
+        votes: 0,
+        workspacePath: '/tmp/logs/agent_b/20260101/workspace',
+      })
+      useAgentStore.getState().addAnswer({
+        id: 'answer-b-2',
+        agentId: 'agent_b',
+        answerNumber: 2,
+        content: 'Answer two',
+        timestamp: 1700000600000,
+        votes: 0,
+        workspacePath: '/tmp/logs/agent_b/20260102/workspace',
+      })
+    })
+
+    render(
+      <WorkspaceBrowserTile initialWorkspacePath="/tmp/logs/agent_b/20260102/workspace" />
+    )
+
+    expect(screen.getByText('Agent 2')).toBeInTheDocument()
+    expect(screen.getByLabelText('Version')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Live' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Answer 2' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Answer 1' })).toBeInTheDocument()
   })
 })

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
 import json
 import logging
 import logging.handlers
@@ -120,6 +121,37 @@ _log_dir_cache: tuple[list[dict[str, Any]], float] | None = None
 _LOG_DIR_CACHE_TTL = 30.0  # seconds
 
 
+def _coerce_session_sort_timestamp(value: Any) -> float | None:
+    """Normalize supported session timestamp values into comparable floats."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            pass
+        normalized = f"{stripped[:-1]}+00:00" if stripped.endswith("Z") else stripped
+        try:
+            return datetime.datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _session_sort_timestamp(*values: Any) -> float:
+    """Return the first valid normalized timestamp from the provided values."""
+    for value in values:
+        normalized = _coerce_session_sort_timestamp(value)
+        if normalized is not None:
+            return normalized
+    return 0.0
+
+
 def _find_latest_attempt(log_dir: Path) -> Path | None:
     """Find the latest turn/attempt subdirectory in a log directory.
 
@@ -205,7 +237,10 @@ def _scan_log_dirs(logs_root: Path) -> list[dict[str, Any]]:
         except Exception:
             continue
 
-    results.sort(key=lambda r: r.get("start_time") or "", reverse=True)
+    results.sort(
+        key=lambda r: _session_sort_timestamp(r.get("start_time")),
+        reverse=True,
+    )
     return results
 
 
@@ -497,11 +532,11 @@ def _resolve_watch_session_workspaces(
     status_data: dict[str, Any] | None,
     log_session_dir: Path | None,
 ) -> list[tuple[str, list[dict]]]:
-    """Choose the best visible workspace per agent for the workspace websocket.
+    """Return the live workspace for each agent for the workspace websocket.
 
-    Prefers the live workspace from status.json when it already contains visible
-    files. If the live workspace is metadata-only, falls back to logged answer
-    or final snapshots so the browser can still surface meaningful artifacts.
+    Historical answer/final snapshots are surfaced through their own APIs and
+    should not silently replace a live workspace in the always-on workspace
+    stream, even when the live workspace is still empty.
     """
     agents_data = (status_data or {}).get("agents", {})
     current_paths_by_agent: dict[str, str] = {}
@@ -514,11 +549,6 @@ def _resolve_watch_session_workspaces(
         if workspace_path and Path(workspace_path).exists():
             current_paths_by_agent[agent_id] = str(Path(workspace_path).resolve())
 
-    logged_candidates = _discover_logged_workspace_candidates(log_session_dir)
-    for agent_id in logged_candidates:
-        if agent_id not in ordered_agent_ids:
-            ordered_agent_ids.append(agent_id)
-
     scan_cache: dict[str, list[dict]] = {}
 
     def scan(path: str) -> list[dict]:
@@ -530,30 +560,14 @@ def _resolve_watch_session_workspaces(
     seen_paths: set[str] = set()
 
     for agent_id in ordered_agent_ids:
-        candidates: list[str] = []
         current_path = current_paths_by_agent.get(agent_id)
-        if current_path:
-            candidates.append(current_path)
-        for candidate in logged_candidates.get(agent_id, []):
-            if candidate not in candidates:
-                candidates.append(candidate)
-        if not candidates:
+        if not current_path:
             continue
 
-        chosen_path = candidates[0]
-        chosen_files = scan(chosen_path)
-        if not chosen_files:
-            for candidate in candidates[1:]:
-                candidate_files = scan(candidate)
-                if candidate_files:
-                    chosen_path = candidate
-                    chosen_files = candidate_files
-                    break
-
-        if chosen_path in seen_paths:
+        if current_path in seen_paths:
             continue
-        seen_paths.add(chosen_path)
-        resolved.append((chosen_path, chosen_files))
+        seen_paths.add(current_path)
+        resolved.append((current_path, scan(current_path)))
 
     return resolved
 
@@ -573,7 +587,12 @@ class WorkspaceConnectionManager:
         self._connection_count = 0
         workspace_logger.info("WorkspaceConnectionManager initialized")
 
-    async def connect(self, websocket: WebSocket, session_id: str, workspace_paths: list[str]) -> None:
+    async def connect(
+        self,
+        websocket: WebSocket,
+        session_id: str,
+        workspace_paths: list[str],
+    ) -> bool:
         """Accept and register a WebSocket connection for workspace file listing.
 
         Scans workspace directories and sends initial file list on connect.
@@ -588,10 +607,6 @@ class WorkspaceConnectionManager:
 
         await websocket.accept()
         workspace_logger.debug(f"[Conn #{conn_id}] WebSocket accepted")
-
-        if session_id not in self.workspace_connections:
-            self.workspace_connections[session_id] = set()
-        self.workspace_connections[session_id].add(websocket)
 
         # Collect initial file lists from workspace paths
         watched = []
@@ -618,21 +633,30 @@ class WorkspaceConnectionManager:
                 workspace_logger.warning(f"[Conn #{conn_id}] Path does not exist, skipping: {path}")
 
         # Send connected confirmation with initial file lists
-        await websocket.send_json(
-            {
-                "type": "workspace_connected",
-                "session_id": session_id,
-                "timestamp": asyncio.get_event_loop().time(),
-                "watched_paths": watched,
-                "initial_files": initial_files,
-            },
-        )
+        try:
+            await websocket.send_json(
+                {
+                    "type": "workspace_connected",
+                    "session_id": session_id,
+                    "timestamp": asyncio.get_event_loop().time(),
+                    "watched_paths": watched,
+                    "initial_files": initial_files,
+                },
+            )
+        except (WebSocketDisconnect, RuntimeError):
+            workspace_logger.info(f"[Conn #{conn_id}] Client disconnected before initial send")
+            return False
+
+        if session_id not in self.workspace_connections:
+            self.workspace_connections[session_id] = set()
+        self.workspace_connections[session_id].add(websocket)
 
         workspace_logger.info(
             f"[Conn #{conn_id}] WebSocket CONNECTED: session={session_id}, "
             f"watching {len(watched)}/{len(workspace_paths)} paths, "
             f"total_connections={sum(len(conns) for conns in self.workspace_connections.values())}",
         )
+        return True
 
     def disconnect(self, websocket: WebSocket, session_id: str) -> None:
         """Remove a WebSocket connection."""
@@ -859,6 +883,46 @@ def create_app(
         logger.warning("Failed to load persisted sessions", exc_info=True)
 
     # =========================================================================
+    # Automation: auto-start coordination immediately (don't wait for browser)
+    # =========================================================================
+
+    if automation_mode and pending_question:
+
+        @app.on_event("startup")
+        async def _auto_start_coordination():
+            """Start coordination immediately in automation mode.
+
+            The browser can connect later and receive the current state via
+            state_snapshot — no need to wait for a WebSocket connection.
+            """
+            import uuid
+
+            session_id = f"auto-{uuid.uuid4().hex[:12]}"
+            cfg_path = get_default_config()
+            if not cfg_path:
+                logger.warning("[AutoStart] No config path available, skipping auto-start")
+                return
+
+            q = app.state.pending_question
+            if not q:
+                return
+            app.state.pending_question = None  # consume
+
+            # Store the auto-started session ID so the frontend can find it
+            app.state.auto_session_id = session_id
+
+            logger.info(f"[AutoStart] Starting coordination immediately: session={session_id}")
+            task = asyncio.create_task(
+                run_coordination(
+                    session_id,
+                    q,
+                    cfg_path,
+                    cli_overrides=getattr(app.state, "cli_overrides", None),
+                ),
+            )
+            manager.tasks[session_id] = task
+
+    # =========================================================================
     # API Routes
     # =========================================================================
 
@@ -866,6 +930,17 @@ def create_app(
     async def health_check():
         """Health check endpoint."""
         return {"status": "ok", "service": "massgen-web"}
+
+    @app.get("/api/active-session")
+    async def get_active_session():
+        """Get the currently running session ID (for automation auto-connect)."""
+        auto_id = getattr(app.state, "auto_session_id", None)
+        if auto_id and auto_id in manager.displays:
+            return {"session_id": auto_id, "source": "automation"}
+        # Fall back to any active session
+        for sid in manager.displays:
+            return {"session_id": sid, "source": "active"}
+        return {"session_id": None}
 
     @app.get("/api/config")
     async def get_config():
@@ -2382,8 +2457,11 @@ def create_app(
             pass  # Don't break session list if log scanning fails
 
         # Sort by start_time/completed_at descending, limit to 50
-        def _sort_key(s: dict) -> str:
-            return s.get("start_time") or s.get("completed_at") or ""
+        def _sort_key(s: dict) -> float:
+            return _session_sort_timestamp(
+                s.get("start_time"),
+                s.get("completed_at"),
+            )
 
         sessions.sort(key=_sort_key, reverse=True)
         return {"sessions": sessions[:50]}
@@ -4820,7 +4898,9 @@ def create_app(
         workspace_logger.info(f"WS endpoint: connecting with {len(initial_paths)} initial paths")
 
         # Connect with initial paths (may be empty)
-        await workspace_manager.connect(websocket, session_id, initial_paths)
+        connected = await workspace_manager.connect(websocket, session_id, initial_paths)
+        if not connected:
+            return
 
         try:
             # Handle incoming messages

@@ -1,9 +1,38 @@
 from pathlib import Path
 
-from massgen.frontend.web.server import _resolve_watch_session_workspaces
+import pytest
+
+from massgen.frontend.web.server import (
+    WorkspaceConnectionManager,
+    _resolve_watch_session_workspaces,
+)
 
 
-def test_resolve_watch_session_workspaces_prefers_final_snapshot_when_current_workspace_has_no_visible_files(
+class _DisconnectingWorkspaceWebSocket:
+    def __init__(self) -> None:
+        self.accepted = False
+        self.sent_payloads: list[dict] = []
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent_payloads.append(payload)
+        raise RuntimeError("client disconnected")
+
+
+@pytest.mark.asyncio
+async def test_workspace_connect_reports_failed_initial_send_when_client_disconnects() -> None:
+    manager = WorkspaceConnectionManager()
+    websocket = _DisconnectingWorkspaceWebSocket()
+
+    connected = await manager.connect(websocket, "session-late-attach", [])
+
+    assert websocket.accepted is True
+    assert connected is False
+
+
+def test_resolve_watch_session_workspaces_keeps_live_workspace_even_when_it_has_no_visible_files(
     tmp_path: Path,
 ) -> None:
     current_workspace = tmp_path / "workspace_live"
@@ -32,14 +61,8 @@ def test_resolve_watch_session_workspaces_prefers_final_snapshot_when_current_wo
 
     assert resolved == [
         (
-            str(final_workspace.resolve()),
-            [
-                {
-                    "path": "deliverables/love_poem.md",
-                    "size": 24,
-                    "modified": resolved[0][1][0]["modified"],
-                },
-            ],
+            str(current_workspace.resolve()),
+            [],
         ),
     ]
 

@@ -2816,18 +2816,24 @@ class Orchestrator(ChatAgent):
                 f"[Orchestrator] Adding --use-two-tier-workspace flag to planning MCP for {agent_id}",
             )
 
-        # Create injection directory for task injection from propose_improvements
-        # Use log session dir (persists for entire run, accessible in Docker)
-        # IMPORTANT: resolve() to absolute path — the planning MCP server runs
-        # as a subprocess whose CWD may differ from the orchestrator's CWD,
-        # so relative paths would resolve to the wrong location.
-        log_dir = get_log_session_dir()
-        if log_dir:
-            injection_dir = (log_dir / "planning_injection" / agent_id).resolve()
+        # Create injection directory for task injection from propose_improvements.
+        # Both checklist MCP and planning MCP need rw access to this dir.
+        # In Docker mode, the log directory is NOT mounted into the container,
+        # so we use a workspace-local path (workspace is always mounted rw).
+        # IMPORTANT: resolve() to absolute path — MCP servers run as subprocesses
+        # whose CWD may differ from the orchestrator's.
+        _is_docker = hasattr(agent, "backend") and hasattr(agent.backend, "_is_docker_mode") and agent.backend._is_docker_mode
+        if _is_docker and hasattr(agent, "backend") and hasattr(agent.backend, "filesystem_manager") and agent.backend.filesystem_manager and agent.backend.filesystem_manager.cwd:
+            ws_root = Path(agent.backend.filesystem_manager.cwd)
+            injection_dir = (ws_root / ".massgen_scratch" / "planning_injection" / agent_id).resolve()
         else:
-            import tempfile as _tempfile
+            log_dir = get_log_session_dir()
+            if log_dir:
+                injection_dir = (log_dir / "planning_injection" / agent_id).resolve()
+            else:
+                import tempfile as _tempfile
 
-            injection_dir = Path(_tempfile.mkdtemp(prefix=f"massgen_plan_inject_{agent_id}_"))
+                injection_dir = Path(_tempfile.mkdtemp(prefix=f"massgen_plan_inject_{agent_id}_"))
         injection_dir.mkdir(parents=True, exist_ok=True)
         if not hasattr(self, "_planning_injection_dirs"):
             self._planning_injection_dirs = {}
