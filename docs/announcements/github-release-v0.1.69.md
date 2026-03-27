@@ -6,7 +6,7 @@
 - **Auto-end on completion**: Web automation correctly auto-ends when a skill completes
 
 ### 🤖 [MassGen Skill Redesign](https://docs.massgen.ai/en/latest/user_guide/skills.html)
-- **Increased usability and WebUI integration** ([#1032](https://github.com/massgen/MassGen/pull/1032)): MassGen skill launches directly from the WebUI with live session tracking and monitoring
+- **Increased usability and WebUI integration** ([#1032](https://github.com/massgen/MassGen/pull/1032)): MassGen skill now launches the WebUI for live session tracking and monitoring
 
 ### ✨ Plus
 - **Quickstart Wizard rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding

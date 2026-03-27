@@ -24,7 +24,7 @@ Complete WebUI redesign with inline final answers, keyboard shortcuts, and Zusta
 
 ### Added
 - **WebUI Automation Auto-Start** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Automation mode now auto-starts coordination runs without browser interaction — open the URL at any point to monitor progress, even mid-run
-- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill runs launchable directly from the WebUI with live session tracking
+- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
 - **Quickstart Wizard Rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New WelcomeStep, SkillsStep, ApiKeyStep redesign, DockerStep expansion, and SetupModeStep restructure for smoother onboarding
 - **Workspace Browser Expansion** ([#1032](https://github.com/massgen/MassGen/pull/1032)): WorkspaceModal and improved workspace connection
 

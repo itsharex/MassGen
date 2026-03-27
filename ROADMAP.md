@@ -56,7 +56,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ### Features
 - **WebUI Automation Auto-Start**: Automation mode now auto-starts runs without browser interaction — open the URL at any point to monitor progress mid-run
-- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skills launch with live session tracking
+- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
 - **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
 - **Workspace Browser Expansion**: WorkspaceModal and improved workspace connection
 - **Flexible Criteria Fields**: `description`/`name` accepted as alternatives to `text` in evaluation criteria JSON

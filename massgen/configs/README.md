@@ -232,7 +232,7 @@ Most configurations use environment variables for API keys:so
 
 **Key Features:**
 - **WebUI Automation Auto-Start**: Automation runs begin immediately — open the URL at any point to monitor progress mid-run
-- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skills launch with live session tracking
+- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
 - **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
 - **Workspace Browser Expansion**: WorkspaceModal and improved workspace connection
 - **Flexible Criteria Fields**: `description`/`name` accepted as alternatives to `text` in evaluation criteria JSON

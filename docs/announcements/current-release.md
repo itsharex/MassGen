@@ -39,8 +39,7 @@ We're excited to release MassGen v0.1.69 — WebUI Automation & Improved Skill! 
 - Web automation correctly auto-ends when a skill completes
 
 🤖 **MassGen Skill Redesign** — Increased usability and integration with the WebUI:
-- Skills launch with live session tracking
-- Monitor skill progress through the full WebUI interface
+- Skill now launches the WebUI for live session tracking and monitoring
 
 **Plus:**
 - 🧙 **Quickstart Wizard rework** — New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding

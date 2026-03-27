@@ -160,7 +160,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 **What's New in v0.1.69:**
 - **🌐 WebUI Automation Auto-Start** - Automation runs begin immediately; open the URL at any point to monitor progress mid-run.
-- **🤖 MassGen Skill Redesign** - Increased usability and integration with the WebUI; skills launch with live session tracking.
+- **🤖 MassGen Skill Redesign** - Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking.
 - **🧙 Quickstart Wizard Rework** - New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding.
 - **🗂️ Workspace Browser Expansion** - WorkspaceModal and improved workspace connection.
 
@@ -1246,7 +1246,7 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 #### WebUI Automation & Improved Skill
 - **WebUI Automation Auto-Start** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Auto-starts coordination runs without browser interaction — open the URL at any point to monitor progress
-- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skills launch with live session tracking
+- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
 - **Quickstart Wizard Rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
 - **Workspace Browser Expansion** ([#1032](https://github.com/massgen/MassGen/pull/1032)): WorkspaceModal and improved workspace connection
 - **Flexible Criteria Fields** ([#1032](https://github.com/massgen/MassGen/pull/1032)): `description`/`name` accepted as alternatives to `text` in criteria JSON
