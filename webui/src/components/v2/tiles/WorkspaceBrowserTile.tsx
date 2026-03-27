@@ -42,12 +42,29 @@ export function WorkspaceBrowserTile({ initialWorkspacePath }: WorkspaceBrowserT
 
   const agentWorkspaceOptions = useMemo((): AgentWorkspaceOption[] => {
     const liveWorkspaceByAgent = new Map<string, string>();
+    const unmatchedWorkspacePaths: string[] = [];
 
     for (const path of workspacePaths) {
-      const agentId = getAgentIdFromWorkspacePath(path, agentOrder, workspacePaths);
-      if (!agentId || liveWorkspaceByAgent.has(agentId)) continue;
+      const agentId =
+        workspaces[path]?.agentId ||
+        getAgentIdFromWorkspacePath(path, agentOrder, workspacePaths);
+
+      if (!agentId || liveWorkspaceByAgent.has(agentId)) {
+        unmatchedWorkspacePaths.push(path);
+        continue;
+      }
       liveWorkspaceByAgent.set(agentId, path);
     }
+
+    const remainingAgentIds = agentOrder.filter(
+      (agentId) => !liveWorkspaceByAgent.has(agentId)
+    );
+    unmatchedWorkspacePaths.forEach((path, index) => {
+      const fallbackAgentId = remainingAgentIds[index];
+      if (fallbackAgentId && !liveWorkspaceByAgent.has(fallbackAgentId)) {
+        liveWorkspaceByAgent.set(fallbackAgentId, path);
+      }
+    });
 
     if (workspacePaths.length === 1 && agentOrder.length === 1 && !liveWorkspaceByAgent.has(agentOrder[0])) {
       liveWorkspaceByAgent.set(agentOrder[0], workspacePaths[0]);
@@ -70,7 +87,7 @@ export function WorkspaceBrowserTile({ initialWorkspacePath }: WorkspaceBrowserT
         }),
       }))
       .filter((entry) => entry.versions.length > 0);
-  }, [agentOrder, answers, workspacePaths]);
+  }, [agentOrder, answers, workspacePaths, workspaces]);
 
   useEffect(() => {
     if (agentWorkspaceOptions.length === 0) {

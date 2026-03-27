@@ -24,6 +24,7 @@ interface AgentWorkspace {
   workspacePath: string;
   files: WorkspaceFileInfo[];
   lastUpdated: number;
+  agentId?: string;
 }
 
 // Historical snapshot (from answer)
@@ -62,7 +63,11 @@ interface WorkspaceStore {
   setRefreshSessionFn: (fn: (() => void) | null) => void;
 
   // Actions - Workspace updates
-  setInitialFiles: (workspacePath: string, files: WorkspaceFileInfo[]) => void;
+  setInitialFiles: (
+    workspacePath: string,
+    files: WorkspaceFileInfo[],
+    agentId?: string
+  ) => void;
   clearWorkspace: (workspacePath: string) => void;
 
   // Actions - Historical snapshots
@@ -109,7 +114,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
   setRefreshSessionFn: (fn) => set({ refreshSessionFn: fn }),
 
   // Workspace update actions
-  setInitialFiles: (workspacePath, files) => {
+  setInitialFiles: (workspacePath, files, agentId) => {
     // Normalize path to ensure consistent key format across HTTP and WebSocket
     const normalizedPath = normalizePath(workspacePath);
     // FIX: Clear stale 404 caches when receiving fresh file list
@@ -122,6 +127,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           workspacePath: normalizedPath,
           files,
           lastUpdated: Date.now(),
+          agentId: agentId ?? state.workspaces[normalizedPath]?.agentId,
         },
       },
     }));

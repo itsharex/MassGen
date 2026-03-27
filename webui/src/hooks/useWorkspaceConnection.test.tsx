@@ -235,4 +235,49 @@ describe('useWorkspaceConnection', () => {
 
     unmount()
   })
+
+  it('stores workspace agent metadata from watch_session payloads', () => {
+    act(() => {
+      useAgentStore.setState({ sessionId: 'session-5', isComplete: false })
+    })
+
+    const { unmount } = renderHook(() => useWorkspaceConnection())
+    const socket = MockWebSocket.instances[0]
+
+    expect(socket).toBeDefined()
+
+    act(() => {
+      socket.open()
+    })
+
+    act(() => {
+      socket.receive({
+        type: 'workspace_connected',
+        initial_files: {
+          '/tmp/workspace_674c6c33': [
+            {
+              path: 'deliverables/index.html',
+              size: 123,
+              modified: 1700000000,
+            },
+          ],
+        },
+        workspace_metadata: {
+          '/tmp/workspace_674c6c33': {
+            agent_id: 'agent_a',
+          },
+        },
+      })
+    })
+
+    expect(
+      (
+        useWorkspaceStore.getState().workspaces['/tmp/workspace_674c6c33'] as
+          | { agentId?: string }
+          | undefined
+      )?.agentId
+    ).toBe('agent_a')
+
+    unmount()
+  })
 })

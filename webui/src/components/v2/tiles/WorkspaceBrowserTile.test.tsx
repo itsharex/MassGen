@@ -158,4 +158,55 @@ describe('WorkspaceBrowserTile', () => {
     expect(screen.getByRole('option', { name: 'Answer 2' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Answer 1' })).toBeInTheDocument()
   })
+
+  it('maps hashed live workspace paths to the correct agents when metadata is present', () => {
+    act(() => {
+      useAgentStore.getState().reset()
+      useWorkspaceStore.getState().reset()
+      useTileStore.getState().reset()
+
+      useAgentStore.getState().initSession(
+        'session-3',
+        'Inspect hashed live workspaces',
+        ['agent_a', 'agent_b'],
+        'dark'
+      )
+
+      useWorkspaceStore.setState({
+        workspaces: {
+          '/tmp/workspace_674c6c33': {
+            workspacePath: '/tmp/workspace_674c6c33',
+            files: [
+              {
+                path: 'deliverables/agent-a.html',
+                size: 1100,
+                modified: 1,
+              },
+            ],
+            lastUpdated: 1,
+            agentId: 'agent_a',
+          },
+          '/tmp/workspace_2ee260e0': {
+            workspacePath: '/tmp/workspace_2ee260e0',
+            files: [
+              {
+                path: 'deliverables/agent-b.html',
+                size: 1200,
+                modified: 2,
+              },
+            ],
+            lastUpdated: 2,
+            agentId: 'agent_b',
+          },
+        },
+      } as never)
+    })
+
+    render(<WorkspaceBrowserTile />)
+
+    expect(screen.queryByText('Waiting for workspace data...')).not.toBeInTheDocument()
+    expect(screen.getByText('Agent 1')).toBeInTheDocument()
+    expect(screen.getByText('Agent 2')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Live' })).toBeInTheDocument()
+  })
 })

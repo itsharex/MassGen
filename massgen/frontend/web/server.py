@@ -417,6 +417,8 @@ def _should_skip_dir(dir_name: str) -> bool:
     """
     import fnmatch
 
+    if dir_name == ".massgen_scratch":
+        return False
     if dir_name.startswith("."):
         return True
     if dir_name in SKIP_DIRS_FOR_LOGGING:
@@ -528,19 +530,13 @@ def _discover_logged_workspace_candidates(log_session_dir: Path | None) -> dict[
     return dict(candidates)
 
 
-def _resolve_watch_session_workspaces(
+def _extract_live_workspace_paths(
     status_data: dict[str, Any] | None,
-    log_session_dir: Path | None,
-) -> list[tuple[str, list[dict]]]:
-    """Return the live workspace for each agent for the workspace websocket.
-
-    Historical answer/final snapshots are surfaced through their own APIs and
-    should not silently replace a live workspace in the always-on workspace
-    stream, even when the live workspace is still empty.
-    """
+) -> tuple[list[str], dict[str, str]]:
+    """Extract live workspace paths keyed by agent ID from status data."""
     agents_data = (status_data or {}).get("agents", {})
-    current_paths_by_agent: dict[str, str] = {}
     ordered_agent_ids: list[str] = []
+    current_paths_by_agent: dict[str, str] = {}
 
     for agent_id, agent_info in agents_data.items():
         ordered_agent_ids.append(agent_id)
@@ -549,6 +545,38 @@ def _resolve_watch_session_workspaces(
         if workspace_path and Path(workspace_path).exists():
             current_paths_by_agent[agent_id] = str(Path(workspace_path).resolve())
 
+    return ordered_agent_ids, current_paths_by_agent
+
+
+def _resolve_watch_session_workspaces(
+    status_data: dict[str, Any] | None,
+    log_session_dir: Path | None,
+    fallback_live_workspaces_by_agent: dict[str, str] | None = None,
+) -> list[tuple[str, str, list[dict]]]:
+    """Return the live workspace for each agent for the workspace websocket.
+
+    Historical answer/final snapshots are surfaced through their own APIs and
+    should not silently replace a live workspace in the always-on workspace
+    stream when that live workspace exists, even when it is still empty.
+    If no live workspace path is available at all, the best logged snapshot is
+    used as a compatibility fallback so the browser still has something to show.
+    """
+    ordered_agent_ids, current_paths_by_agent = _extract_live_workspace_paths(status_data)
+
+    if fallback_live_workspaces_by_agent:
+        for agent_id, workspace_path in fallback_live_workspaces_by_agent.items():
+            if agent_id not in ordered_agent_ids:
+                ordered_agent_ids.append(agent_id)
+            if agent_id in current_paths_by_agent:
+                continue
+            if workspace_path and Path(workspace_path).exists():
+                current_paths_by_agent[agent_id] = str(Path(workspace_path).resolve())
+
+    logged_candidates = _discover_logged_workspace_candidates(log_session_dir)
+    for agent_id in logged_candidates:
+        if agent_id not in ordered_agent_ids:
+            ordered_agent_ids.append(agent_id)
+
     scan_cache: dict[str, list[dict]] = {}
 
     def scan(path: str) -> list[dict]:
@@ -556,18 +584,23 @@ def _resolve_watch_session_workspaces(
             scan_cache[path] = _scan_workspace_files(Path(path))
         return scan_cache[path]
 
-    resolved: list[tuple[str, list[dict]]] = []
+    resolved: list[tuple[str, str, list[dict]]] = []
     seen_paths: set[str] = set()
 
     for agent_id in ordered_agent_ids:
         current_path = current_paths_by_agent.get(agent_id)
-        if not current_path:
-            continue
+        if current_path:
+            chosen_path = current_path
+        else:
+            candidates = logged_candidates.get(agent_id, [])
+            if not candidates:
+                continue
+            chosen_path = candidates[0]
 
-        if current_path in seen_paths:
+        if chosen_path in seen_paths:
             continue
-        seen_paths.add(current_path)
-        resolved.append((current_path, scan(current_path)))
+        seen_paths.add(chosen_path)
+        resolved.append((agent_id, chosen_path, scan(chosen_path)))
 
     return resolved
 
@@ -592,6 +625,7 @@ class WorkspaceConnectionManager:
         websocket: WebSocket,
         session_id: str,
         workspace_paths: list[str],
+        workspace_metadata: dict[str, dict[str, str]] | None = None,
     ) -> bool:
         """Accept and register a WebSocket connection for workspace file listing.
 
@@ -641,6 +675,7 @@ class WorkspaceConnectionManager:
                     "timestamp": asyncio.get_event_loop().time(),
                     "watched_paths": watched,
                     "initial_files": initial_files,
+                    "workspace_metadata": workspace_metadata or {},
                 },
             )
         except (WebSocketDisconnect, RuntimeError):
@@ -4862,7 +4897,9 @@ def create_app(
         workspace_logger.info(f"WS endpoint: new connection for session={session_id}")
 
         # Get workspace paths from query params or wait for watch action
-        initial_paths = []
+        initial_paths: list[str] = []
+        initial_workspace_metadata: dict[str, dict[str, str]] = {}
+        last_known_live_paths_by_agent: dict[str, str] = {}
 
         # Try to get workspace paths from status.json if session exists
         try:
@@ -4883,13 +4920,13 @@ def create_app(
                     with open(status_file) as f:
                         status_data = json.load(f)
 
-                    agents_data = status_data.get("agents", {})
-                    for agent_id_key, agent_info in agents_data.items():
-                        workspace_paths = agent_info.get("workspace_paths", {})
-                        workspace_path = workspace_paths.get("workspace")
-                        if workspace_path and Path(workspace_path).exists():
-                            initial_paths.append(workspace_path)
-                            workspace_logger.debug(f"WS endpoint: found workspace for {agent_id_key}: {workspace_path}")
+                    _, last_known_live_paths_by_agent = _extract_live_workspace_paths(status_data)
+                    for agent_id_key, workspace_path in last_known_live_paths_by_agent.items():
+                        initial_paths.append(workspace_path)
+                        initial_workspace_metadata[_normalize_workspace_path(workspace_path)] = {
+                            "agent_id": agent_id_key,
+                        }
+                        workspace_logger.debug(f"WS endpoint: found workspace for {agent_id_key}: {workspace_path}")
                 else:
                     workspace_logger.debug(f"WS endpoint: status.json not found at {status_file}")
         except Exception as e:
@@ -4898,7 +4935,12 @@ def create_app(
         workspace_logger.info(f"WS endpoint: connecting with {len(initial_paths)} initial paths")
 
         # Connect with initial paths (may be empty)
-        connected = await workspace_manager.connect(websocket, session_id, initial_paths)
+        connected = await workspace_manager.connect(
+            websocket,
+            session_id,
+            initial_paths,
+            initial_workspace_metadata,
+        )
         if not connected:
             return
 
@@ -4942,20 +4984,28 @@ def create_app(
                             if status_file.exists():
                                 with open(status_file) as f:
                                     status_data = json.load(f)
+                                _, last_known_live_paths_by_agent = _extract_live_workspace_paths(
+                                    status_data,
+                                )
                     except Exception as e:
                         workspace_logger.warning(f"WS watch_session: failed to read status.json: {e}")
 
                     resolved_workspaces = _resolve_watch_session_workspaces(
                         status_data,
                         Path(current_log_dir) if current_log_dir else None,
+                        fallback_live_workspaces_by_agent=last_known_live_paths_by_agent,
                     )
-                    session_paths = [path for path, _ in resolved_workspaces]
+                    session_paths = [path for _, path, _ in resolved_workspaces]
 
                     # Collect initial files for each workspace
                     initial_files: dict[str, list[dict]] = {}
-                    for path, files in resolved_workspaces:
+                    workspace_metadata: dict[str, dict[str, str]] = {}
+                    for agent_id, path, files in resolved_workspaces:
                         normalized_path = _normalize_workspace_path(path)
                         initial_files[normalized_path] = files
+                        workspace_metadata[normalized_path] = {
+                            "agent_id": agent_id,
+                        }
                         workspace_logger.debug(
                             f"WS watch_session: scanned {len(files)} files for {Path(path).name}",
                         )
@@ -4969,6 +5019,7 @@ def create_app(
                             "timestamp": asyncio.get_event_loop().time(),
                             "watched_paths": normalized_watched_paths,
                             "initial_files": initial_files,
+                            "workspace_metadata": workspace_metadata,
                         },
                     )
                     workspace_logger.info(f"WS watch_session: sent {len(session_paths)} workspaces with files")

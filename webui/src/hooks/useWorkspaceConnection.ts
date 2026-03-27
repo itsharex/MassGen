@@ -92,7 +92,8 @@ export function useWorkspaceConnection() {
             if (data.initial_files) {
               for (const [wsPath, files] of Object.entries(data.initial_files)) {
                 const fileList = files as WorkspaceFileInfo[];
-                setInitialFiles(wsPath, fileList);
+                const agentId = data.workspace_metadata?.[wsPath]?.agent_id;
+                setInitialFiles(wsPath, fileList, agentId);
               }
             }
             break;
@@ -100,7 +101,7 @@ export function useWorkspaceConnection() {
           case 'workspace_refresh':
             // Full refresh - replace all files for this workspace
             if (data.workspace_path && data.files) {
-              setInitialFiles(data.workspace_path, data.files);
+              setInitialFiles(data.workspace_path, data.files, data.agent_id);
             }
             break;
 
