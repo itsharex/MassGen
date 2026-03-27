@@ -1317,20 +1317,22 @@ class CoordinationTracker:
                     "temp_workspace_parent": orchestrator._agent_temporary_workspace if hasattr(orchestrator, "_agent_temporary_workspace") else None,
                 }
 
-            # Get evaluation criteria if available
+            # Get evaluation criteria if available (inline > generated > preset)
             eval_criteria_list = None
-            if orchestrator and hasattr(orchestrator, "get_generated_evaluation_criteria"):
-                criteria = orchestrator.get_generated_evaluation_criteria()
-                if criteria:
-                    eval_criteria_list = [
-                        {
-                            "id": c.id,
-                            "text": c.text,
-                            "category": c.category,
-                        }
-                        for c in criteria
-                        if hasattr(c, "id")
-                    ]
+            if orchestrator and hasattr(orchestrator, "_get_active_criteria"):
+                try:
+                    texts, categories, _verify_by = orchestrator._get_active_criteria()
+                    if texts and categories:
+                        eval_criteria_list = [
+                            {
+                                "id": cid,
+                                "text": text,
+                                "category": categories.get(cid, "must"),
+                            }
+                            for cid, text in zip(categories.keys(), texts)
+                        ]
+                except Exception:
+                    pass
 
             # Get context paths from orchestrator config
             context_paths_list = None

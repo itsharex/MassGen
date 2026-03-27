@@ -2439,7 +2439,15 @@ class MemorySection(SystemPromptSection):
             content_parts.append(
                 "These memories capture how the prior answer was verified — they reflect the state at submission. "
                 "Use them as your baseline and generally trust their results. Only run additional verification "
-                "if you spot an error or omission in the prior check, or need evidence for a new comparison.\n",
+                "if you spot an error or omission in the prior check, or need evidence for a new comparison.\n\n"
+                "**Reuse verification scripts.** When evaluating a prior answer, run its existing "
+                "verification script directly — it has working selectors, timing, and patterns that "
+                "cost multiple iterations to get right. Review the results critically (prior verification "
+                "may be incomplete or biased toward confirming the author's work) and adjust the script "
+                "if needed, but start from the working version rather than writing from scratch.\n\n"
+                "When creating a NEW deliverable, build your verification script by synthesizing from "
+                "the prior answers' working scripts — reuse patterns, selectors, and assertions that "
+                "still apply, and add/modify for your new changes.\n",
             )
             for entry in verification_replay_entries:
                 source = entry.get("source", "unknown")

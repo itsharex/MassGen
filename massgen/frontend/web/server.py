@@ -4178,7 +4178,7 @@ def create_app(
 
         # Debug: log vote rounds
         vote_info = [(n.get("label"), n.get("round")) for n in nodes if n.get("type") == "vote"]
-        print(f"[DEBUG] Timeline API: vote_info={vote_info}, currentVotingRound={current_voting_round}")
+        logger.debug(f"Timeline API: vote_info={vote_info}, currentVotingRound={current_voting_round}")
 
         return {
             "nodes": nodes,
@@ -4241,25 +4241,19 @@ def create_app(
         display = manager.get_display(session_id)
         log_session_dir = getattr(display, "log_session_dir", None) if display else None
 
-        print(f"[DEBUG] get_final_answer: session_id={session_id}")
-        print(f"[DEBUG] get_final_answer: display={display}")
-        print(
-            f"[DEBUG] get_final_answer: log_session_dir from display={log_session_dir}",
-        )
+        logger.debug(f"get_final_answer: session_id={session_id}")
+        logger.debug(f"get_final_answer: display={display}")
+        logger.debug(f"get_final_answer: log_session_dir from display={log_session_dir}")
 
         # Fallback to global log session dir if display doesn't have it
         if not log_session_dir:
             from massgen.logger_config import get_log_session_dir
 
             log_session_dir = get_log_session_dir()
-            print(
-                f"[DEBUG] get_final_answer: log_session_dir from global={log_session_dir}",
-            )
+            logger.debug(f"get_final_answer: log_session_dir from global={log_session_dir}")
 
         if not log_session_dir or not log_session_dir.exists():
-            print(
-                "[DEBUG] get_final_answer: log_session_dir not found or doesn't exist",
-            )
+            logger.debug("get_final_answer: log_session_dir not found or doesn't exist")
             return JSONResponse(
                 {"error": "Log directory not found", "answer": None},
                 status_code=404,
@@ -4278,13 +4272,11 @@ def create_app(
                 if not agent_dir.is_dir():
                     continue
                 answer_file = agent_dir / "answer.txt"
-                print(f"[DEBUG] get_final_answer: Checking answer_file={answer_file}")
+                logger.debug(f"get_final_answer: Checking answer_file={answer_file}")
                 if answer_file.exists():
                     try:
                         answer_content = answer_file.read_text(encoding="utf-8")
-                        print(
-                            f"[DEBUG] get_final_answer: Found answer! Length={len(answer_content)}",
-                        )
+                        logger.debug(f"get_final_answer: Found answer! Length={len(answer_content)}")
                         return {
                             "answer": answer_content,
                             "agent_id": agent_dir.name,
@@ -4296,7 +4288,7 @@ def create_app(
 
         # Try 1: Direct final/ directory (log_session_dir/final)
         final_dir = log_session_dir / "final"
-        print(f"[DEBUG] get_final_answer: Looking for final_dir={final_dir}")
+        logger.debug(f"get_final_answer: Looking for final_dir={final_dir}")
         result = find_answer_in_final_dir(final_dir)
         if result:
             if "error" in result:
@@ -4307,11 +4299,11 @@ def create_app(
             return result
 
         # Try 2: Check for attempt_N subdirectories (log_session_dir/attempt_N/final)
-        print("[DEBUG] get_final_answer: Checking attempt subdirectories")
+        logger.debug("get_final_answer: Checking attempt subdirectories")
         for attempt_dir in sorted(log_session_dir.iterdir(), reverse=True):
             if not attempt_dir.is_dir() or not attempt_dir.name.startswith("attempt_"):
                 continue
-            print(f"[DEBUG] get_final_answer: Checking attempt dir: {attempt_dir}")
+            logger.debug(f"get_final_answer: Checking attempt dir: {attempt_dir}")
             final_dir = attempt_dir / "final"
             result = find_answer_in_final_dir(final_dir)
             if result:
@@ -4323,7 +4315,7 @@ def create_app(
                 return result
 
         # Fallback: search in turn subdirectories (for older log structure or if log_session_dir is base)
-        print("[DEBUG] get_final_answer: No final dir, searching turn subdirs")
+        logger.debug("get_final_answer: No final dir, searching turn subdirs")
         for turn_dir in sorted(log_session_dir.iterdir(), reverse=True):
             if not turn_dir.is_dir() or not turn_dir.name.startswith("turn_"):
                 continue
@@ -4963,7 +4955,7 @@ def create_app(
                 if action == "watch_session":
                     # Watch all workspaces for this session (reads from status.json)
                     # Frontend uses this on initial connect to get all workspace files
-                    workspace_logger.info(f"WS watch_session request for session={session_id}")
+                    workspace_logger.debug(f"WS watch_session request for session={session_id}")
 
                     # Re-resolve log_session_dir each call — it may have been
                     # None at WS connect time if the display wasn't registered yet.
@@ -5031,7 +5023,7 @@ def create_app(
                             "workspace_metadata": workspace_metadata,
                         },
                     )
-                    workspace_logger.info(f"WS watch_session: sent {len(session_paths)} workspaces with files")
+                    workspace_logger.debug(f"WS watch_session: sent {len(session_paths)} workspaces with files")
 
                 elif action == "watch":
                     # Start watching additional paths
@@ -5566,8 +5558,8 @@ async def run_coordination_with_history(
 
         # Store the log session directory in the display
         display.log_session_dir = get_log_session_dir()
-        print(
-            f"[WebUI] run_coordination_with_history: turn={turn_number}, log_dir={display.log_session_dir}",
+        logger.info(
+            f"run_coordination_with_history: turn={turn_number}, log_dir={display.log_session_dir}",
         )
 
         # Save execution metadata for session export/sharing (same as CLI)
@@ -5591,9 +5583,9 @@ async def run_coordination_with_history(
                     display.log_session_dir,
                     orchestrator,
                 )
-                print("[WebUI] Saved initial status.json with workspace paths")
+                logger.info("Saved initial status.json with workspace paths")
             except Exception as e:
-                print(f"[WebUI] Warning: Could not save initial status.json: {e}")
+                logger.warning(f"Could not save initial status.json: {e}")
 
         # Create coordination UI with web display
         ui = CoordinationUI(
@@ -6374,8 +6366,8 @@ async def run_coordination(
         from massgen.logger_config import get_log_session_dir, save_execution_metadata
 
         display.log_session_dir = get_log_session_dir()
-        print(
-            f"[DEBUG] run_coordination: Set display.log_session_dir = {display.log_session_dir}",
+        logger.debug(
+            f"run_coordination: Set display.log_session_dir = {display.log_session_dir}",
         )
 
         # Print status.json location for automation mode monitoring
@@ -6403,9 +6395,9 @@ async def run_coordination(
                     display.log_session_dir,
                     orchestrator,
                 )
-                print("[WebUI] Saved initial status.json with workspace paths")
+                logger.info("Saved initial status.json with workspace paths")
             except Exception as e:
-                print(f"[WebUI] Warning: Could not save initial status.json: {e}")
+                logger.warning(f"Could not save initial status.json: {e}")
 
         # Create coordination UI with web display
         ui = CoordinationUI(

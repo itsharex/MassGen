@@ -6060,6 +6060,16 @@ Your answer:"""
                     )
 
             if not active_streams:
+                # Before breaking, check if any agents are still eligible to run.
+                # Agents between rounds (restart_pending, stream just closed) are
+                # momentarily absent from active_streams but should be re-spawned.
+                has_eligible = any(not state.has_voted and not state.is_killed for state in self.agent_states.values())
+                if has_eligible:
+                    logger.info(
+                        "[Orchestrator] No active streams but eligible agents exist — waiting for re-spawn",
+                    )
+                    await asyncio.sleep(0.5)
+                    continue
                 break
 
             # Create tasks only for streams that don't already have active tasks
