@@ -200,6 +200,10 @@ Key Features
 Recent Releases
 ---------------
 
+**v0.1.69 (March 27, 2026)** - WebUI Automation & Improved Skill
+
+WebUI automation now auto-starts without browser interaction — open the URL at any point mid-run to monitor progress. MassGen skill redesign for increased usability and WebUI integration. Quickstart Wizard rework and Workspace Browser expansion.
+
 **v0.1.68 (March 25, 2026)** - Checkpoint Mode
 
 New checkpoint coordination mode with delegator pattern — main agent plans solo then delegates to team via ``checkpoint()`` tool. WebUI checkpoint support. LiteLLM supply chain fix.
@@ -207,10 +211,6 @@ New checkpoint coordination mode with delegator pattern — main agent plans sol
 **v0.1.67 (March 23, 2026)** - Modernized WebUI
 
 Complete WebUI redesign with inline final answers, keyboard shortcuts, and Zustand state management. RoundBudgetGuardHook for per-round cost control. Unified parallel pre-collab phases. Regression guard for safe iterations.
-
-**v0.1.66 (March 20, 2026)** - Step Mode
-
-New ``--step`` CLI mode for external orchestrators to run one agent for one step then exit. Powers massgen-refinery plugin step mode. Codex Windows UTF-8 fixes and console text sanitization.
 
 :doc:`Full changelog → <changelog>`
 

@@ -9,16 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Recent Releases
 
+**v0.1.69 (March 27, 2026)** - WebUI Automation & Improved Skill
+WebUI automation now auto-starts without browser interaction — open the URL at any point mid-run to monitor progress. MassGen skill redesign for increased usability and WebUI integration. Quickstart Wizard rework, Workspace Browser expansion, and flexible evaluation criteria field names.
+
 **v0.1.68 (March 25, 2026)** - Checkpoint Mode
 New checkpoint coordination mode with delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool. LLM API circuit breaker for 429 handling. WebUI checkpoint support. LiteLLM supply chain fix.
 
 **v0.1.67 (March 23, 2026)** - Modernized WebUI
 Complete WebUI redesign with inline final answers, keyboard shortcuts, and Zustand state management. RoundBudgetGuardHook for per-round cost control. Unified parallel pre-collab phases. Regression guard for safe iterations.
 
-**v0.1.66 (March 20, 2026)** - Step Mode
-New `--step` CLI mode for external orchestrators to run one agent for one step then exit. Powers massgen-refinery plugin step mode. Codex Windows UTF-8 fixes and console text sanitization.
-
 ---
+
+## [0.1.69] - 2026-03-27
+
+### Added
+- **WebUI Automation Auto-Start** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Automation mode now auto-starts coordination runs without browser interaction — open the URL at any point to monitor progress, even mid-run
+- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
+- **Quickstart Wizard Rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New WelcomeStep, SkillsStep, ApiKeyStep redesign, DockerStep expansion, and SetupModeStep restructure for smoother onboarding
+- **Workspace Browser Expansion** ([#1032](https://github.com/massgen/MassGen/pull/1032)): WorkspaceModal and improved workspace connection
+
+### Changed
+- **Flexible Evaluation Criteria Fields** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Criteria JSON now accepts `description` or `name` as alternatives to `text` field for more flexible criterion authoring
+- **Automatic Config Resolution** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Automation mode auto-resolves config when none is specified (same as CLI without `--web`)
+
+### Fixed
+- **Web Automation Skill Lifecycle** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Web automation now correctly auto-ends when a skill completes
+- **WebUI Version Default** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Fixed WebUI defaulting to v2
+
+### Documentation, Configurations and Resources
+- **Updated WebUI Guide**: Updated `docs/source/user_guide/webui.rst` with automation mode flags, auto-start behavior, and interactive examples
+- **MassGen Skill**: Updated `massgen/skills/massgen/SKILL.md` with WebUI wrapper and monitoring instructions
+- **Advanced Workflows**: Updated `massgen/skills/massgen/references/advanced_workflows.md` with skill WebUI integration patterns
+- **Config Setup**: Updated `massgen/skills/massgen/references/config_setup.md` with updated quickstart guidance
+
+### Technical Details
+- **Major Focus**: WebUI Automation & Improved Skill — seamless integration between the skill workflow and WebUI monitoring
+- **PRs Merged**: [#1032](https://github.com/massgen/MassGen/pull/1032)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
 
 ## [0.1.68] - 2026-03-25
 

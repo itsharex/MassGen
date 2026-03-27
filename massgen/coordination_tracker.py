@@ -1317,6 +1317,52 @@ class CoordinationTracker:
                     "temp_workspace_parent": orchestrator._agent_temporary_workspace if hasattr(orchestrator, "_agent_temporary_workspace") else None,
                 }
 
+            # Get evaluation criteria if available (inline > generated > preset)
+            eval_criteria_list = None
+            if orchestrator and hasattr(orchestrator, "_get_active_criteria"):
+                try:
+                    texts, categories, _verify_by = orchestrator._get_active_criteria()
+                    if texts and categories:
+                        eval_criteria_list = [
+                            {
+                                "id": cid,
+                                "text": text,
+                                "category": categories.get(cid, "must"),
+                            }
+                            for cid, text in zip(categories.keys(), texts)
+                        ]
+                except Exception:
+                    pass
+
+            # Get context paths from orchestrator config
+            context_paths_list = None
+            if orchestrator and hasattr(orchestrator, "agents"):
+                for agent in orchestrator.agents.values():
+                    if agent and hasattr(agent, "backend") and agent.backend and hasattr(agent.backend, "config") and "context_paths" in agent.backend.config:
+                        raw = agent.backend.config["context_paths"]
+                        if raw:
+                            context_paths_list = [
+                                {
+                                    "path": cp.get("path", ""),
+                                    "permission": cp.get("permission", "read"),
+                                }
+                                for cp in raw
+                                if isinstance(cp, dict) and cp.get("path")
+                            ]
+                        break  # All agents share the same config
+
+            # Detect docker execution mode from agent backend config
+            docker_enabled = False
+            if orchestrator and hasattr(orchestrator, "agents"):
+                for agent in orchestrator.agents.values():
+                    if agent and hasattr(agent, "backend") and agent.backend and hasattr(agent.backend, "config"):
+                        exec_mode = agent.backend.config.get(
+                            "command_line_execution_mode",
+                            "local",
+                        )
+                        docker_enabled = exec_mode == "docker"
+                        break
+
             # Calculate total costs across all agents
             total_cost = 0.0
             total_input_tokens = 0
@@ -1504,6 +1550,9 @@ class CoordinationTracker:
                     "start_time": self.start_time,
                     "elapsed_seconds": round(elapsed, 3),
                     "orchestrator_paths": orchestrator_paths,
+                    "eval_criteria": eval_criteria_list,
+                    "context_paths": context_paths_list,
+                    "docker_enabled": docker_enabled,
                 },
                 "costs": {
                     "total_estimated_cost": round(total_cost, 6),

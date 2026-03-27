@@ -1,10 +1,10 @@
 # MassGen Roadmap
 
-**Current Version:** v0.1.68
+**Current Version:** v0.1.69
 
 **Release Schedule:** Mondays, Wednesdays, Fridays @ 9am PT
 
-**Last Updated:** March 25, 2026
+**Last Updated:** March 27, 2026
 
 This roadmap outlines MassGen's development priorities for upcoming releases. Each release focuses on specific capabilities with real-world use cases.
 
@@ -42,39 +42,24 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 | Release | Target | Feature | Owner | Use Case |
 |---------|--------|---------|-------|----------|
-| **v0.1.69** | 03/27/26 | Cloud Modal MVP | @ncrispino | Run MassGen as a cloud job on Modal ([#982](https://github.com/massgen/MassGen/issues/982)) |
-| **v0.1.70** | 03/30/26 | OpenAI Audio API | @ncrispino | Support OpenAI audio API for audio understanding ([#960](https://github.com/massgen/MassGen/issues/960)) |
-| **v0.1.71** | 04/01/26 | Image/Video Edit Capabilities | @ncrispino | Check and support img/video editing capabilities ([#959](https://github.com/massgen/MassGen/issues/959)) |
+| **v0.1.70** | 03/30/26 | Cloud Modal MVP | @ncrispino | Run MassGen as a cloud job on Modal ([#982](https://github.com/massgen/MassGen/issues/982)) |
+| **v0.1.71** | 04/02/26 | OpenAI Audio API | @ncrispino | Support OpenAI audio API for audio understanding ([#960](https://github.com/massgen/MassGen/issues/960)) |
+| **v0.1.72** | 04/04/26 | Image/Video Edit Capabilities | @ncrispino | Check and support img/video editing capabilities ([#959](https://github.com/massgen/MassGen/issues/959)) |
 
 *All releases ship on MWF @ 9am PT when ready*
 
 ---
 
-## ✅ v0.1.68 - Checkpoint Mode (Completed)
+## ✅ v0.1.69 - WebUI Automation & Improved Skill (Completed)
 
-**Released:** March 25, 2026 | PRs: [#1028](https://github.com/massgen/MassGen/pull/1028), [#1025](https://github.com/massgen/MassGen/pull/1025), [#1024](https://github.com/massgen/MassGen/pull/1024)
-
-### Features
-- **Checkpoint Coordination Mode**: Delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool
-- **LLM API Circuit Breaker**: Automatic 429 rate limit handling with circuit breaker pattern for Claude backend
-- **WebUI Checkpoint Support**: Checkpoint mode display in the modernized WebUI
-- **LiteLLM Supply Chain Fix**: Pinned litellm<=1.82.6 and committed uv.lock
-
----
-
-## 📋 v0.1.69 - Cloud Modal MVP
+**Released:** March 27, 2026 | PRs: [#1032](https://github.com/massgen/MassGen/pull/1032)
 
 ### Features
-
-**1. Cloud Modal MVP** (@ncrispino)
-- Issue: [#982](https://github.com/massgen/MassGen/issues/982)
-- Run MassGen jobs in the cloud via `--cloud` option on Modal
-- Progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`
-- **Use Case**: Run multi-agent tasks in the cloud without local GPU/resource constraints
-
-### Success Criteria
-- ✅ Cloud job execution functional on Modal
-- ✅ Progress streaming and artifact extraction working
+- **WebUI Automation Auto-Start**: Automation mode now auto-starts runs without browser interaction — open the URL at any point to monitor progress mid-run
+- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
+- **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
+- **Workspace Browser Expansion**: WorkspaceModal and improved workspace connection
+- **Flexible Criteria Fields**: `description`/`name` accepted as alternatives to `text` in evaluation criteria JSON
 
 ---
 

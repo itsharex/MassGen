@@ -227,7 +227,24 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.68 - Latest
+### v0.1.69 - Latest
+**New Features:** WebUI Automation & Improved Skill
+
+**Key Features:**
+- **WebUI Automation Auto-Start**: Automation runs begin immediately — open the URL at any point to monitor progress mid-run
+- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
+- **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
+- **Workspace Browser Expansion**: WorkspaceModal and improved workspace connection
+- **Flexible Criteria Fields**: `description`/`name` accepted as alternatives to `text` in evaluation criteria JSON
+
+**Try It:**
+```bash
+pip install massgen==0.1.69
+# Auto-start a run and monitor in the WebUI
+uv run massgen --web --automation --config config.yaml "Your question"
+```
+
+### v0.1.68
 **New Features:** Checkpoint Mode
 
 **Key Features:**

@@ -69,7 +69,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.68 Features](#-latest-features-v0168)
+- [v0.1.69 Features](#-latest-features-v0169)
 </details>
 
 <details open>
@@ -122,15 +122,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.68)](#recent-achievements-v0168)
-- [Previous Achievements (v0.0.3 - v0.1.67)](#previous-achievements-v003---v0167)
+- [Recent Achievements (v0.1.69)](#recent-achievements-v0169)
+- [Previous Achievements (v0.0.3 - v0.1.68)](#previous-achievements-v003---v0168)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.69 Roadmap](#v0169-roadmap)
+- [v0.1.70 Roadmap](#v0170-roadmap)
 </details>
 
 <details open>
@@ -155,21 +155,21 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.68)
+## 🆕 Latest Features (v0.1.69)
 
-**🎉 Released: March 25, 2026**
+**🎉 Released: March 27, 2026**
 
-**What's New in v0.1.68:**
-- **🔀 Checkpoint Mode** - Main agent plans solo then delegates to the team via `checkpoint()` tool with fresh agent instances.
-- **⚡ LLM API Circuit Breaker** - Automatic 429 rate limit handling for Claude backend.
-- **🖥️ WebUI Checkpoint Support** - Checkpoint mode display integrated into the modernized WebUI.
-- **🔒 LiteLLM Fix** - Supply chain protection with pinned dependency and committed lock file.
+**What's New in v0.1.69:**
+- **🌐 WebUI Automation Auto-Start** - Automation runs begin immediately; open the URL at any point to monitor progress mid-run.
+- **🤖 MassGen Skill Redesign** - Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking.
+- **🧙 Quickstart Wizard Rework** - New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding.
+- **🗂️ Workspace Browser Expansion** - WorkspaceModal and improved workspace connection.
 
-**Try v0.1.68 Features:**
+**Try v0.1.69 Features:**
 ```bash
-pip install massgen==0.1.68
-# Try checkpoint mode
-uv run massgen --web
+pip install massgen==0.1.69
+# Auto-start a run and monitor in the WebUI
+uv run massgen --web --automation --config config.yaml "Your question"
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1241,17 +1241,20 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.68)
+### Recent Achievements (v0.1.69)
 
-**🎉 Released: March 25, 2026**
+**🎉 Released: March 27, 2026**
 
-#### Checkpoint Mode
-- **Checkpoint Coordination Mode** ([#1028](https://github.com/massgen/MassGen/pull/1028)): Delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool with fresh agent instances
-- **WebUI Checkpoint Support** ([#1028](https://github.com/massgen/MassGen/pull/1028)): Checkpoint mode display in the modernized WebUI
-- **LLM API Circuit Breaker** ([#1024](https://github.com/massgen/MassGen/pull/1024)): Automatic 429 rate limit handling with circuit breaker pattern (currently Claude backend only)
-- **LiteLLM Supply Chain Fix** ([#1025](https://github.com/massgen/MassGen/pull/1025)): Pinned litellm<=1.82.6 and committed uv.lock
+#### WebUI Automation & Improved Skill
+- **WebUI Automation Auto-Start** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Auto-starts coordination runs without browser interaction — open the URL at any point to monitor progress
+- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
+- **Quickstart Wizard Rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
+- **Workspace Browser Expansion** ([#1032](https://github.com/massgen/MassGen/pull/1032)): WorkspaceModal and improved workspace connection
+- **Flexible Criteria Fields** ([#1032](https://github.com/massgen/MassGen/pull/1032)): `description`/`name` accepted as alternatives to `text` in criteria JSON
 
-### Previous Achievements (v0.0.3 - v0.1.67)
+### Previous Achievements (v0.0.3 - v0.1.68)
+
+✅ **Checkpoint Mode (v0.1.68)**: New checkpoint coordination mode with delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool. LLM API circuit breaker for 429 handling. WebUI checkpoint support. LiteLLM supply chain fix.
 
 ✅ **Modernized WebUI (v0.1.67)**: Complete WebUI redesign with inline final answers, keyboard shortcuts, and Zustand state management. RoundBudgetGuardHook for per-round cost control. Unified parallel pre-collab phases. Regression guard.
 
@@ -1532,12 +1535,12 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.69 Roadmap
+### v0.1.70 Roadmap
 
-Version 0.1.69 focuses on cloud execution:
+Version 0.1.70 focuses on cloud execution:
 
 #### Planned Features
-- **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal
+- **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal — progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`
 
 ---
 

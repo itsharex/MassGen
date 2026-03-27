@@ -25,7 +25,7 @@ Update this when major new features ship.
 
 🐳Code execution — Run commands with Docker support and code mode for efficient filesystem-based tool execution. 👉 More Info: https://docs.massgen.ai/en/latest/user_guide/tools/code_execution.html
 
-🖥️Interactive TUI & Web UI — Real-time Terminal UI with mode cycling, log analysis, tool batching, and keyboard shortcuts. Session viewer for observing automation runs. Modernized Web UI with inline final answers. 👉 More Info: https://docs.massgen.ai/en/latest/user_guide/webui.html
+🖥️Interactive TUI & Web UI — Real-time Terminal UI with mode cycling, log analysis, tool batching, and keyboard shortcuts. Session viewer for observing automation runs. Modernized Web UI with inline final answers, automation auto-start, and skill integration. 👉 More Info: https://docs.massgen.ai/en/latest/user_guide/webui.html
 
 🪪Trace workflows — Orchestration logs, execution traces, workspace history, cost tracking, and Logfire integration for full observability. 👉 More Info: https://docs.massgen.ai/en/latest/user_guide/logging.html#logging-directory-structure
 

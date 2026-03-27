@@ -1510,7 +1510,17 @@ After all tasks complete:
    This is advisory/informational provenance, not a hard block: you may still run fresh calls when
    needed for better side-by-side comparisons. The ledger also tracks `CONTEXT.md` provenance snapshots
    under `.massgen_scratch/verification/context_snapshots/` so you can see what context was active.
-6. Call `{iterate_action}` to submit your improved answer and end this round.
+6. Write `memory/short_term/essential_files_manifest.json` — a JSON manifest listing files the \
+   next round's agent MUST read to continue your work. Format: \
+   `{{"version": 1, "summary": "one-line state", "files": [...]}}` where each file has \
+   `path` (relative), `why` (reason needed), `read_whole_file` (true/false), and \
+   `how_to_read` (null if read_whole_file=true, otherwise natural language guidance for \
+   efficiently reading — rg patterns, function names, section headers, etc.). \
+   Include your main deliverable files, config/spec files, and changedoc. \
+   Also include files that your verification found important — the goal is that the \
+   next agent can evaluate your work immediately from the pre-loaded context without \
+   re-discovering which files matter.
+7. Call `{iterate_action}` to submit your improved answer and end this round.
 
 Your answer MUST be **obviously and substantially better** than the prior round —
 not just marginally different. A user should immediately notice the improvement.
@@ -2429,7 +2439,15 @@ class MemorySection(SystemPromptSection):
             content_parts.append(
                 "These memories capture how the prior answer was verified — they reflect the state at submission. "
                 "Use them as your baseline and generally trust their results. Only run additional verification "
-                "if you spot an error or omission in the prior check, or need evidence for a new comparison.\n",
+                "if you spot an error or omission in the prior check, or need evidence for a new comparison.\n\n"
+                "**Reuse verification scripts.** When evaluating a prior answer, run its existing "
+                "verification script directly — it has working selectors, timing, and patterns that "
+                "cost multiple iterations to get right. Review the results critically (prior verification "
+                "may be incomplete or biased toward confirming the author's work) and adjust the script "
+                "if needed, but start from the working version rather than writing from scratch.\n\n"
+                "When creating a NEW deliverable, build your verification script by synthesizing from "
+                "the prior answers' working scripts — reuse patterns, selectors, and assertions that "
+                "still apply, and add/modify for your new changes.\n",
             )
             for entry in verification_replay_entries:
                 source = entry.get("source", "unknown")
@@ -2479,7 +2497,9 @@ class MemorySection(SystemPromptSection):
             )
             if self.allow_verification_capture:
                 content_parts.append(
-                    "Exception: you may still write/update `memory/short_term/verification_latest.md` at the end of each " "answer so verification can be replayed in the next round.\n",
+                    "Exception: you may still write/update `memory/short_term/verification_latest.md` and "
+                    "`memory/short_term/essential_files_manifest.json` at the end of each "
+                    "answer so verification can be replayed and essential files pre-loaded in the next round.\n",
                 )
             return "\n".join(content_parts)
 
@@ -2496,7 +2516,14 @@ class MemorySection(SystemPromptSection):
             "`## Latest Verification Result`, and `## Stale If`; include exact commands/script paths "
             "under `.massgen_scratch/verification/`, output/artifact paths, media mappings, and "
             "coverage gaps; update stable contract details when the method changes and always rewrite "
-            "the latest result section for the submitted state)\n\n"
+            "the latest result section for the submitted state)\n"
+            "- **Essential files manifest** → `memory/short_term/essential_files_manifest.json` "
+            "(JSON listing files the next round must read; format: "
+            '`{"version": 1, "summary": "...", "files": [{"path": "...", "why": "...", '
+            '"read_whole_file": true/false, "how_to_read": "...or null"}]}`; '
+            "for large files set read_whole_file=false and provide natural language guidance "
+            "in how_to_read — rg patterns, function names, section headers, etc.; "
+            "include files your verification found important so the next agent can evaluate immediately)\n\n"
             "**File Format (REQUIRED YAML Frontmatter):**\n"
             "```markdown\n"
             "---\n"
@@ -3014,6 +3041,7 @@ class FilesystemOperationsSection(SystemPromptSection):
         enable_command_execution: bool = False,
         agent_mapping: dict[str, str] | None = None,
         has_native_tools: bool = False,
+        essential_files_active: bool = False,
     ):
         super().__init__(
             title="Filesystem Operations",
@@ -3029,6 +3057,7 @@ class FilesystemOperationsSection(SystemPromptSection):
         self.enable_command_execution = enable_command_execution
         self.agent_mapping = agent_mapping  # Optional: from coordination_tracker.get_reverse_agent_mapping()
         self.has_native_tools = has_native_tools  # True when backend has native file tools (skip MCP-specific language)
+        self.essential_files_active = essential_files_active
 
     def build_content(self) -> str:
         parts = ["## Filesystem Access"]
@@ -3075,10 +3104,16 @@ class FilesystemOperationsSection(SystemPromptSection):
                     prefix = "   └── " if is_last else "   ├── "
                     workspace_tree += f"{prefix}{self.temp_workspace}/{anon_id}/\n"
 
+            if self.essential_files_active:
+                workspace_tree += (
+                    "   **Building on Others' Work:**\n"
+                    "   - **Key files are pre-loaded**: Essential files from prior answers are "
+                    "pre-loaded in your context. Only inspect additional files if you need "
+                    "something not in the pre-loaded set.\n"
+                )
+            else:
+                workspace_tree += "   **Building on Others' Work:**\n" "   - **Inspect First**: Examine files before copying to understand what you're " "working with.\n"
             workspace_tree += (
-                "   **Building on Others' Work:**\n"
-                "   - **Inspect First**: Examine files before copying to understand what you're "
-                "working with.\n"
                 "   - **Selective Copying**: Only copy specific files you'll actually modify or "
                 "use, not entire directories wholesale.\n"
                 "   - **Mutable Commands in Local Scratch**: Shared Reference directories are "
@@ -3486,9 +3521,9 @@ class TaskPlanningSection(SystemPromptSection):
         summary_step = "STEP 4" if has_subagents else "STEP 3"
         # Flow line varies too
         if has_subagents:
-            flow_line = "propose_improvements → get_task_plan → classify → spawn delegated tasks " "→ execute inline tasks\n→ collect subagent results → verify each task → submit"
+            flow_line = "propose_improvements → get_task_plan → classify → spawn delegated tasks " "→ execute inline tasks\n→ collect subagent results → verify in groups → submit"
         else:
-            flow_line = "propose_improvements → get_task_plan → execute each task " "→ verify each task → submit"
+            flow_line = "propose_improvements → get_task_plan → execute all tasks " "→ verify in groups → submit"
 
         base_guidance = f"""
 # Task Planning and Management (REQUIRED)
@@ -3547,7 +3582,18 @@ Create tasks with verification criteria:
 1. Call `update_task_status(status="in_progress")` when you start it
 2. Do the work
 3. Call `update_task_status(status="completed")` when done
-4. Verify it actually works, then call `update_task_status(status="verified")`
+4. Continue to the next task
+
+**Verification is separate from implementation.** Do NOT verify after each individual task.
+Instead, verify in logical groups — when a meaningful chunk of related work is done and
+it makes sense to check the integrated result. For example:
+- After completing all layout/styling tasks, verify the visual result once
+- After completing all logic/routing tasks, test the flows together
+- After completing all tasks, do a final comprehensive verification pass
+
+Mark tasks `verified` when you've confirmed they work as part of a verification group.
+A couple of verification passes per round is fine — but each should cover multiple tasks,
+not just one.
 
 **CRITICAL — When `propose_improvements` populates your task plan:**
 Every criterion added to the plan MUST be addressed before you submit. Do not cherry-pick the
@@ -3581,9 +3627,10 @@ Always include a task execution summary at the end of your `new_answer`:
 2. Status: ✓ (verified), ◐ (completed but unverified), ✗ (not done / skipped)
 3. Brief description of what you did
 
-**Verification is required.** When you mark a task `completed`, verify it actually works
-(screenshots, tests, visual inspection) and mark it `verified`. Tasks left at `completed`
-without verification are unfinished — they will show as ◐ in your summary.
+**Verification is separate from task completion.** Group your verification passes around
+logical boundaries, not individual tasks. Mark tasks `verified` during your verification
+passes. Tasks left at `completed` without verification are unfinished — they will show
+as ◐ in your summary.
 
 Example format:
 ```
@@ -4692,6 +4739,7 @@ class ChangedocSection(SystemPromptSection):
         round_evaluator_before_checklist: bool = False,
         orchestrator_managed_round_evaluator: bool = False,
         round_evaluator_transformation_pressure: str = "balanced",
+        essential_files_active: bool = False,
     ):
         super().__init__(
             title="Change Document",
@@ -4703,15 +4751,24 @@ class ChangedocSection(SystemPromptSection):
         self.round_evaluator_before_checklist = round_evaluator_before_checklist
         self.orchestrator_managed_round_evaluator = orchestrator_managed_round_evaluator
         self.round_evaluator_transformation_pressure = round_evaluator_transformation_pressure
+        self.essential_files_active = essential_files_active
 
     def build_content(self) -> str:
         if self.has_prior_answers:
-            return _build_changedoc_subsequent_round_prompt(
+            content = _build_changedoc_subsequent_round_prompt(
                 gap_report_mode=self.gap_report_mode,
                 round_evaluator_before_checklist=self.round_evaluator_before_checklist,
                 orchestrator_managed_round_evaluator=self.orchestrator_managed_round_evaluator,
                 round_evaluator_transformation_pressure=self.round_evaluator_transformation_pressure,
             )
+            if self.essential_files_active:
+                content = content.replace(
+                    "Review ALL prior\nchangedocs to understand what decisions exist across answers, " "then draft YOUR changedoc\n" "by selecting, modifying, or replacing decisions",
+                    "Prior changedocs are pre-loaded in your context. Review them there "
+                    "rather than re-reading from the workspace, then draft YOUR changedoc\n"
+                    "by selecting, modifying, or replacing decisions",
+                )
+            return content
         return _CHANGEDOC_FIRST_ROUND_PROMPT
 
 
@@ -5647,7 +5704,8 @@ class OutputFirstVerificationSection(SystemPromptSection):
 **Core Principle: Experience your work exactly as a user would - through dynamic interaction, not just static observation.**
 
 This is an **improvement loop**, not just a verification step:
-1. Run/view output → 2. **Interact as a user would** → 3. Identify gaps or issues → 4. Fix and enhance → 5. Re-run and re-interact → 6. Repeat until excellent
+1. Implement a group of improvements → 2. Run/view the integrated output → 3. **Interact as a user would** \
+→ 4. Identify remaining gaps → 5. Implement fixes → 6. Verify again when ready → 7. Submit when excellent
 
 ### Dynamic Verification: Think Like a User
 
@@ -5702,7 +5760,7 @@ Before considering any interactive artifact complete, ask:
 **The goal is to verify INTERACTION OUTCOMES, not just visual appearance.**
 
 ### Apply at every stage:
-1. **During development** - short loops: interact, improve, re-interact
+1. **During development** - implement a logical group of changes, then verify the integrated result. Do NOT verify after every individual change
 2. **Before answering** - full interaction test on new or changed work; if prior-round verification
    already covered unchanged parts through this loop, that evidence stands
 3. **During evaluation** - judge by interaction results, improve if gaps found
