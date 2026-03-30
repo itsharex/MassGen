@@ -227,22 +227,29 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.69 - Latest
+### v0.1.70 - Latest
+**New Features:** Evaluation Criteria Redesign
+
+**Key Features:**
+- **Evaluation Criteria Redesign**: Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions and aspiration statements
+- **Checklist-Gated Evaluation Workflow**: Iterative submission cycles with scoring and improvement proposals before final voting
+- **Fast Iteration Mode**: Streamlined multi-round submission phases via `fast_iteration.yaml`
+- **WebUI Review Modal**: Approve and comment on outputs directly in the browser
+
+**Try It:**
+```bash
+pip install massgen==0.1.70
+# Try the redesigned evaluation criteria
+uv run massgen --web
+```
+
+### v0.1.69
 **New Features:** WebUI Automation & Improved Skill
 
 **Key Features:**
 - **WebUI Automation Auto-Start**: Automation runs begin immediately — open the URL at any point to monitor progress mid-run
 - **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
 - **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
-- **Workspace Browser Expansion**: WorkspaceModal and improved workspace connection
-- **Flexible Criteria Fields**: `description`/`name` accepted as alternatives to `text` in evaluation criteria JSON
-
-**Try It:**
-```bash
-pip install massgen==0.1.69
-# Auto-start a run and monitor in the WebUI
-uv run massgen --web --automation --config config.yaml "Your question"
-```
 
 ### v0.1.68
 **New Features:** Checkpoint Mode

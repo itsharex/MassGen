@@ -69,7 +69,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.69 Features](#-latest-features-v0169)
+- [v0.1.70 Features](#-latest-features-v0170)
 </details>
 
 <details open>
@@ -122,15 +122,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.69)](#recent-achievements-v0169)
-- [Previous Achievements (v0.0.3 - v0.1.68)](#previous-achievements-v003---v0168)
+- [Recent Achievements (v0.1.70)](#recent-achievements-v0170)
+- [Previous Achievements (v0.0.3 - v0.1.69)](#previous-achievements-v003---v0169)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.70 Roadmap](#v0170-roadmap)
+- [v0.1.71 Roadmap](#v0171-roadmap)
 </details>
 
 <details open>
@@ -155,21 +155,21 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.69)
+## 🆕 Latest Features (v0.1.70)
 
-**🎉 Released: March 27, 2026**
+**🎉 Released: March 30, 2026**
 
-**What's New in v0.1.69:**
-- **🌐 WebUI Automation Auto-Start** - Automation runs begin immediately; open the URL at any point to monitor progress mid-run.
-- **🤖 MassGen Skill Redesign** - Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking.
-- **🧙 Quickstart Wizard Rework** - New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding.
-- **🗂️ Workspace Browser Expansion** - WorkspaceModal and improved workspace connection.
+**What's New in v0.1.70:**
+- **📋 Evaluation Criteria Redesign** - Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions and aspiration statements.
+- **🔄 Checklist-Gated Evaluation Workflow** - Iterative submission cycles with scoring and improvement proposals before final voting.
+- **⚡ Fast Iteration Mode** - Streamlined multi-round submission phases via `fast_iteration.yaml`.
+- **🔍 WebUI Review Modal** - Approve and comment on outputs directly in the browser.
 
-**Try v0.1.69 Features:**
+**Try v0.1.70 Features:**
 ```bash
-pip install massgen==0.1.69
-# Auto-start a run and monitor in the WebUI
-uv run massgen --web --automation --config config.yaml "Your question"
+pip install massgen==0.1.70
+# Try the redesigned evaluation criteria
+uv run massgen --web
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1241,18 +1241,20 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.69)
+### Recent Achievements (v0.1.70)
 
-**🎉 Released: March 27, 2026**
+**🎉 Released: March 30, 2026**
 
-#### WebUI Automation & Improved Skill
-- **WebUI Automation Auto-Start** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Auto-starts coordination runs without browser interaction — open the URL at any point to monitor progress
-- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
-- **Quickstart Wizard Rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
-- **Workspace Browser Expansion** ([#1032](https://github.com/massgen/MassGen/pull/1032)): WorkspaceModal and improved workspace connection
-- **Flexible Criteria Fields** ([#1032](https://github.com/massgen/MassGen/pull/1032)): `description`/`name` accepted as alternatives to `text` in criteria JSON
+#### Evaluation Criteria Redesign
+- **Evaluation Criteria Redesign** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions and aspiration statements
+- **Checklist-Gated Evaluation Workflow** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Iterative submission cycles with scoring and improvement proposals before final voting
+- **Fast Iteration Mode** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Streamlined multi-round submission phases via `fast_iteration.yaml`
+- **WebUI Review Modal** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Approve and comment on outputs directly in the browser when working in git
+- **Background Trace Analysis** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Execution trace analyzer starts automatically from round 2
 
-### Previous Achievements (v0.0.3 - v0.1.68)
+### Previous Achievements (v0.0.3 - v0.1.69)
+
+✅ **WebUI Automation & Improved Skill (v0.1.69)**: WebUI automation auto-starts without browser interaction. MassGen skill redesign for increased usability and WebUI integration. Quickstart Wizard rework and Workspace Browser expansion.
 
 ✅ **Checkpoint Mode (v0.1.68)**: New checkpoint coordination mode with delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool. LLM API circuit breaker for 429 handling. WebUI checkpoint support. LiteLLM supply chain fix.
 
@@ -1535,9 +1537,9 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.70 Roadmap
+### v0.1.71 Roadmap
 
-Version 0.1.70 focuses on cloud execution:
+Version 0.1.71 focuses on cloud execution:
 
 #### Planned Features
 - **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal — progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`
