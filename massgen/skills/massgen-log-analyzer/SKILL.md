@@ -678,12 +678,12 @@ Every analysis report MUST answer these questions:
   - Non-tool time (model/streaming/waiting)
 - Split each checklist-containing round into:
   - **Evaluation** = round start -> first `submit_checklist` start
-  - **Checklist->Propose** = first `submit_checklist` end -> first `propose_improvements` start
-  - **Implementation** = first `propose_improvements` end -> round end
+  - **Checklist->Propose** = first `submit_checklist` end -> first `draft_approach` start
+  - **Implementation** = first `draft_approach` end -> round end
   - **Post-checklist (no propose)** = first `submit_checklist` end -> round end (if no propose happened)
 - Report percentages for **evaluation vs implementation**:
   - Across all checklist-containing segments
-  - Across only segments that actually include `propose_improvements`
+  - Across only segments that actually include `draft_approach`
 
 #### 3. Command Pattern Analysis
 - **Were there frequently repeated commands that could be avoided?** (e.g., `openskills read`, `npm install`, `ls -R`)
@@ -951,7 +951,7 @@ rows = []
 for s in sorted(segments, key=lambda x: (x["agent"], x["start"])):
     calls = sorted(by_segment.get((s["agent"], s["seg_idx"]), []), key=lambda t: t["start_time"])
     submit = [t for t in calls if t["tool_name"] == "mcp__massgen_checklist__submit_checklist"]
-    propose = [t for t in calls if t["tool_name"] == "mcp__massgen_checklist__propose_improvements"]
+    propose = [t for t in calls if t["tool_name"] == "mcp__massgen_checklist__draft_approach"]
 
     # round-level tool wall time
     ints = []
@@ -1065,14 +1065,14 @@ Save this report to `[log_dir]/turn_N/ANALYSIS_REPORT.md` (where N is the turn n
 
 **Phase definitions used in this report:**
 - Evaluation = round start -> first `submit_checklist` start
-- Checklist->Propose = first `submit_checklist` end -> first `propose_improvements` start
-- Implementation = first `propose_improvements` end -> round end
+- Checklist->Propose = first `submit_checklist` end -> first `draft_approach` start
+- Implementation = first `draft_approach` end -> round end
 - Post-checklist (no propose) = first `submit_checklist` end -> round end (if no propose happened)
 
 | Scope | Evaluation (min / %) | Checklist->Propose (min / %) | Implementation (min / %) | Post-checklist no-propose (min / %) |
 |-------|-----------------------|-------------------------------|---------------------------|--------------------------------------|
 | All checklist-containing segments | | | | |
-| Only segments with propose_improvements | | | | |
+| Only segments with draft_approach | | | | |
 
 ### Per-Round Evaluation vs Improvement Table
 | Agent | Segment | Round | Total (min) | Eval pre-checklist (min) | Checklist->Propose (min) | Improve post-propose (min) | Post-checklist no-propose (min) | Eval vs Improve verdict |

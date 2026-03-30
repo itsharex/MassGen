@@ -367,6 +367,10 @@ IMPORTANT: The only workflow action available to you is `vote`. You cannot submi
         presentation_instructions = """You have been selected as the winning presenter in a coordination process.
 Present the best possible coordinated answer by combining the strengths from all participants.
 
+This is the **final deliverable** — ensure it is fully polished and complete. Check for any \
+unfinished items, Known Gaps, or rough edges from coordination rounds and resolve them now. \
+Nothing should be left as a TODO in the final product.
+
 Present your answer using markdown formatting where it aids readability.
 
 When you have composed your final answer, submit it using the `new_answer` tool. Only include the markdown-formatted answer in the tool call. This will be the official final deliverable.\n\n"""

@@ -12,6 +12,7 @@ import type { ConnectionStatus } from '../../../hooks/useWebSocket';
 import { useModeStore } from '../../../stores/v2/modeStore';
 import { useStatusStore } from '../../../stores/v2/statusStore';
 import { useWorkspaceModalStore } from '../../../stores/v2/workspaceModalStore';
+import { usePreCollabStore } from '../../../stores/v2/preCollabStore';
 import { Sidebar } from '../sidebar/Sidebar';
 import { TileContainer } from '../tiles/TileContainer';
 import { GlobalInputBar } from './GlobalInputBar';
@@ -20,6 +21,8 @@ import { V2QuickstartWizard } from './V2QuickstartWizard';
 import { V2SetupOverlay } from './V2SetupOverlay';
 import { LaunchIndicator } from './LaunchIndicator';
 import { PromptBanner } from '../tiles/PromptBanner';
+import { PreCollabResultsPanel } from './PreCollabResultsPanel';
+import { ReviewModal } from './ReviewModal';
 import { WorkspaceModal } from './WorkspaceModal';
 import { WorkspaceBrowserTile } from '../tiles/WorkspaceBrowserTile';
 import { AnswerBrowserTile } from '../tiles/AnswerBrowserTile';
@@ -168,8 +171,13 @@ export function AppShell({
     )
   );
 
+  // Pre-collab phase tracking
+  const preCollabIsActive = usePreCollabStore((s) => s.isActive);
+
   // Keep the launch sequence visible until the first meaningful agent activity arrives.
-  const isLaunching = !!question && !isComplete && !hasRenderableActivity;
+  // When pre-collab is active, skip the full-screen LaunchIndicator — the sidebar
+  // PreCollabSection provides the primary pre-collab UI and users can open subagent tiles.
+  const isLaunching = !!question && !isComplete && !hasRenderableActivity && !preCollabIsActive;
 
   // Lock/unlock mode bar during coordination execution
   const isRunning = !!question && !isComplete;
@@ -258,6 +266,12 @@ export function AppShell({
           refreshTrigger={configRefreshTrigger}
         />
       </div>
+
+      {/* Pre-Collab Results Panel */}
+      <PreCollabResultsPanel />
+
+      {/* Review Modal (full-screen overlay for git diff review) */}
+      <ReviewModal />
 
       {/* Workspace Modal (full-screen overlays for Browse Files, Answers/Votes, Timeline) */}
       <WorkspaceModalRenderer />

@@ -11,6 +11,7 @@ Usage:
     python -m massgen.cli --build-config
 """
 
+import copy
 import os
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,28 @@ from massgen.backend.capabilities import (
 )
 from massgen.utils.model_catalog import get_model_metadata_for_provider_sync
 from massgen.utils.model_matcher import get_all_models_for_provider
+
+# Shared Docker backend defaults — single source of truth.
+# Imported by frontend/web/server.py and used by _generate_quickstart_config().
+DOCKER_BACKEND_DEFAULTS: dict[str, Any] = {
+    "enable_code_based_tools": True,
+    "exclude_file_operation_mcps": True,
+    "enable_mcp_command_line": True,
+    "command_line_execution_mode": "docker",
+    "command_line_docker_image": "ghcr.io/massgen/mcp-runtime-sudo:latest",
+    "command_line_docker_network_mode": "bridge",
+    "command_line_docker_enable_sudo": True,
+    "command_line_docker_credentials": {
+        "env_file": ".env",
+        "env_vars_from_file": [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ],
+    },
+    "shared_tools_directory": "shared_tools",
+}
 
 
 def _get_provider_capabilities(provider_id: str) -> dict[str, bool]:
@@ -5272,42 +5295,14 @@ class ConfigBuilder:
         ) -> dict:
             tools = tools or {}
             if use_docker:
-                # Full Docker mode with code-based tools, command execution, skills
+                # Full Docker mode with code-based tools, command execution
+                # deepcopy prevents yaml.dump from emitting anchors/aliases
+                # when multiple agents share the same nested dict objects
                 backend = {
                     "type": agent_type,
                     "model": model,
                     "cwd": "workspace",
-                    # Code-based tools (CodeAct paradigm)
-                    "enable_code_based_tools": True,
-                    "exclude_file_operation_mcps": True,
-                    "enable_mcp_command_line": True,
-                    # Docker execution
-                    "command_line_execution_mode": "docker",
-                    "command_line_docker_image": "ghcr.io/massgen/mcp-runtime-sudo:latest",
-                    "command_line_docker_network_mode": "bridge",
-                    "command_line_docker_enable_sudo": True,
-                    # Docker credentials for API keys
-                    "command_line_docker_credentials": {
-                        "env_file": ".env",
-                        "env_vars_from_file": [
-                            "OPENAI_API_KEY",
-                            "ANTHROPIC_API_KEY",
-                            "GOOGLE_API_KEY",
-                            "GEMINI_API_KEY",
-                        ],
-                    },
-                    # Shared tools directory
-                    "shared_tools_directory": "shared_tools",
-                    # Auto-discover custom tools
-                    "auto_discover_custom_tools": True,
-                    # Exclude heavy/problematic tools
-                    "exclude_custom_tools": [
-                        "_computer_use",
-                        "_claude_computer_use",
-                        "_gemini_computer_use",
-                        "_browser_automation",
-                    ],
-                    # Note: enable_multimodal_tools is set at orchestrator level
+                    **copy.deepcopy(DOCKER_BACKEND_DEFAULTS),
                 }
             else:
                 # Local mode - file operations only, no command execution
@@ -5367,64 +5362,38 @@ class ConfigBuilder:
             agents.append(agent)
 
         # Build orchestrator config
-        if use_docker:
-            # Full orchestrator config with skills and task planning
-            orchestrator_config = {
-                "snapshot_storage": "snapshots",
-                "agent_temporary_workspace": "temp_workspaces",
-                "voting_sensitivity": "checklist_gated",
-                "voting_threshold": 3,
-                "max_new_answers_per_agent": 5,
-                # Fairness defaults (enabled across all coordination modes)
-                "fairness_enabled": True,
-                "fairness_lead_cap_answers": 2,
-                "max_midstream_injections_per_round": 2,
-                # Multimodal tools enabled for all agents
-                "enable_multimodal_tools": True,
-                # Default generation backends (agents can override)
-                "image_generation_backend": "openai",  # OpenAI responses image gen
-                "video_generation_backend": "openai",  # OpenAI Sora2
-                "audio_generation_backend": "openai",  # OpenAI TTS
-                "coordination": {
-                    "max_orchestration_restarts": 0,  # Disabled pending MAS-268 fix
-                    "learning_capture_mode": "verification_and_final_only",
-                    "use_skills": True,
-                    "skills_directory": ".agent/skills",
-                    "enable_agent_task_planning": True,
-                    "task_planning_filesystem_mode": True,
-                    "enable_memory_filesystem_mode": True,
-                    "write_mode": "auto",
-                },
-            }
-        else:
-            # Local mode still enables built-in skills even without Docker.
-            orchestrator_config = {
-                "snapshot_storage": "snapshots",
-                "agent_temporary_workspace": "temp_workspaces",
-                "voting_sensitivity": "checklist_gated",
-                "voting_threshold": 3,
-                "max_new_answers_per_agent": 5,
-                # Fairness defaults (enabled across all coordination modes)
-                "fairness_enabled": True,
-                "fairness_lead_cap_answers": 2,
-                "max_midstream_injections_per_round": 2,
-                # Multimodal tools enabled for all agents
-                "enable_multimodal_tools": True,
-                # Default generation backends (agents can override)
-                "image_generation_backend": "openai",  # OpenAI image generation
-                "video_generation_backend": "openai",  # OpenAI video generation
-                "audio_generation_backend": "openai",  # OpenAI TTS
-                "coordination": {
-                    "max_orchestration_restarts": 0,  # Disabled pending MAS-268 fix
-                    "learning_capture_mode": "verification_and_final_only",
-                    "use_skills": True,
-                    "skills_directory": ".agent/skills",
-                    "enable_agent_task_planning": True,
-                    "task_planning_filesystem_mode": True,
-                    "enable_memory_filesystem_mode": True,
-                    "write_mode": "auto",
-                },
-            }
+        # Shared orchestrator defaults for both docker and local modes
+        orchestrator_config = {
+            "snapshot_storage": "snapshots",
+            "agent_temporary_workspace": "temp_workspaces",
+            "voting_sensitivity": "checklist_gated",
+            "voting_threshold": 3,
+            "max_new_answers_per_agent": 5,
+            # Fairness defaults (enabled across all coordination modes)
+            "fairness_enabled": True,
+            "fairness_lead_cap_answers": 2,
+            "max_midstream_injections_per_round": 2,
+            # Peer update batching for cleaner agent flow
+            "defer_peer_updates_until_restart": True,
+            "allow_midstream_peer_updates_before_checklist_submit": True,
+            # Multimodal tools enabled for all agents
+            "enable_multimodal_tools": True,
+            # Default generation backends (agents can override)
+            "image_generation_backend": "openai",
+            "video_generation_backend": "openai",
+            "audio_generation_backend": "openai",
+            "coordination": {
+                "max_orchestration_restarts": 0,  # Disabled pending MAS-268 fix
+                "learning_capture_mode": "verification_and_final_only",
+                "fast_iteration_mode": True,
+                "use_skills": True,
+                "skills_directory": ".agent/skills",
+                "enable_agent_task_planning": True,
+                "task_planning_filesystem_mode": True,
+                "enable_memory_filesystem_mode": True,
+                "write_mode": "auto",
+            },
+        }
 
         # Always set context_paths to avoid runtime prompt
         # Priority: context_paths (new) > context_path (deprecated) > empty list

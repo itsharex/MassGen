@@ -46,6 +46,7 @@ class PromptImprover:
         on_subagent_started: Callable | None = None,
         voting_sensitivity: str | None = None,
         voting_threshold: int | None = None,
+        fast_iteration_mode: bool = False,
     ) -> str | None:
         """Improve the user's task prompt via a subagent consensus run.
 
@@ -100,6 +101,8 @@ class PromptImprover:
                 coordination["voting_sensitivity"] = voting_sensitivity
             if voting_threshold is not None:
                 coordination["voting_threshold"] = voting_threshold
+            if fast_iteration_mode:
+                coordination["fast_iteration_mode"] = True
 
             subagent_config = SubagentOrchestratorConfig(
                 enabled=True,

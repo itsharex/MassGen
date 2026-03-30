@@ -1,10 +1,10 @@
 # MassGen Roadmap
 
-**Current Version:** v0.1.69
+**Current Version:** v0.1.70
 
 **Release Schedule:** Mondays, Wednesdays, Fridays @ 9am PT
 
-**Last Updated:** March 27, 2026
+**Last Updated:** March 30, 2026
 
 This roadmap outlines MassGen's development priorities for upcoming releases. Each release focuses on specific capabilities with real-world use cases.
 
@@ -42,28 +42,44 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 | Release | Target | Feature | Owner | Use Case |
 |---------|--------|---------|-------|----------|
-| **v0.1.70** | 03/30/26 | Cloud Modal MVP | @ncrispino | Run MassGen as a cloud job on Modal ([#982](https://github.com/massgen/MassGen/issues/982)) |
-| **v0.1.71** | 04/02/26 | OpenAI Audio API | @ncrispino | Support OpenAI audio API for audio understanding ([#960](https://github.com/massgen/MassGen/issues/960)) |
-| **v0.1.72** | 04/04/26 | Image/Video Edit Capabilities | @ncrispino | Check and support img/video editing capabilities ([#959](https://github.com/massgen/MassGen/issues/959)) |
+| **v0.1.71** | 04/02/26 | Cloud Modal MVP | @ncrispino | Run MassGen as a cloud job on Modal ([#982](https://github.com/massgen/MassGen/issues/982)) |
+| **v0.1.72** | 04/04/26 | OpenAI Audio API | @ncrispino | Support OpenAI audio API for audio understanding ([#960](https://github.com/massgen/MassGen/issues/960)) |
+| **v0.1.73** | 04/07/26 | Image/Video Edit Capabilities | @ncrispino | Check and support img/video editing capabilities ([#959](https://github.com/massgen/MassGen/issues/959)) |
 
 *All releases ship on MWF @ 9am PT when ready*
 
 ---
 
-## ✅ v0.1.69 - WebUI Automation & Improved Skill (Completed)
+## ✅ v0.1.70 - Evaluation Criteria Redesign (Completed)
 
-**Released:** March 27, 2026 | PRs: [#1032](https://github.com/massgen/MassGen/pull/1032)
+**Released:** March 30, 2026 | PRs: [#1035](https://github.com/massgen/MassGen/pull/1035)
 
 ### Features
-- **WebUI Automation Auto-Start**: Automation mode now auto-starts runs without browser interaction — open the URL at any point to monitor progress mid-run
-- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
-- **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
-- **Workspace Browser Expansion**: WorkspaceModal and improved workspace connection
-- **Flexible Criteria Fields**: `description`/`name` accepted as alternatives to `text` in evaluation criteria JSON
+- **Evaluation Criteria Redesign**: Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions and aspiration statements
+- **Improved Checklist-Gated Evaluation**: Tighter iterative submission cycles with improved scoring and improvement proposals before final voting
+- **Fast Iteration Mode**: Streamlined multi-round submission phases via `fast_iteration.yaml`
+- **WebUI Review Modal**: Approve and comment on outputs in the browser when working in git
+- **Background Trace Analysis**: Execution trace analyzer starts automatically from round 2
 
 ---
 
-## 📋 v0.1.70 - OpenAI Audio API
+## 📋 v0.1.71 - Cloud Modal MVP
+
+### Features
+
+**1. Cloud Modal MVP** (@ncrispino)
+- Issue: [#982](https://github.com/massgen/MassGen/issues/982)
+- Run MassGen jobs in the cloud via `--cloud` option on Modal
+- Progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`
+- **Use Case**: Run multi-agent tasks in the cloud without local GPU/resource constraints
+
+### Success Criteria
+- ✅ Cloud job execution functional on Modal
+- ✅ Progress streaming and artifact extraction working
+
+---
+
+## 📋 v0.1.72 - OpenAI Audio API
 
 ### Features
 
@@ -79,7 +95,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ---
 
-## 📋 v0.1.71 - Image/Video Edit Capabilities
+## 📋 v0.1.73 - Image/Video Edit Capabilities
 
 ### Features
 

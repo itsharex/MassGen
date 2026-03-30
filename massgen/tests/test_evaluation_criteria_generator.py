@@ -31,43 +31,44 @@ class TestDefaultCriteria:
             assert c.id.startswith("E"), f"Expected E-prefix, got {c.id}"
 
     def test_default_criteria_count(self):
-        """Default criteria should have exactly 5 items (4 base + quality/craft)."""
+        """Default criteria should have exactly 4 items."""
         criteria = get_default_criteria(has_changedoc=False)
-        assert len(criteria) == 5
+        assert len(criteria) == 4
 
-    def test_default_criteria_all_must(self):
-        """Default criteria should all be 'must' — no tier deprioritization."""
+    def test_default_criteria_have_one_primary(self):
+        """Default criteria should have E3 as primary (per-part depth)."""
         criteria = get_default_criteria(has_changedoc=False)
-        for c in criteria:
-            assert c.category == "must", f"{c.id} has category '{c.category}', expected 'must'"
+        primary = [c for c in criteria if c.category == "primary"]
+        assert len(primary) == 1
+        assert primary[0].id == "E3"
 
-    def test_default_criteria_includes_quality_craft(self):
-        """Default criteria must include the quality/craft criterion."""
+    def test_default_criteria_includes_intentional_craft(self):
+        """Default criteria must include the intentional craft criterion."""
         criteria = get_default_criteria(has_changedoc=False)
         craft_criteria = [c for c in criteria if "craft" in c.text or "intentional" in c.text]
         assert len(craft_criteria) == 1
-        assert craft_criteria[0].category == "must"
+        assert craft_criteria[0].id == "E4"
 
     def test_default_criteria_sequential_ids(self):
-        """Default criteria should have sequential E1-E5 IDs."""
+        """Default criteria should have sequential E1-E4 IDs."""
         criteria = get_default_criteria(has_changedoc=False)
         ids = [c.id for c in criteria]
-        assert ids == ["E1", "E2", "E3", "E4", "E5"]
+        assert ids == ["E1", "E2", "E3", "E4"]
 
 
 class TestChangedocDefaults:
     """Tests for changedoc mode defaults."""
 
-    def test_changedoc_no_longer_adds_extra_criterion(self):
+    def test_changedoc_uses_same_count(self):
         """Changedoc mode should use the same default count as non-changedoc mode."""
         criteria = get_default_criteria(has_changedoc=True)
-        assert len(criteria) == 5
+        assert len(criteria) == 4
 
     def test_changedoc_defaults_keep_sequential_ids(self):
-        """Changedoc mode should keep the same sequential E1-E5 defaults."""
+        """Changedoc mode should keep the same sequential E1-E4 defaults."""
         criteria = get_default_criteria(has_changedoc=True)
         ids = [c.id for c in criteria]
-        assert ids == ["E1", "E2", "E3", "E4", "E5"]
+        assert ids == ["E1", "E2", "E3", "E4"]
 
     def test_changedoc_defaults_do_not_mention_changedoc_traceability(self):
         """Changedoc mode defaults should not append a changedoc-specific criterion."""
@@ -77,10 +78,10 @@ class TestChangedocDefaults:
         assert "traceable" not in joined
 
     def test_changedoc_preserves_base_criteria(self):
-        """Changedoc mode should preserve all 5 base criteria unchanged."""
+        """Changedoc mode should preserve all 4 base criteria unchanged."""
         base = get_default_criteria(has_changedoc=False)
         changedoc = get_default_criteria(has_changedoc=True)
-        for i in range(5):
+        for i in range(4):
             assert base[i].text == changedoc[i].text
 
 
@@ -134,20 +135,20 @@ class TestCriteriaValidation:
                 ],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        assert len(result) == 4
-        assert result[0].id == "E1"
-        assert result[0].text == "Goal alignment check"
-        assert result[0].category == "must"
-        assert result[3].category == "must"
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert len(criteria) == 4
+        assert criteria[0].id == "E1"
+        assert criteria[0].text == "Goal alignment check"
+        assert criteria[0].category == "standard"  # "core" maps to "standard"
+        assert criteria[3].category == "stretch"  # "stretch" preserved
 
     def test_parse_invalid_json_returns_none(self):
-        """Invalid JSON should return None (triggering fallback)."""
+        """Invalid JSON should return (None, None) (triggering fallback)."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
-        result = _parse_criteria_response("not json at all", min_criteria=4, max_criteria=10)
-        assert result is None
+        criteria, aspiration = _parse_criteria_response("not json at all", min_criteria=4, max_criteria=10)
+        assert criteria is None
 
     def test_parse_too_few_criteria_returns_none(self):
         """Fewer criteria than min should return None."""
@@ -160,8 +161,8 @@ class TestCriteriaValidation:
                 ],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is None
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is None
 
     def test_parse_too_many_criteria_returns_none(self):
         """More criteria than max should return None."""
@@ -172,27 +173,29 @@ class TestCriteriaValidation:
                 "criteria": [{"text": f"Criterion {i}", "category": "core"} for i in range(15)],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is None
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is None
 
-    def test_all_stretch_criteria_promoted_to_must(self):
-        """All criteria regardless of input category are promoted to must."""
+    def test_legacy_categories_mapped(self):
+        """Legacy category values should be mapped to new values."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
         response = json.dumps(
             {
                 "criteria": [
                     {"text": "Stretch 1", "category": "stretch"},
-                    {"text": "Stretch 2", "category": "stretch"},
+                    {"text": "Stretch 2", "category": "could"},
                     {"text": "Core 1", "category": "core"},
-                    {"text": "Stretch 3", "category": "stretch"},
+                    {"text": "Must 1", "category": "must"},
                 ],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        for c in result:
-            assert c.category == "must"
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert criteria[0].category == "stretch"
+        assert criteria[1].category == "stretch"
+        assert criteria[2].category == "standard"
+        assert criteria[3].category == "standard"
 
     def test_parse_criteria_from_markdown_code_block(self):
         """Should extract JSON from markdown code blocks."""
@@ -211,9 +214,9 @@ class TestCriteriaValidation:
 }
 ```
 """
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        assert len(result) == 4
+        criteria, _ = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert len(criteria) == 4
 
     def test_variable_item_count_6(self):
         """6 criteria with 5 core + 1 stretch should work."""
@@ -227,13 +230,13 @@ class TestCriteriaValidation:
                 ],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        assert len(result) == 6
-        assert result[5].id == "E6"
+        criteria, _ = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert len(criteria) == 6
+        assert criteria[5].id == "E6"
 
     def test_variable_item_count_8(self):
-        """8 criteria with 6 core + 2 stretch should work — all promoted to must."""
+        """8 criteria with 6 core + 2 stretch should work with mapped categories."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
         response = json.dumps(
@@ -241,11 +244,60 @@ class TestCriteriaValidation:
                 "criteria": [{"text": f"Core criterion {i}", "category": "core"} for i in range(6)] + [{"text": f"Stretch criterion {i}", "category": "stretch"} for i in range(2)],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        assert len(result) == 8
-        for c in result:
-            assert c.category == "must"
+        criteria, _ = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert len(criteria) == 8
+        # core → standard, stretch stays stretch
+        assert criteria[0].category == "standard"
+        assert criteria[6].category == "stretch"
+
+    def test_parse_with_aspiration_and_anti_patterns(self):
+        """New format with aspiration and anti_patterns should parse correctly."""
+        from massgen.evaluation_criteria_generator import _parse_criteria_response
+
+        response = json.dumps(
+            {
+                "aspiration": "A poem a journal editor would pause on",
+                "criteria": [
+                    {
+                        "text": "Earned emotion",
+                        "category": "primary",
+                        "anti_patterns": ["abstract declarations", "greeting-card resolution"],
+                    },
+                    {"text": "Surprise", "category": "standard"},
+                    {"text": "Sound", "category": "standard"},
+                    {"text": "Memorable line", "category": "standard"},
+                ],
+            },
+        )
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert aspiration == "A poem a journal editor would pause on"
+        assert criteria[0].category == "primary"
+        assert criteria[0].anti_patterns == ["abstract declarations", "greeting-card resolution"]
+        assert criteria[1].category == "standard"
+        assert criteria[1].anti_patterns is None
+
+    def test_at_most_one_primary(self):
+        """Multiple 'primary' criteria should warn and keep only first."""
+        from massgen.evaluation_criteria_generator import _parse_criteria_response
+
+        response = json.dumps(
+            {
+                "criteria": [
+                    {"text": "First primary", "category": "primary"},
+                    {"text": "Second primary", "category": "primary"},
+                    {"text": "Third", "category": "standard"},
+                    {"text": "Fourth", "category": "standard"},
+                ],
+            },
+        )
+        criteria, _ = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        primary_count = sum(1 for c in criteria if c.category == "primary")
+        assert primary_count == 1
+        assert criteria[0].category == "primary"
+        assert criteria[1].category == "standard"
 
 
 class TestGenerationPrompt:
@@ -321,8 +373,8 @@ class TestGenerationPrompt:
         # Both concepts must be named distinctly
         assert "craft" in prompt.lower()
         assert "correctness" in prompt.lower()
-        # The separation must be explicit — craft is beyond correctness
-        assert "beyond correctness" in prompt.lower() or "beyond what is merely correct" in prompt.lower()
+        # The separation must be explicit — correctness and craft are different
+        assert "can still be mediocre" in prompt.lower() or "beyond correctness" in prompt.lower()
 
     def test_prompt_verify_by_required_for_experiential(self):
         """Prompt must make verify_by required (not optional) for experiential criteria."""

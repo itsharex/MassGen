@@ -129,7 +129,7 @@ _workspace_path: Path | None = None
 # Whether two-tier workspace with git versioning is enabled
 _use_two_tier_workspace: bool = False
 
-# Optional injection directory for tasks from checklist propose_improvements
+# Optional injection directory for tasks from checklist draft_approach
 _injection_dir: Path | None = None
 
 # Whether to append write_verification_memo when injection populates an otherwise-empty plan.
@@ -272,7 +272,7 @@ def _load_plan_from_filesystem(agent_id: str) -> TaskPlan | None:
 
 
 def _check_and_inject_pending_tasks(plan: TaskPlan, injection_dir: Path | None = None) -> list[str]:
-    """Check for and inject pending tasks from propose_improvements.
+    """Check for and inject pending tasks from draft_approach.
 
     Reads inject_tasks.json from the injection directory, adds tasks to the plan,
     deletes the file to prevent double-injection, and saves the plan.
@@ -314,7 +314,7 @@ def _check_and_inject_pending_tasks(plan: TaskPlan, injection_dir: Path | None =
         inject_file.unlink()  # Consume — prevent double-add
 
         # Sink write_verification_memo to the end: it was appended during create_task_plan
-        # before propose_improvements existed, so injected tasks land after it.
+        # before draft_approach existed, so injected tasks land after it.
         # Move it to the tail and update its dependencies to include the new tasks.
         memo_tasks = [t for t in plan.tasks if t.id.startswith("write_verification_memo")]
         for memo_task in memo_tasks:
@@ -339,7 +339,7 @@ def _check_and_inject_pending_tasks(plan: TaskPlan, injection_dir: Path | None =
             memo_task.metadata.update(memo_spec.get("metadata", {}))
 
         _save_plan_to_filesystem(plan)
-        logger.info(f"[PlanningMCP] Injected {len(added_ids)} tasks from propose_improvements")
+        logger.info(f"[PlanningMCP] Injected {len(added_ids)} tasks from draft_approach")
         return added_ids
     except Exception as e:
         logger.warning(f"[PlanningMCP] Failed to process injection file: {e}")
@@ -378,7 +378,7 @@ def _get_or_create_plan(agent_id: str, orchestrator_id: str, require_verificatio
         _task_plans[key].require_verification = require_verification
         _task_plans[key].display_id = display_key
 
-    # Check for pending task injection from propose_improvements
+    # Check for pending task injection from draft_approach
     _check_and_inject_pending_tasks(_task_plans[key], _injection_dir)
 
     return _task_plans[key]
@@ -550,7 +550,7 @@ async def create_server() -> fastmcp.FastMCP:
         "--injection-dir",
         type=str,
         default=None,
-        help="Dir for task injection files from checklist propose_improvements",
+        help="Dir for task injection files from checklist draft_approach",
     )
     parser.add_argument(
         "--workspace-token",
@@ -578,7 +578,7 @@ async def create_server() -> fastmcp.FastMCP:
     _use_two_tier_workspace = args.use_two_tier_workspace
     logger.info(f"[PlanningMCP] Two-tier workspace flag: {_use_two_tier_workspace}")
 
-    # Set injection directory for task injection from propose_improvements
+    # Set injection directory for task injection from draft_approach
     if args.injection_dir:
         _injection_dir = Path(args.injection_dir)
         logger.info(f"[PlanningMCP] Injection dir set to: {_injection_dir}")

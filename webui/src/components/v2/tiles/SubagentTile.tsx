@@ -1,6 +1,9 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { cn } from '../../../lib/utils';
 import { useMessageStore, type ChannelMessage, type ToolCallMessage } from '../../../stores/v2/messageStore';
+import { usePreCollabStore } from '../../../stores/v2/preCollabStore';
+import { useAgentStore } from '../../../stores/agentStore';
+import { useSubagentEvents } from '../../../hooks/useSubagentEvents';
 import { MessageRenderer } from '../channel/messages/MessageRenderer';
 import { ToolBatchView } from '../channel/messages/ToolBatchView';
 
@@ -65,7 +68,18 @@ function GroupedMessages({ messages }: { messages: ChannelMessage[] }) {
 export function SubagentTile({ subagentId }: SubagentTileProps) {
   const messages = useMessageStore((s) => s.messages[subagentId] || []);
   const thread = useMessageStore((s) => s.threads.find((t) => t.id === subagentId));
+  const sessionId = useAgentStore((s) => s.sessionId);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Poll for inner events if this is a running pre-collab subagent
+  const preCollabPhase = usePreCollabStore((s) => s.phases[subagentId]);
+  const isPreCollab = !!preCollabPhase;
+  const isRunning = preCollabPhase?.status === 'running';
+  useSubagentEvents({
+    sessionId,
+    subagentId,
+    enabled: isPreCollab && isRunning,
+  });
   const isAutoScrollRef = useRef(true);
 
   // Auto-scroll on new messages

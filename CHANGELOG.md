@@ -9,16 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Recent Releases
 
+**v0.1.70 (March 30, 2026)** - Evaluation Criteria Redesign
+Redesigned three-tier evaluation criteria with anti-pattern definitions and aspiration statements. Improved checklist-gated evaluation with tighter iterative submission cycles. Fast iteration mode, WebUI review modal, and background trace analysis from round 2.
+
 **v0.1.69 (March 27, 2026)** - WebUI Automation & Improved Skill
 WebUI automation now auto-starts without browser interaction — open the URL at any point mid-run to monitor progress. MassGen skill redesign for increased usability and WebUI integration. Quickstart Wizard rework, Workspace Browser expansion, and flexible evaluation criteria field names.
 
 **v0.1.68 (March 25, 2026)** - Checkpoint Mode
 New checkpoint coordination mode with delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool. LLM API circuit breaker for 429 handling. WebUI checkpoint support. LiteLLM supply chain fix.
 
-**v0.1.67 (March 23, 2026)** - Modernized WebUI
-Complete WebUI redesign with inline final answers, keyboard shortcuts, and Zustand state management. RoundBudgetGuardHook for per-round cost control. Unified parallel pre-collab phases. Regression guard for safe iterations.
-
 ---
+
+## [0.1.70] - 2026-03-30
+
+### Added
+- **Evaluation Criteria Redesign** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions per criterion and aspiration statements
+- **Improved Checklist-Gated Evaluation** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Tighter iterative submission cycles — improved scoring, gap analysis, and improvement proposals drive more meaningful iteration before final voting
+- **Fast Iteration Mode** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Streamlined multi-round submission phases via `fast_iteration.yaml` config
+- **WebUI Review Modal** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Approve and comment on outputs directly in the browser when working in git
+- **Background Trace Analysis** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Execution trace analyzer starts automatically from round 2
+
+### Changed
+- **Improved Evaluation Criteria Generation** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Criteria generation now produces opinionated, task-specific criteria with aspiration statements
+- **Enhanced Workspace Cleanup** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Improved isolation between rounds
+- **Refined Per-Round Token Tracking** ([#1035](https://github.com/massgen/MassGen/pull/1035)): More accurate per-round token usage tracking
+
+### Fixed
+- **Subagent Fixes** ([#1035](https://github.com/massgen/MassGen/pull/1035)): General fixes for subagent behavior and path issues
+
+### Documentation, Configurations and Resources
+- **Updated Coordination Workflow**: Updated `docs/modules/coordination_workflow.md` with checklist-gated workflow documentation
+- **Updated Subagents Guide**: Updated `docs/modules/subagents.md` with background trace analysis
+- **New Injection Guide**: New `docs/modules/injection.md` for injection documentation
+- **Updated Concepts Guide**: Updated `docs/source/user_guide/concepts.rst` with evaluation criteria redesign
+- **Updated YAML Schema**: Updated `docs/source/reference/yaml_schema.rst` with new configuration options
+- **Updated MassGen Skill**: Updated `massgen/skills/massgen/SKILL.md` with opinionated criteria format
+- **Updated Criteria Guide**: Updated `massgen/skills/massgen/references/criteria_guide.md` with three-tier system
+- **New Config**: New `massgen/configs/features/fast_iteration.yaml` for fast iteration mode
+
+### Technical Details
+- **Major Focus**: Evaluation Criteria Redesign — three-tier categorization with anti-patterns and checklist-gated workflow
+- **PRs Merged**: [#1035](https://github.com/massgen/MassGen/pull/1035)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
 
 ## [0.1.69] - 2026-03-27
 

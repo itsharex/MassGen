@@ -2141,6 +2141,20 @@ class FilesystemManager:
             except Exception:
                 pass
 
+        # Prune stale workspaces from .massgen/workspaces/ (left over from previous runs)
+        try:
+            workspaces_dir = self.agent_temporary_workspace_parent.parent / "workspaces"
+            if workspaces_dir.exists() and workspaces_dir.is_dir():
+                for child in list(workspaces_dir.iterdir()):
+                    if child.is_dir():
+                        logger.info(f"[FilesystemManager] Pruning stale workspace: {child}")
+                        _safe_rmtree(child)
+                # Remove empty workspaces dir
+                if workspaces_dir.exists() and not any(workspaces_dir.iterdir()):
+                    workspaces_dir.rmdir()
+        except Exception as e:
+            logger.warning(f"[FilesystemManager] Failed to prune stale workspaces: {e}")
+
     @staticmethod
     def _rewrite_temp_workspace_path(raw_value: str, source_snapshot_root: Path, temp_snapshot_root: Path) -> str:
         """Rewrite an absolute workspace path to the copied temp workspace path."""
@@ -2483,8 +2497,23 @@ class FilesystemManager:
         """
         return self._original_cwd
 
+    @staticmethod
+    def _is_massgen_workspace(path: Path) -> bool:
+        """Check if a path is under a .massgen/workspaces/ directory."""
+        try:
+            parts = path.resolve().parts
+            for i, part in enumerate(parts):
+                if part == ".massgen" and i + 1 < len(parts) and parts[i + 1] == "workspaces":
+                    return True
+        except Exception:
+            pass
+        return False
+
     def cleanup(self) -> None:
-        """Cleanup temporary resources (not the main workspace) and Docker containers."""
+        """Cleanup temporary resources and Docker containers.
+
+        Also removes the main workspace directory if it's under .massgen/workspaces/.
+        """
         # Cleanup isolation contexts if manager is active
         if self.isolation_manager:
             try:
@@ -2512,6 +2541,20 @@ class FilesystemManager:
                 _safe_rmtree(self.local_skills_directory)
             except Exception as e:
                 logger.warning(f"[FilesystemManager] Failed to cleanup local skills directory: {e}")
+
+        # Cleanup main workspace if it's under .massgen/workspaces/
+        if hasattr(self, "cwd") and self.cwd and self._is_massgen_workspace(self.cwd):
+            try:
+                ws = self.cwd.resolve()
+                if ws.exists() and ws.is_dir() and len(ws.parts) >= 4:
+                    logger.info(f"[FilesystemManager] Cleaning up workspace: {ws}")
+                    _safe_rmtree(ws)
+                    # Prune empty parent dirs up to .massgen/workspaces/
+                    parent = ws.parent
+                    if parent.exists() and parent.name == "workspaces" and not any(parent.iterdir()):
+                        parent.rmdir()
+            except Exception as e:
+                logger.warning(f"[FilesystemManager] Failed to cleanup workspace: {e}")
 
         # Cleanup temporary workspace
         p = self.agent_temporary_workspace

@@ -62,6 +62,7 @@ def test_checklist_gated_decision_requires_blocking_evaluator_execution():
     """Checklist gated flow should require blocking evaluator execution before scoring."""
     content = _build_checklist_gated_decision(
         checklist_items=_CHECKLIST_ITEMS,
+        evaluator_available=True,
     )
     lower = content.lower()
     assert "background=false, refine=false" in lower
@@ -89,7 +90,7 @@ def test_checklist_gated_decision_round_evaluator_mode_requires_managed_packet_b
     assert "spawn_subagents" not in content
     assert "submit_checklist_args" not in content
     assert "expected_verdict" not in content
-    assert "propose_improvements_args" not in content
+    assert "draft_approach_args" not in content
     assert "submit_checklist" in lower
 
 
@@ -119,7 +120,7 @@ def test_checklist_gated_decision_orchestrator_managed_auto_injection_is_task_dr
     assert "auto-injected into your task plan" in lower
     assert "get_task_plan" in content
     assert "do not call `submit_checklist`" in content
-    assert "do not call `propose_improvements`" in content
+    assert "do not call `draft_approach`" in content
     assert "do not write a second diagnostic report" in lower
     assert "pure text artifact" in lower
     assert "multiple independent critiques" not in lower
@@ -216,6 +217,7 @@ def test_checklist_gated_decision_includes_peer_build_copy_guidance():
     without mutating read-only shared snapshots."""
     content = _build_checklist_gated_decision(
         checklist_items=_CHECKLIST_ITEMS,
+        evaluator_available=True,
     )
     assert "temp_workspaces" in content
     assert ".massgen_scratch/peer_eval/" in content
@@ -301,7 +303,7 @@ def test_task_planning_section_is_mandatory_for_complex_tasks():
     """Task planning section must state planning is required, not optional."""
     content = TaskPlanningSection().build_content()
     assert "REQUIRED" in content
-    assert "propose_improvements" in content
+    assert "draft_approach" in content
 
 
 def test_task_planning_section_prioritizes_correctness_and_final_regression_verification():

@@ -503,6 +503,9 @@ class TestQuickstartDecompositionSettings:
         assert orch["fairness_enabled"] is True
         assert orch["fairness_lead_cap_answers"] == 2
         assert orch["max_midstream_injections_per_round"] == 2
+        assert orch["defer_peer_updates_until_restart"] is True
+        assert orch["allow_midstream_peer_updates_before_checklist_submit"] is True
+        assert orch["coordination"]["fast_iteration_mode"] is True
         assert "coordination_mode" not in orch
         assert "presenter_agent" not in orch
         assert "max_new_answers_global" not in orch

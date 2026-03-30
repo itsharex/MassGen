@@ -206,6 +206,7 @@ class SystemMessageBuilder:
         custom_checklist_items: list[str] | None = None,
         item_categories: dict[str, str] | None = None,
         item_verify_by: dict[str, str] | None = None,
+        item_anti_patterns: dict[str, list[str]] | None = None,
         builder_enabled: bool = True,
         regression_guard_enabled: bool = False,
         essential_files_active: bool = False,
@@ -269,8 +270,24 @@ class SystemMessageBuilder:
 
         # PRIORITY 1 (HIGH): Output-First Verification - verify outcomes, not implementations
         is_decomposition = coordination_mode == "decomposition"
-        builder.add_section(OutputFirstVerificationSection(decomposition_mode=is_decomposition))
+        builder.add_section(
+            OutputFirstVerificationSection(
+                decomposition_mode=is_decomposition,
+                fast_iteration_mode=getattr(
+                    getattr(self.config, "coordination_config", None),
+                    "fast_iteration_mode",
+                    False,
+                ),
+            ),
+        )
         enable_subagents = bool(getattr(getattr(self.config, "coordination_config", None), "enable_subagents", False))
+        # Check if agent-spawnable subagent types exist (None = defaults, [] = none)
+        _subagent_types_cfg = getattr(
+            getattr(self.config, "coordination_config", None),
+            "subagent_types",
+            None,
+        )
+        _has_agent_spawnable_types = _subagent_types_cfg is None or bool(_subagent_types_cfg)
 
         # PRIORITY 1 (CRITICAL): MassGen Coordination - vote/new_answer or decomposition primitives
         changedoc_enabled = self._changedoc_enabled
@@ -289,6 +306,12 @@ class SystemMessageBuilder:
                     custom_checklist_items=custom_checklist_items,
                     item_categories=item_categories,
                     item_verify_by=item_verify_by,
+                    item_anti_patterns=item_anti_patterns,
+                    fast_iteration_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "fast_iteration_mode",
+                        False,
+                    ),
                 ),
             )
         else:
@@ -320,6 +343,7 @@ class SystemMessageBuilder:
                     custom_checklist_items=custom_checklist_items,
                     item_categories=item_categories,
                     item_verify_by=item_verify_by,
+                    item_anti_patterns=item_anti_patterns,
                     has_existing_answers=bool(answers) or answers_used > 0,
                     builder_enabled=builder_enabled,
                     regression_guard_enabled=regression_guard_enabled,
@@ -339,10 +363,22 @@ class SystemMessageBuilder:
                         "round_evaluator_transformation_pressure",
                         "balanced",
                     ),
-                    specialized_subagents_available=bool(enable_subagents),
+                    specialized_subagents_available=bool(enable_subagents) and _has_agent_spawnable_types,
+                    evaluator_available=bool(enable_subagents)
+                    and "evaluator" in ({t.lower() for t in _subagent_types_cfg} if _subagent_types_cfg is not None else {"evaluator", "explorer", "researcher", "critic"}),
                     enable_evaluator_personas=getattr(
                         getattr(self.config, "coordination_config", None),
                         "enable_evaluator_personas",
+                        False,
+                    ),
+                    auto_trace_analysis=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "auto_trace_analysis",
+                        False,
+                    ),
+                    fast_iteration_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "fast_iteration_mode",
                         False,
                     ),
                 ),
@@ -606,6 +642,11 @@ class SystemMessageBuilder:
                     decomposition_mode=is_decomposition,
                     specialized_subagents=_tp_subagents,
                     checkpoint_mode=_checkpoint_enabled,
+                    fast_iteration_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "fast_iteration_mode",
+                        False,
+                    ),
                 ),
             )
 

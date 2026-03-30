@@ -355,6 +355,20 @@ export const useMessageStore = create<MessageStoreState & MessageStoreActions>(
             break;
           }
 
+          // Pre-collab lifecycle events — delegate to preCollabStore
+          if (
+            se.event_type === 'pre_collab_batch_announced' ||
+            se.event_type === 'pre_collab_started' ||
+            se.event_type === 'pre_collab_completed' ||
+            se.event_type === 'personas_set' ||
+            se.event_type === 'evaluation_criteria_set'
+          ) {
+            import('./preCollabStore').then(({ usePreCollabStore }) => {
+              usePreCollabStore.getState().processStructuredEvent(se);
+            });
+            break;
+          }
+
           if (!se.agent_id || !state.messages[se.agent_id]) break;
           const agentId = se.agent_id;
           const existing = state.messages[agentId] || [];

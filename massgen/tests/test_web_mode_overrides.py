@@ -399,8 +399,6 @@ class TestApplyDockerOverride:
             assert backend["command_line_docker_enable_sudo"] is True
             assert "env_file" in backend["command_line_docker_credentials"]
             assert backend["shared_tools_directory"] == "shared_tools"
-            assert backend["auto_discover_custom_tools"] is True
-            assert "_computer_use" in backend["exclude_custom_tools"]
 
     def test_docker_disable(self, apply_docker_fn):
         config = _make_base_config()

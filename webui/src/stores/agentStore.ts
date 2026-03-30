@@ -864,6 +864,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         break;
 
       // Handle structured_event for checkpoint_activated (dynamic agent registration)
+      // Note: pre-collab events are handled by messageStore -> preCollabStore only
       case 'structured_event' as string: {
         const se = event as unknown as {
           event_type: string;

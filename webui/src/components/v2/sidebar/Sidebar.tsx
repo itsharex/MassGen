@@ -1,6 +1,7 @@
 import { cn } from '../../../lib/utils';
 import { SidebarHeader } from './SidebarHeader';
 import { SessionSection } from './SessionSection';
+import { PreCollabSection } from './PreCollabSection';
 import { ChannelSection } from './ChannelSection';
 import { ThreadSection } from './ThreadSection';
 import { ActivitySection } from './ActivitySection';
@@ -27,7 +28,9 @@ export function Sidebar({ collapsed, onToggleCollapse, onSessionChange, onNewSes
       <SidebarHeader collapsed={collapsed} onToggleCollapse={onToggleCollapse} />
 
       <div className="flex-1 overflow-y-auto v2-scrollbar px-2 py-1">
-        {/* Active run content first */}
+        {/* Pre-collab phases (above channels, only shown when active) */}
+        <PreCollabSection collapsed={collapsed} />
+        {/* Active run content */}
         <ChannelSection collapsed={collapsed} />
         <SidebarDivider />
         <ThreadSection collapsed={collapsed} />

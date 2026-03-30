@@ -247,17 +247,20 @@ class CoordinationConfig:
     enable_quality_rethink_on_iteration: bool = False  # Auto-inject quality_rethinking spawn task on iteration 2+
     enable_novelty_on_iteration: bool = False  # Auto-inject novelty/quality spawn task on iteration 2+
     enable_execution_trace_analyzer: bool = False  # Run execution_trace_analyzer in parallel with round_evaluator
+    auto_trace_analysis: bool = False  # Auto-spawn background trace analyzer at round 2+ start
     enable_evaluator_personas: bool = False  # Expose set_evaluator_personas tool for agent-driven evaluator diversity
     novelty_injection: str = "none"  # "none" | "gentle" | "moderate" | "aggressive"
-    improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for propose_improvements
+    improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for draft_approach
     checklist_criteria_preset: str | None = None  # "persona" | "decomposition" | "evaluation" | "prompt" | "analysis" | "planning" | "spec" | "round_evaluator"
-    checklist_criteria_inline: list[dict[str, str]] | None = None  # [{text: str, category: must|should|could}]
+    checklist_criteria_inline: list[dict[str, str]] | None = None  # [{text, category: primary|standard|stretch, anti_patterns?, verify_by?}]
     resume_from_log: dict[str, Any] | None = None  # {log_path: str, round: int}
     # Checkpoint coordination fields
     checkpoint_enabled: bool = False  # Enable checkpoint coordination mode
     checkpoint_mode: str = "conversation"  # "conversation" | "task"
     checkpoint_guidance: str = ""  # Appended to main agent system prompt
     checkpoint_gated_patterns: list[str] = field(default_factory=list)  # fnmatch patterns for gated tools
+    web_review: bool = False  # Enable change review modal in WebUI (requires --web)
+    fast_iteration_mode: bool = False  # Streamline post-candidate phases to submit faster and iterate across rounds
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -1204,6 +1207,8 @@ class AgentConfig:
             "checkpoint_mode": self.coordination_config.checkpoint_mode,
             "checkpoint_guidance": self.coordination_config.checkpoint_guidance,
             "checkpoint_gated_patterns": self.coordination_config.checkpoint_gated_patterns,
+            "web_review": self.coordination_config.web_review,
+            "fast_iteration_mode": self.coordination_config.fast_iteration_mode,
         }
 
         # Handle debug fields

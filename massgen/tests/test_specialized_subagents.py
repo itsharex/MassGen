@@ -237,7 +237,7 @@ def test_round_evaluator_prompt_returns_file_authoritative_critique_and_spec_gui
     assert "verdict.json" in config.system_prompt
     assert "next_tasks.json" in config.system_prompt
     assert "submit_checklist_args" not in config.system_prompt
-    assert "propose_improvements_args" not in config.system_prompt
+    assert "draft_approach_args" not in config.system_prompt
     assert "expected_verdict" not in config.system_prompt
     assert "draft checklist tool arguments" in lower
     assert "predict terminal outcomes" in lower
@@ -262,7 +262,7 @@ def test_round_evaluator_prompt_keeps_parent_workflow_out_of_returned_packet():
     assert "concise summary" in lower
     assert "do not paste the full critique packet into your answer" in lower
     assert "submit_checklist" not in config.system_prompt
-    assert "propose_improvements" not in config.system_prompt
+    assert "draft_approach" not in config.system_prompt
 
 
 def test_round_evaluator_prompt_saves_files_and_concise_answer():
