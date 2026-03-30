@@ -497,7 +497,7 @@ When ``voting_sensitivity: checklist_gated`` is enabled, agents follow a structu
 
 - ``submit_checklist`` -- The agent scores each criterion for the answers in context. The system returns a verdict: **iterate** (keep improving) or **vote/stop** (quality bar met). The agent cannot vote until the checklist says the work is ready.
 
-- ``propose_improvements`` -- After an iterate verdict, the agent specifies what to fix and what to preserve. This creates a structured improvement plan rather than vague "make it better" instructions. The agent then implements the plan and submits a new answer.
+- ``draft_approach`` -- After an iterate verdict, the agent specifies what to fix and what to preserve. This creates a structured improvement plan rather than vague "make it better" instructions. The agent then implements the plan and submits a new answer.
 
 **Default Criteria (E1-E4):**
 
@@ -542,7 +542,7 @@ You can also provide criteria directly via ``--eval-criteria criteria.json`` or 
 
 **Why Checklists Matter:**
 
-Without structured evaluation, agents tend to converge prematurely -- voting for "good enough" answers that miss subtle quality gaps. The checklist forces agents to explicitly assess each quality dimension before they can vote, catching blind spots that subjective judgment misses. Combined with ``propose_improvements``, this creates a tight feedback loop: diagnose weaknesses, plan fixes, implement, re-evaluate.
+Without structured evaluation, agents tend to converge prematurely -- voting for "good enough" answers that miss subtle quality gaps. The checklist forces agents to explicitly assess each quality dimension before they can vote, catching blind spots that subjective judgment misses. Combined with ``draft_approach``, this creates a tight feedback loop: diagnose weaknesses, plan fixes, implement, re-evaluate.
 
 Benefits of Multi-Agent Approach
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -414,7 +414,7 @@ class Orchestrator(ChatAgent):
         # before the next safe checkpoint (consumed by enforcement-message injection).
         self._no_hook_pending_background_tool_results: dict[str, list[dict[str, Any]]] = {}
 
-        # Per-agent injection directories for auto-populating planning MCP from propose_improvements
+        # Per-agent injection directories for auto-populating planning MCP from draft_approach
         self._planning_injection_dirs: dict[str, Path] = {}
 
         # Background subagent configuration (parsed from coordination_config)
@@ -1114,9 +1114,9 @@ class Orchestrator(ChatAgent):
                 "regression_guard_subagent_enabled": "regression_guard" in _lowered_types,
                 # Quality rethinking subagent: per-element craft improvements
                 "quality_rethinking_subagent_enabled": "quality_rethinking" in _lowered_types,
-                # Planning injection dir for auto-populating task plan from propose_improvements
+                # Planning injection dir for auto-populating task plan from draft_approach
                 "planning_injection_dir": str(getattr(self, "_planning_injection_dirs", {}).get(agent_id, "")),
-                # Whether subagents are enabled (for delegation guidance in propose_improvements message)
+                # Whether subagents are enabled (for delegation guidance in draft_approach message)
                 "subagents_enabled": bool(
                     hasattr(self.config, "coordination_config") and hasattr(self.config.coordination_config, "enable_subagents") and self.config.coordination_config.enable_subagents,
                 ),
@@ -1159,7 +1159,7 @@ class Orchestrator(ChatAgent):
                         False,
                     ),
                 ),
-                # Impact gate config for propose_improvements validation
+                # Impact gate config for draft_approach validation
                 "improvements": dict(
                     getattr(
                         getattr(self.config, "coordination_config", None),
@@ -1213,7 +1213,7 @@ class Orchestrator(ChatAgent):
         from .mcp_tools.checklist_tools_server import (
             build_round_evaluator_task_mode_redirect,
             evaluate_checklist_submission,
-            evaluate_proposed_improvements,
+            evaluate_draft_approach,
         )
 
         # Define tool schema — each score entry requires a reasoning string
@@ -1262,17 +1262,23 @@ class Orchestrator(ChatAgent):
             "required": ["scores"],
         }
 
-        # propose_improvements input schema
+        # draft_approach input schema
         propose_schema = {
             "type": "object",
             "properties": {
-                "improvements": {
+                "vision": {
+                    "type": "string",
+                    "description": (
+                        "Optional north star: what the ideal output would look " "like, independent of existing answers. Guides execution " "toward excellence rather than incremental fixes."
+                    ),
+                },
+                "plan": {
                     "type": "object",
                     "description": (
-                        "Map of criterion ID to list of improvement entries. "
-                        "Each entry has 'plan' (what to do) and 'sources' (which "
-                        "answers to draw from). Plain strings also accepted. "
-                        "Must cover ALL failing criteria."
+                        "Map of criterion ID to list of entries describing what "
+                        "to build. Each entry has 'plan' (what to do) and 'sources' "
+                        "(which existing answers to draw from, or 'fresh' for new "
+                        "ideas). Must cover ALL failing criteria."
                     ),
                     "additionalProperties": {
                         "type": "array",
@@ -1293,10 +1299,9 @@ class Orchestrator(ChatAgent):
                 "preserve": {
                     "type": "object",
                     "description": (
-                        "Map of criterion IDs to what must be protected from "
-                        "regression. Each entry has 'what' (strength to protect) "
-                        "and 'source' (which answer). A criterion can appear in "
-                        "both improvements and preserve. Plain strings also accepted."
+                        "Optional: specific elements from existing answers worth "
+                        "bringing forward. Each entry has 'what' (strength to keep) "
+                        "and 'source' (which answer). Can be empty when building fresh."
                     ),
                     "additionalProperties": {
                         "oneOf": [
@@ -1312,7 +1317,7 @@ class Orchestrator(ChatAgent):
                     },
                 },
             },
-            "required": ["improvements"],
+            "required": ["plan"],
         }
 
         # Create tool function with closure over mutable state
@@ -1323,7 +1328,7 @@ class Orchestrator(ChatAgent):
         _orchestrator = self
         _agent_id = agent_id
 
-        # Track last failed criteria for propose_improvements validation
+        # Track last failed criteria for draft_approach validation
         _last_checklist_result: dict[str, Any] = {
             "status": "none",
             "verdict": None,
@@ -1475,7 +1480,7 @@ class Orchestrator(ChatAgent):
             if result_status == "accepted" and result.get("verdict") == iterate_action:
                 result = dict(result)
                 result["explanation"] = (
-                    result.get("explanation", "") + " NEXT: Call `propose_improvements` with specific improvements for each " "failing criterion. Then implement your plan and call `new_answer`."
+                    result.get("explanation", "") + " NEXT: Call `draft_approach` with specific improvements for each " "failing criterion. Then implement your plan and call `new_answer`."
                 )
 
             return {
@@ -1488,18 +1493,18 @@ class Orchestrator(ChatAgent):
             }
 
         @tool(
-            name="propose_improvements",
+            name="draft_approach",
             description=(
-                "Propose specific improvements for each failing criterion. "
+                "Propose what to build for your next answer. "
                 "Must be called after submit_checklist returns an iterate verdict. "
-                "Pass 'improvements' mapping criterion IDs to lists of entries "
-                "with 'plan' and 'sources'. Pass 'preserve' mapping criterion IDs "
-                "to entries with 'what' (strength to protect) and 'source'. "
-                "A criterion can appear in both."
+                "Pass 'plan' mapping criterion IDs to lists of entries "
+                "with 'plan' (what to do) and 'sources' (which answers to draw "
+                "from, or 'fresh' for new ideas). Optionally pass 'preserve' for "
+                "elements worth keeping from existing answers."
             ),
             input_schema=propose_schema,
         )
-        async def propose_improvements_handler(args, _state=state):
+        async def draft_approach_handler(args, _state=state):
             import json as _json
 
             redirect_message = build_round_evaluator_task_mode_redirect(_state)
@@ -1524,7 +1529,7 @@ class Orchestrator(ChatAgent):
                             "text": _json.dumps(
                                 {
                                     "valid": False,
-                                    "error": ("propose_improvements is unavailable because your latest " "submit_checklist result was a validation error. " "Fix and resubmit submit_checklist first."),
+                                    "error": ("draft_approach is unavailable because your latest " "submit_checklist result was a validation error. " "Fix and resubmit submit_checklist first."),
                                 },
                             ),
                         },
@@ -1538,7 +1543,7 @@ class Orchestrator(ChatAgent):
                             "text": _json.dumps(
                                 {
                                     "valid": False,
-                                    "error": ("propose_improvements is only available after " f"submit_checklist returns an iterate verdict ({iterate_action})."),
+                                    "error": ("draft_approach is only available after " f"submit_checklist returns an iterate verdict ({iterate_action})."),
                                 },
                             ),
                         },
@@ -1555,7 +1560,7 @@ class Orchestrator(ChatAgent):
                                 {
                                     "valid": False,
                                     "error": (
-                                        "propose_improvements is unavailable because newer injected answer labels "
+                                        "draft_approach is unavailable because newer injected answer labels "
                                         f"still require checklist re-evaluation: {pending_labels_text}. "
                                         "Re-run submit_checklist on the newest labels first."
                                     ),
@@ -1565,9 +1570,11 @@ class Orchestrator(ChatAgent):
                     ],
                 }
 
-            improvements = args.get("improvements", {})
+            # Accept both "plan" (new) and "improvements" (legacy fallback)
+            improvements = args.get("plan") or args.get("improvements", {})
             preserve = args.get("preserve")
-            result = evaluate_proposed_improvements(
+            vision = args.get("vision")
+            result = evaluate_draft_approach(
                 improvements=improvements,
                 failed_criteria=_last_checklist_result["failed_criteria"],
                 items=_last_checklist_result["items"] or list(items),
@@ -1582,6 +1589,7 @@ class Orchestrator(ChatAgent):
                     "diagnostic_report_path": _last_checklist_result.get("diagnostic_report_path", ""),
                     "diagnostic_report_artifact_paths": _last_checklist_result.get("diagnostic_report_artifact_paths", []),
                 },
+                vision=vision,
             )
             if result.get("valid"):
                 _orchestrator._write_planning_injection(_agent_id, result["task_plan"])
@@ -1689,7 +1697,7 @@ class Orchestrator(ChatAgent):
             _personas_tool = _set_evaluator_personas_impl
 
         # Create SDK MCP server with checklist tools
-        _checklist_tools = [submit_checklist_handler, propose_improvements_handler]
+        _checklist_tools = [submit_checklist_handler, draft_approach_handler]
         if _personas_tool is not None:
             _checklist_tools.append(_personas_tool)
         sdk_server = create_sdk_mcp_server(
@@ -2829,7 +2837,7 @@ class Orchestrator(ChatAgent):
                 f"[Orchestrator] Adding --use-two-tier-workspace flag to planning MCP for {agent_id}",
             )
 
-        # Create injection directory for task injection from propose_improvements.
+        # Create injection directory for task injection from draft_approach.
         # Both checklist MCP and planning MCP need rw access to this dir.
         # In Docker mode, the log directory is NOT mounted into the container,
         # so we use a workspace-local path (workspace is always mounted rw).
@@ -2875,12 +2883,12 @@ class Orchestrator(ChatAgent):
     def _write_planning_injection(self, agent_id: str, task_plan: list[dict]) -> None:
         """Write inject_tasks.json to agent's planning injection directory.
 
-        Called after propose_improvements returns a valid task_plan. The planning
+        Called after draft_approach returns a valid task_plan. The planning
         MCP server picks up the file on its next tool call.
 
         Args:
             agent_id: Agent whose planning MCP should receive the tasks
-            task_plan: Raw task_plan from evaluate_proposed_improvements
+            task_plan: Raw task_plan from evaluate_draft_approach
         """
         if agent_id not in self._planning_injection_dirs:
             return
@@ -7879,7 +7887,7 @@ Your answer:"""
                         "   - Preferred: submit only the injected newest labels (delta recheck)",
                         "   - Also allowed: submit all latest labels in your current context",
                         "6. If submit_checklist returns a validation error, fix payload/report and call submit_checklist again",
-                        "7. If checklist returns iterate (new_answer), call propose_improvements, implement, then call new_answer",
+                        "7. If checklist returns iterate (new_answer), call draft_approach, implement, then call new_answer",
                         "8. Call `stop` only after the latest checklist result supports stopping and you have no new work to share",
                         "",
                         "DO NOT ignore this update - checklist flow must be re-run on newest labels.",
@@ -7930,7 +7938,7 @@ Your answer:"""
                         "   - Preferred: submit only the injected newest labels (delta recheck)",
                         "   - Also allowed: submit all latest labels in your current context",
                         "5. If submit_checklist returns a validation error, fix payload/report and call submit_checklist again",
-                        "6. If checklist returns iterate (new_answer), call propose_improvements, implement, then call new_answer",
+                        "6. If checklist returns iterate (new_answer), call draft_approach, implement, then call new_answer",
                         "DO NOT ignore this update - checklist flow must be re-run on newest labels.",
                         "=" * 60,
                     ],
@@ -12177,7 +12185,7 @@ Your answer:"""
                 "   artifact body directly in `new_answer.content`.\n"
                 "7. Otherwise, call `new_answer` with your usual concise summary.\n\n"
                 "Do NOT call `submit_checklist`.\n"
-                "Do NOT call `propose_improvements`.\n"
+                "Do NOT call `draft_approach`.\n"
                 "Do NOT write a second diagnostic report.\n"
                 "Do NOT spawn another `round_evaluator`.\n"
                 "============================================================"
@@ -12220,7 +12228,7 @@ Your answer:"""
             "</evaluator_timeout>\n\n"
             "For this answer set, the orchestrator is degrading to the normal parent-owned checklist flow.\n"
             "Do NOT wait for evaluator artifacts for this revision.\n"
-            "You may call `submit_checklist` and `propose_improvements` as usual.\n"
+            "You may call `submit_checklist` and `draft_approach` as usual.\n"
             "============================================================"
         )
 
@@ -12340,7 +12348,7 @@ Your answer:"""
             instructions = (
                 "Improvement tasks have been auto-injected into your task plan.\n"
                 "Call `get_task_plan` to see them. Implement each task, then call `new_answer`.\n"
-                "Do NOT call `submit_checklist` or `propose_improvements` — already handled."
+                "Do NOT call `submit_checklist` or `draft_approach` — already handled."
             )
         else:
             instructions = (
@@ -12390,7 +12398,7 @@ Your answer:"""
     ) -> list[dict]:
         """Convert evaluator verdict improvements/preserve into a task_plan.
 
-        Returns a list in the same format as ``evaluate_proposed_improvements()``
+        Returns a list in the same format as ``evaluate_draft_approach()``
         output, ready for ``_write_inject_file()``.
         """
         if evaluator_result.verdict != "iterate":

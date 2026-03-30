@@ -595,7 +595,7 @@ async def test_round_evaluator_auto_injects_when_next_tasks_exist_without_legacy
     assert "Critique Packet" in block
     assert "<evaluator_summary" in block
     assert "submit_checklist" in block and "do not call" in block.lower()
-    assert "propose_improvements" in block and "do not call" in block.lower()
+    assert "draft_approach" in block and "do not call" in block.lower()
     assert str(eval_workspace / "critique_packet.md") in block
     assert str(eval_workspace / "verdict.json") in block
     assert str(eval_workspace / "next_tasks.json") in block

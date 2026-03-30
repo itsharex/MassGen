@@ -10,8 +10,6 @@ from pathlib import Path
 
 from massgen.system_prompt_sections import (
     NoveltyPressureSection,
-    _build_changedoc_checklist_analysis,
-    _build_checklist_analysis,
     _build_checklist_gated_decision,
     _build_checklist_scored_decision,
 )
@@ -87,35 +85,6 @@ class TestScoreCalibration:
         assert "publish this as-is" in result
 
 
-class TestApproachChallenge:
-    """Change 2: Fresh Approach → Approach Challenge."""
-
-    def test_checklist_analysis_has_approach_challenge(self):
-        """_build_checklist_analysis contains Approach Challenge section."""
-        result = _build_checklist_analysis()
-        assert "### Approach Challenge" in result
-
-    def test_checklist_analysis_no_fresh_approach(self):
-        """Old 'Fresh Approach Consideration' is replaced."""
-        result = _build_checklist_analysis()
-        assert "Fresh Approach Consideration" not in result
-
-    def test_approach_challenge_demands_alternative(self):
-        """Approach Challenge asks for a fundamentally different way."""
-        result = _build_checklist_analysis()
-        assert "fundamentally different way to solve this problem" in result
-
-    def test_changedoc_analysis_has_approach_challenge(self):
-        """Changedoc analysis also has Approach Challenge."""
-        result = _build_changedoc_checklist_analysis()
-        assert "### Approach Challenge" in result
-
-    def test_changedoc_analysis_no_fresh_approach(self):
-        """Changedoc analysis replaces Fresh Approach."""
-        result = _build_changedoc_checklist_analysis()
-        assert "Fresh Approach Consideration" not in result
-
-
 class TestPriorAnswerReframing:
     """Change 3: Reframe prior answers as benchmarks."""
 
@@ -135,35 +104,6 @@ class TestPriorAnswerReframing:
         section = ChangedocSection(has_prior_answers=True)
         content = section.build_content()
         assert 'do not pick one as your "base" and refine it' not in content
-
-
-class TestPreScoreAudit:
-    """Change 4: Strengthened Pre-Score Audit."""
-
-    def test_checklist_analysis_has_mandatory_audit(self):
-        """Pre-Score Audit is marked MANDATORY."""
-        result = _build_checklist_analysis()
-        assert "### Pre-Score Audit (MANDATORY)" in result
-
-    def test_checklist_analysis_has_consistency_check(self):
-        """Pre-Score Audit has concrete consistency check."""
-        result = _build_checklist_analysis()
-        assert "contradicts your own Failure Patterns" in result
-
-    def test_changedoc_analysis_has_mandatory_audit(self):
-        """Changedoc Pre-Score Audit is also MANDATORY."""
-        result = _build_changedoc_checklist_analysis()
-        assert "### Pre-Score Audit (MANDATORY)" in result
-
-    def test_changedoc_analysis_has_consistency_check(self):
-        """Changedoc Pre-Score Audit has consistency check."""
-        result = _build_changedoc_checklist_analysis()
-        assert "contradicts your own Failure Patterns" in result
-
-    def test_score_above_5_justification(self):
-        """Audit mentions score above 5 needing justification."""
-        result = _build_checklist_analysis()
-        assert "above 5 needs strong justification" in result
 
 
 class TestProactiveNovelty:
@@ -537,8 +477,8 @@ class TestGenerationPromptTiers:
         # Must have a GOOD example about per-part/per-section criteria
         assert "per-part" in lower or "per-section" in lower
 
-    def test_propose_improvements_example_not_incremental(self):
-        """System prompt propose_improvements example shows substantial improvements."""
+    def test_draft_approach_example_not_incremental(self):
+        """System prompt draft_approach example shows substantial improvements."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
@@ -547,10 +487,10 @@ class TestGenerationPromptTiers:
         # The example should NOT contain trivially incremental fixes
         assert "fix font sizes" not in prompt.lower()
         # The example should show rethinking, not pixel tweaks
-        assert "propose_improvements" in prompt
+        assert "draft_approach" in prompt
 
-    def test_propose_improvements_example_includes_preserve(self):
-        """System prompt propose_improvements example includes preserve parameter."""
+    def test_draft_approach_example_includes_preserve(self):
+        """System prompt draft_approach example includes preserve parameter."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
@@ -559,8 +499,8 @@ class TestGenerationPromptTiers:
         # preserve should appear in the example call
         assert "preserve" in prompt
 
-    def test_propose_improvements_example_has_sources(self):
-        """System prompt propose_improvements example includes sources."""
+    def test_draft_approach_example_has_sources(self):
+        """System prompt draft_approach example includes sources."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
@@ -658,21 +598,24 @@ class TestPerAnswerAnalysis:
         assert "each existing answer" in result2.lower()
         assert "from scratch" not in result2.lower()
 
-    def test_checklist_flow_per_answer_before_propose(self):
-        """Checklist gated prompt has per-answer review before propose_improvements."""
+    def test_checklist_flow_elevation_prompt_before_propose(self):
+        """Checklist gated prompt has vision-first elevation prompt before draft_approach call."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
             checklist_items=["Criterion 1", "Criterion 2"],
         )
         lower = prompt.lower()
-        # Must have a dedicated per-answer review instruction
-        assert "review each existing answer" in lower, "Must have per-answer review step before propose_improvements"
-        # The review instruction should appear BEFORE the propose_improvements
-        # call instruction (not just the first mention in verdict description)
-        review_pos = lower.find("review each existing answer")
-        propose_call_pos = lower.find("must call `propose_improvements`")
-        assert review_pos < propose_call_pos, "Per-answer review must appear before propose_improvements call"
+        # Must have a vision-first elevation prompt
+        assert "what would great look like" in lower, "Must have elevation prompt before draft_approach"
+        # The elevation prompt should appear BEFORE the detailed draft_approach
+        # call instruction (the "you must call" block, not the verdict mention)
+        elevation_pos = lower.find("what would great look like")
+        propose_call_pos = lower.find("you must call `draft_approach`")
+        assert propose_call_pos > 0, "Must have detailed draft_approach call instruction"
+        assert elevation_pos < propose_call_pos, "Elevation prompt must appear before draft_approach call"
+        # Must mention "fresh" as a valid source option
+        assert "fresh" in lower, "Must mention 'fresh' as a valid source for new ideas"
 
     def test_evaluating_prior_answers_per_answer(self):
         """Changedoc section has per-answer independent analysis."""
@@ -731,22 +674,6 @@ class TestRefinementReframing:
         )
         lower = prompt.lower()
         assert "rebuild" in lower or "discard" in lower or "start fresh" in lower
-
-
-class TestSubstantivenessRebuildExample:
-    """STRUCTURAL examples include rebuilding sections from scratch."""
-
-    def test_structural_definition_includes_rebuild(self):
-        """STRUCTURAL definition explicitly mentions rebuilding as an example."""
-        prompt = _build_checklist_gated_decision(
-            checklist_items=["E1 criterion"],
-        )
-        lower = prompt.lower()
-        # Find the STRUCTURAL section (between **STRUCTURAL** and **INCREMENTAL**)
-        structural_pos = lower.find("**structural**")
-        incremental_pos = lower.find("**incremental**")
-        structural_section = lower[structural_pos:incremental_pos]
-        assert "rebuild" in structural_section or "from scratch" in structural_section
 
 
 class TestTaskPlanDetail:

@@ -250,7 +250,7 @@ class CoordinationConfig:
     auto_trace_analysis: bool = False  # Auto-spawn background trace analyzer at round 2+ start
     enable_evaluator_personas: bool = False  # Expose set_evaluator_personas tool for agent-driven evaluator diversity
     novelty_injection: str = "none"  # "none" | "gentle" | "moderate" | "aggressive"
-    improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for propose_improvements
+    improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for draft_approach
     checklist_criteria_preset: str | None = None  # "persona" | "decomposition" | "evaluation" | "prompt" | "analysis" | "planning" | "spec" | "round_evaluator"
     checklist_criteria_inline: list[dict[str, str]] | None = None  # [{text, category: primary|standard|stretch, anti_patterns?, verify_by?}]
     resume_from_log: dict[str, Any] | None = None  # {log_path: str, round: int}

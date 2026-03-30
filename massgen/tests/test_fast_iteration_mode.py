@@ -99,14 +99,14 @@ class TestFastIterationModePromptChanges:
         assert "quality_rethinking" not in decision
         assert "novelty subagent" not in decision
 
-    def test_normal_mode_has_substantiveness_test(self):
-        """Normal mode includes the full Substantiveness Test."""
+    def test_normal_mode_has_scoring_calibration(self):
+        """Normal mode includes Scoring Calibration (replaced Substantiveness Test)."""
         decision = _build_checklist_gated_decision(
             ["Criterion 1", "Criterion 2"],
             fast_iteration_mode=False,
         )
-        assert "Substantiveness Test" in decision
-        assert "TRANSFORMATIVE" in decision
+        assert "Scoring Calibration" in decision
+        assert "much better" in decision
 
     def test_fast_mode_has_quick_impact_check(self):
         """Fast mode replaces Substantiveness Test with Quick Impact Check."""
@@ -221,8 +221,7 @@ class TestFastIterationModePromptChanges:
             custom_checklist_items=["Quality is high", "Requirements are met"],
         )
         content = section.build_content()
-        assert "Substantiveness Test" in content
-        assert "obviously and substantially better" in content
+        assert "Scoring Calibration" in content
 
     def test_fast_mode_full_section_no_obviously_substantially_better(self):
         """Full EvaluationSection output must not contain 'obviously and substantially better' in fast mode.
@@ -347,7 +346,7 @@ class TestFastIterationModeDecompositionSection:
             custom_checklist_items=["Quality is high", "Requirements met"],
         )
         content = section.build_content()
-        assert "Substantiveness Test" in content
+        assert "Scoring Calibration" in content
 
 
 # ---------------------------------------------------------------------------

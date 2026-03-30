@@ -52,7 +52,8 @@ DOCKER_BACKEND_DEFAULTS: dict[str, Any] = {
         ],
     },
     "shared_tools_directory": "shared_tools",
-    "auto_discover_custom_tools": False,
+    "auto_discover_custom_tools": True,
+    "exclude_custom_tools": ["_computer_use"],
 }
 
 

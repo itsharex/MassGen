@@ -256,21 +256,20 @@ class TestChangedocChecklist:
             has_changedoc=True,
         )
         content = section.build_content()
-        # Should contain changedoc checklist items, not generic ones
-        assert "Decision Completeness" in content or "changedoc" in content.lower()
-        assert "Decision Audit" in content
-        assert "substantiveness" in content.lower()
+        # Should contain changedoc-specific guidance in the diagnostic report
+        assert "changedoc" in content.lower()
+        assert "actual files and symbols" in content.lower()
 
     def test_evaluation_section_uses_generic_items(self):
-        """EvaluationSection(has_changedoc=False) produces original text."""
+        """EvaluationSection(has_changedoc=False) produces generic diagnostic report."""
         section = EvaluationSection(
             voting_sensitivity="checklist_gated",
             has_changedoc=False,
         )
         content = section.build_content()
-        # Should contain generic items, not changedoc-specific analysis
-        assert "Diagnostic Analysis" in content
-        assert "Decision Audit" not in content
+        # Should contain generic diagnostic report, not changedoc-specific addendum
+        assert "Diagnostic Report" in content
+        assert "fabricated references" not in content.lower()
 
     def test_system_message_builder_passes_changedoc_flag(self):
         """Builder derives changedoc flag from config and produces changedoc-aware eval."""
@@ -293,8 +292,9 @@ class TestChangedocChecklist:
             previous_turns=[],
         )
 
-        # The coordination section should use changedoc analysis
-        assert "Decision Audit" in msg
+        # The coordination section should include changedoc-specific guidance
+        assert "changedoc" in msg.lower()
+        assert "actual files and symbols" in msg.lower()
 
     def test_system_message_builder_generic_when_changedoc_off(self):
         """Builder without changedoc uses generic checklist."""
@@ -317,9 +317,10 @@ class TestChangedocChecklist:
             previous_turns=[],
         )
 
-        # The coordination section should use generic analysis (GEPA-style diagnostics)
-        assert "Failure Patterns" in msg or "Root Causes" in msg
-        assert "Decision Audit" not in msg
+        # The coordination section should have criteria-driven diagnostic report
+        assert "Diagnostic Report" in msg
+        # Should NOT have changedoc-specific addendum
+        assert "actual files and symbols" not in msg.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -374,18 +375,6 @@ class TestSelfPlaceholderInPrompts:
 class TestChangedocAnalysisImprovements:
     """Tests for changedoc analysis prompt improvements."""
 
-    def test_analysis_contains_substantiveness_test(self):
-        """Changedoc analysis includes substantiveness classification step."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "TRANSFORMATIVE" in analysis
-        assert "STRUCTURAL" in analysis
-        assert "INCREMENTAL" in analysis
-
-    def test_analysis_contains_convergence_awareness(self):
-        """Analysis includes convergence awareness — same approach detection."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "converging" in analysis.lower() or "same basic" in analysis.lower()
-
     def test_analysis_contains_subtractive_improvement(self):
         """Fresh Approach section mentions subtractive improvement possibility."""
         analysis = _build_changedoc_checklist_analysis()
@@ -403,13 +392,12 @@ class TestChangedocAnalysisImprovements:
         assert "deeply" in prompt.lower() or "depth" in prompt.lower()
 
     def test_analysis_no_longer_takes_has_prior_answers(self):
-        """T5 guidance now lives in the checklist item itself, not the analysis."""
+        """Analysis function should work with no arguments."""
         # The function should work with no arguments
         analysis = _build_changedoc_checklist_analysis()
-        # Should still contain substantiveness classification
-        assert "TRANSFORMATIVE" in analysis
-        assert "STRUCTURAL" in analysis
-        assert "INCREMENTAL" in analysis
+        # Should contain core diagnostic sections
+        assert "Decision Audit" in analysis
+        assert "Failure Patterns" in analysis
 
     def test_subsequent_prompt_checklist_before_implementation(self):
         """Subsequent round workflow must instruct checklist evaluation BEFORE implementation."""
@@ -492,16 +480,15 @@ class TestGapReportModeInDecision:
     """Tests for gap_report_mode in _build_checklist_gated_decision."""
 
     def test_gated_decision_changedoc_mode_requires_separate_report(self):
-        """gap_report_mode='changedoc' still requires separate diagnostic report."""
+        """gap_report_mode='changedoc' still requires diagnostic report."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         decision = _build_checklist_gated_decision(
             checklist_items=["Check 1", "Check 2"],
             gap_report_mode="changedoc",
         )
-        # Should require a diagnostic report separate from changedoc
+        # Should require a diagnostic report
         assert "diagnostic report" in decision.lower()
-        assert "separate from your changedoc" in decision.lower()
         assert "report_path" in decision
 
     def test_gated_decision_separate_mode_requires_report(self):
@@ -535,12 +522,6 @@ class TestGapReportModeInDecision:
 
 class TestAntiGlazingAndSynthesis:
     """Tests for anti-glazing, multi-source synthesis, and origin chain changes."""
-
-    def test_substantiveness_has_not_structural_examples(self):
-        """Substantiveness test includes concrete 'NOT structural' examples."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "do not upgrade" in analysis.lower()
-        assert "CSS tweaks" in analysis
 
     def test_analysis_anti_glazing(self):
         """Analysis framework focuses on failures over praise."""
@@ -801,8 +782,15 @@ class TestContextWindowPersistence:
 
 
 def _subagent_content():
-    """Helper: build SubagentSection content with default args."""
-    return SubagentSection(workspace_path="/tmp/workspace", max_concurrent=3).build_content()
+    """Helper: build SubagentSection content with evaluator available."""
+    from massgen.subagent.models import SpecializedSubagentConfig
+
+    evaluator = SpecializedSubagentConfig(name="evaluator", description="Runs tests and captures evidence")
+    return SubagentSection(
+        workspace_path="/tmp/workspace",
+        max_concurrent=3,
+        specialized_subagents=[evaluator],
+    ).build_content()
 
 
 class TestEvaluationDelegation:

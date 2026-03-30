@@ -562,7 +562,7 @@ def test_auto_injected_evaluator_result_block_includes_summary():
     assert "Key findings: E1=4, E3=7" in block
     assert "<evaluator_summary" in block
     assert "submit_checklist" in block and "do not call" in block.lower()
-    assert "propose_improvements" in block and "do not call" in block.lower()
+    assert "draft_approach" in block and "do not call" in block.lower()
     assert "diagnostic report" in block.lower()
     assert "pure text artifact" in block.lower()
     assert "implementation_guidance" in block

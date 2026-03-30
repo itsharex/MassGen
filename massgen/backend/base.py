@@ -353,7 +353,7 @@ class LLMBackend(ABC):
             "enable_novelty_on_iteration",  # Coordination-only novelty task injection toggle
             "enable_execution_trace_analyzer",  # Coordination-only execution trace analysis toggle
             "novelty_injection",  # Novelty pressure level (none/gentle/moderate/aggressive)
-            "improvements",  # propose_improvements gate settings (orchestrator/checklist only)
+            "improvements",  # draft_approach gate settings (orchestrator/checklist only)
             "learning_capture_mode",  # Learning capture timing (round/verification_and_final_only/final_only)
             "disable_final_only_round_capture_fallback",  # Coordination-only fallback control for final_only+skip_final_presentation
             # Multimodal tools configuration (handled by CustomToolAndMCPBackend)
