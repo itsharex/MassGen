@@ -1465,6 +1465,17 @@ the lifecycle restarts at Phase 1 with all agents' updated answers. If the outpu
 now sufficient, the session terminates. You do not need to do anything to trigger the
 next round — the system handles it."""
     else:
+        _regression_guard_instruction = (
+            (
+                "   **Regression guard**: Spawn a `regression_guard` subagent for blind "
+                "comparison. Label both answers as Answer A and Answer B — do NOT reveal "
+                "which is the candidate or which is the previous version. Include evaluation "
+                "criteria verbatim, workspace paths, and output type. The guard reports which "
+                "answer is stronger per criterion; you interpret the result knowing which was yours."
+            )
+            if regression_guard_enabled
+            else ""
+        )
         _phase5_section = f"""\
 
 **Phase 5 — Integrate, verify, submit.**
@@ -1479,15 +1490,7 @@ After all tasks complete:
    Do this by running or viewing the actual output — not just reviewing the code.
    If any criterion is not clearly improved, or anything regressed, fix it before submitting.
    A new answer that passes the checklist but is worse overall is a failed round.
-{
-        (
-            "   **Regression guard**: Spawn a `regression_guard` subagent for blind "
-            "comparison. Label both answers as Answer A and Answer B — do NOT reveal "
-            "which is the candidate or which is the previous version. Include evaluation "
-            "criteria verbatim, workspace paths, and output type. The guard reports which "
-            "answer is stronger per criterion; you interpret the result knowing which was yours."
-        ) if regression_guard_enabled else ""
-    }
+{_regression_guard_instruction}
 3. Confirm you implemented the full scope of identified improvements, not just some.
    Each round is expensive — deliver everything you identified, not just the easiest item.
 4. For each verification command you run, save its output to `.massgen_scratch/verification/`
