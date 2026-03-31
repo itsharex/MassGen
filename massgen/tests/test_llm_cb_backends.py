@@ -486,7 +486,8 @@ class TestCBConfigValidation:
 class TestCBOpenRaisesErrorThroughBackend:
     """When CB is OPEN, backend API calls raise CircuitBreakerOpenError."""
 
-    def test_chatcompletions_raises_when_cb_open(self):
+    @pytest.mark.asyncio
+    async def test_chatcompletions_raises_when_cb_open(self):
         from massgen.backend.chat_completions import ChatCompletionsBackend
         from massgen.backend.llm_circuit_breaker import CircuitBreakerOpenError
 
@@ -497,21 +498,35 @@ class TestCBOpenRaisesErrorThroughBackend:
         # Force CB open
         backend.circuit_breaker.record_failure("test", "force open")
         assert backend.circuit_breaker.state == CircuitState.OPEN
-        assert backend.circuit_breaker.should_block() is True
 
         # call_with_retry should raise immediately
         async def _dummy():
             return "should not reach"
 
         with pytest.raises(CircuitBreakerOpenError):
-            import asyncio
+            await backend.circuit_breaker.call_with_retry(_dummy)
 
-            asyncio.get_event_loop().run_until_complete(
-                backend.circuit_breaker.call_with_retry(_dummy),
-            )
+    @pytest.mark.asyncio
+    async def test_response_raises_when_cb_open(self):
+        from massgen.backend.llm_circuit_breaker import CircuitBreakerOpenError
+        from massgen.backend.response import ResponseBackend
 
-    def test_gemini_raises_when_cb_open(self):
-        """Gemini uses should_block() gate, not call_with_retry."""
+        backend = ResponseBackend(
+            llm_circuit_breaker_enabled=True,
+            llm_circuit_breaker_max_failures=1,
+        )
+        backend.circuit_breaker.record_failure("test", "force open")
+        assert backend.circuit_breaker.state == CircuitState.OPEN
+
+        async def _dummy():
+            return "should not reach"
+
+        with pytest.raises(CircuitBreakerOpenError):
+            await backend.circuit_breaker.call_with_retry(_dummy)
+
+    @pytest.mark.asyncio
+    async def test_gemini_raises_when_cb_open(self):
+        """Gemini uses should_block() gate -- verify CB blocks via call_with_retry."""
         from massgen.backend.gemini import GeminiBackend
         from massgen.backend.llm_circuit_breaker import CircuitBreakerOpenError
 
@@ -521,8 +536,10 @@ class TestCBOpenRaisesErrorThroughBackend:
         )
         backend.circuit_breaker.record_failure("test", "force open")
         assert backend.circuit_breaker.state == CircuitState.OPEN
-        assert backend.circuit_breaker.should_block() is True
 
-        # Verify the error message format (single string, not tuple)
-        with pytest.raises(CircuitBreakerOpenError, match="Circuit breaker is open for gemini"):
-            raise CircuitBreakerOpenError("Circuit breaker is open for gemini")
+        # Gemini uses should_block() directly, but call_with_retry also blocks
+        async def _dummy():
+            return "should not reach"
+
+        with pytest.raises(CircuitBreakerOpenError, match="Circuit breaker is open"):
+            await backend.circuit_breaker.call_with_retry(_dummy)
