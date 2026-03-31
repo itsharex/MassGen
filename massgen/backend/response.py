@@ -272,6 +272,10 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         _compression_retry = kwargs.get("_compression_retry", False)
         ws_transport = kwargs.get("_ws_transport")
 
+        # Start API call timing for non-MCP path
+        model = api_params.get("model", "unknown")
+        self.start_api_call_timing(model)
+
         try:
             stream = await self._create_response_stream(
                 api_params,
@@ -280,6 +284,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 agent_id=agent_id,
             )
         except CircuitBreakerOpenError:
+            self.end_api_call_timing(success=False, error="circuit_breaker_open")
             raise
         except Exception as e:
             # Debug: Catch input[N].content format errors and print the problematic message

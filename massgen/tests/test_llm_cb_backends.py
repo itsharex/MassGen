@@ -477,6 +477,24 @@ class TestCBConfigValidation:
                 llm_circuit_breaker_reset_time_seconds=0,
             )
 
+    def test_response_rejects_invalid_reset_time(self):
+        from massgen.backend.response import ResponseBackend
+
+        with pytest.raises(ValueError, match="reset_time_seconds"):
+            ResponseBackend(
+                llm_circuit_breaker_enabled=True,
+                llm_circuit_breaker_reset_time_seconds=0,
+            )
+
+    def test_gemini_rejects_invalid_reset_time(self):
+        from massgen.backend.gemini import GeminiBackend
+
+        with pytest.raises(ValueError, match="reset_time_seconds"):
+            GeminiBackend(
+                llm_circuit_breaker_enabled=True,
+                llm_circuit_breaker_reset_time_seconds=0,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Integration: CB OPEN raises CircuitBreakerOpenError through backend
