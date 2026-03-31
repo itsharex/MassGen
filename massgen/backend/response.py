@@ -35,6 +35,11 @@ from .base_with_custom_tool_and_mcp import (
     ToolExecutionConfig,
     UploadFileError,
 )
+from .llm_circuit_breaker import (
+    CircuitBreakerOpenError,
+    LLMCircuitBreaker,
+    LLMCircuitBreakerConfig,
+)
 
 
 class _WSEvent:
@@ -85,6 +90,8 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
     """Backend using the standard Response API format with multimodal support."""
 
     def __init__(self, api_key: str | None = None, **kwargs):
+        # Extract circuit breaker config before passing to super
+        cb_config = self._build_circuit_breaker_config(kwargs)
         super().__init__(api_key, **kwargs)
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.formatter = ResponseFormatter()
@@ -107,6 +114,27 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         self._uploaded_file_ids: list[str] = []
 
         # Note: _streaming_buffer is provided by StreamingBufferMixin
+        self.circuit_breaker = LLMCircuitBreaker(
+            config=cb_config,
+            backend_name="response_api",
+        )
+
+    @staticmethod
+    def _build_circuit_breaker_config(
+        kwargs: dict[str, Any],
+    ) -> LLMCircuitBreakerConfig:
+        """Extract circuit breaker settings from kwargs and build config."""
+        cb_kwargs: dict[str, Any] = {}
+        prefix = "llm_circuit_breaker_"
+        keys_to_pop: list[str] = []
+        for key in kwargs:
+            if key.startswith(prefix):
+                param = key[len(prefix):]
+                cb_kwargs[param] = kwargs[key]
+                keys_to_pop.append(key)
+        for key in keys_to_pop:
+            kwargs.pop(key)
+        return LLMCircuitBreakerConfig(**cb_kwargs)
 
     def supports_upload_files(self) -> bool:
         return True
@@ -249,7 +277,10 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 api_params,
                 client,
                 ws_transport,
+                agent_id=agent_id,
             )
+        except CircuitBreakerOpenError:
+            raise
         except Exception as e:
             # Debug: Catch input[N].content format errors and print the problematic message
             error_str = str(e)
@@ -307,6 +338,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     api_params,
                     client,
                     ws_transport,
+                    agent_id=agent_id,
                 )
 
                 # Notify user that compression succeeded
@@ -471,7 +503,11 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 api_params,
                 client,
                 ws_transport,
+                agent_id=agent_id,
             )
+        except CircuitBreakerOpenError:
+            self.end_api_call_timing(success=False, error="circuit_breaker_open")
+            raise
         except Exception as e:
             # Debug: Catch input[N].content format errors and print the problematic message
             error_str = str(e)
@@ -533,6 +569,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     api_params,
                     client,
                     ws_transport,
+                    agent_id=agent_id,
                 )
 
                 # Notify user that compression succeeded
@@ -1758,12 +1795,19 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         """Extract content from OpenAI Responses API tool result message."""
         return tool_result_message.get("output", "")
 
-    async def _create_response_stream(self, api_params, client, ws_transport=None):
+    async def _create_response_stream(self, api_params, client, ws_transport=None, agent_id=None):
         """Create a response stream via HTTP or websocket transport."""
         if ws_transport is not None and ws_transport.is_connected:
             logger.debug("[WebSocket] Sending response.create via WebSocket")
             return self._ws_event_stream(ws_transport, api_params)
-        return await client.responses.create(**api_params)
+
+        async def _make_api_call():
+            return await client.responses.create(**api_params)
+
+        return await self.circuit_breaker.call_with_retry(
+            _make_api_call,
+            agent_id=agent_id,
+        )
 
     async def _ws_event_stream(self, ws_transport, api_params):
         """Wrap websocket JSON events as objects matching SDK stream chunks."""
