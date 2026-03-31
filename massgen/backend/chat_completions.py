@@ -94,7 +94,7 @@ class ChatCompletionsBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         keys_to_pop: list[str] = []
         for key in kwargs:
             if key.startswith(prefix):
-                param = key[len(prefix):]
+                param = key[len(prefix) :]
                 cb_kwargs[param] = kwargs[key]
                 keys_to_pop.append(key)
         for key in keys_to_pop:
@@ -306,6 +306,7 @@ class ChatCompletionsBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         ) as llm_span:
             # Start streaming - wrap with circuit breaker + context length handling
             try:
+
                 async def _make_api_call():
                     return await client.chat.completions.create(**api_params)
 

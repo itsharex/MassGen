@@ -129,7 +129,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         keys_to_pop: list[str] = []
         for key in kwargs:
             if key.startswith(prefix):
-                param = key[len(prefix):]
+                param = key[len(prefix) :]
                 cb_kwargs[param] = kwargs[key]
                 keys_to_pop.append(key)
         for key in keys_to_pop:
