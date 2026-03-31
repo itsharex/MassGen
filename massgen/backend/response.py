@@ -307,6 +307,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             from ._context_errors import is_context_length_error
 
             if is_context_length_error(e) and not _compression_retry:
+                self.end_api_call_timing(success=False, error=str(e))
                 logger.warning(
                     f"[{self.get_provider_name()}] Context length exceeded, " f"attempting compression recovery...",
                 )
@@ -360,6 +361,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     f"[{self.get_provider_name()}] Compression recovery successful via summarization " f"({input_count} items)",
                 )
             else:
+                self.end_api_call_timing(success=False, error=str(e))
                 raise
 
         async for chunk in self._process_stream(stream, all_params, agent_id):
