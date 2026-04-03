@@ -7,7 +7,7 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.72 — Grok Backend Update & Circuit Breaker Phase 2! 🚀 Updated Grok backend with latest improvements. LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only). Config plumbing smoke tests for all backends.
+We're excited to release MassGen v0.1.72 — Grok Backend Update & Circuit Breaker Phase 2! 🚀 Updated Grok backend with latest improvements. LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only).
 
 ## Install
 
@@ -29,7 +29,7 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.72 — Grok Backend Update & Circuit Breaker Phase 2! 🚀 Updated Grok backend with latest improvements. LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only). Config plumbing smoke tests for all backends.
+We're excited to release MassGen v0.1.72 — Grok Backend Update & Circuit Breaker Phase 2! 🚀 Updated Grok backend with latest improvements. LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only).
 
 **Key Improvements:**
 
@@ -38,7 +38,6 @@ We're excited to release MassGen v0.1.72 — Grok Backend Update & Circuit Break
 ⚡ **Circuit Breaker Phase 2** — Rate limit protection across all major backends:
 - Extended to ChatCompletions, Response API, and Gemini backends (previously Claude-only)
 - Gemini backend also handles 503 errors
-- Config plumbing smoke tests verify wiring for all backends
 
 **Getting Started:**
 

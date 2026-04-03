@@ -6,7 +6,6 @@
 ### ⚡ [Circuit Breaker Phase 2](https://docs.massgen.ai/en/latest/user_guide/backends.html)
 - **Extended to all major backends** ([#1038](https://github.com/massgen/MassGen/pull/1038)): LLM API circuit breaker now covers ChatCompletions, Response API, and Gemini (was Claude-only in v0.1.68)
 - **Gemini 503 handling**: Gemini backend circuit breaker also triggers on 503 errors
-- **Config plumbing smoke tests**: Verify circuit breaker wiring for all backends
 
 ---
 
