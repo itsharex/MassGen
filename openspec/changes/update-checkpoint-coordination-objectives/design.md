@@ -337,6 +337,25 @@ MCP's init protocol does not support passing arbitrary data. Environment variabl
 
 For MassGen-managed runs, the orchestrator already knows `session_dir`, `workspace_dir`, and the tool list. The `init` call will be implicit — the orchestrator wires these automatically when triggering a checkpoint. No explicit `init` tool call required from the main agent. This is deferred until the standalone server is validated.
 
+## Development Notes
+
+### MCP Server Restart Required After Code Changes
+
+MCP servers are long-lived processes started when the agent session begins. Source code changes on disk do not affect the running server process. After modifying standalone MCP server code:
+
+1. Remove: `claude mcp remove massgen-checkpoint-mcp`
+2. Re-add: `claude mcp add massgen-checkpoint-mcp -- uv run massgen-checkpoint-mcp --config .massgen/checkpoint_config.yaml`
+3. Start a new conversation (`/clear` or relaunch) to force the process to restart
+
+### Run Logs
+
+Checkpoint runs persist at `{workspace_dir}/.massgen/checkpoint_runs/ckpt_NNN/`. Each run directory contains:
+- `_checkpoint_config.yaml` — generated subprocess config
+- `.checkpoint/trajectory.log` — copied trajectory
+- `.massgen/massgen_logs/` — agent execution logs
+- `snapshots/` — agent output snapshots with `checkpoint_result.json`
+- `answer.txt` — consensus answer
+
 ## Risks / Trade-offs
 
 - **Recovery tree depth**: Open-ended depth could produce unreadable plans. Mitigation: checkpoint agents are prompted to keep trees shallow where possible and use `recheckpoint` for genuinely uncertain branches.
