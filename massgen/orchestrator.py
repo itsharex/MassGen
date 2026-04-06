@@ -13446,6 +13446,38 @@ Your answer:"""
     # Evolving evaluation criteria
     # ------------------------------------------------------------------
 
+    def _bootstrap_evolution_criteria_from_config(self) -> None:
+        """Populate _generated_evaluation_criteria from whatever active criteria exist.
+
+        Called when evolving_criteria is enabled but the evaluation_criteria_generator
+        was not used. Converts inline, preset, or default checklist criteria into
+        GeneratedCriterion objects so evolution has something to work with.
+        """
+        items, cats, verify_by, source, anti_patterns, score_anchors = self._resolve_effective_checklist_criteria()
+        if not items:
+            return
+
+        from .evaluation_criteria_generator import GeneratedCriterion
+
+        # Build ID list from category dict keys (preserves original IDs)
+        # or generate sequential IDs if categories are empty.
+        if cats:
+            id_list = list(cats.keys())
+        else:
+            id_list = [f"E{i + 1}" for i in range(len(items))]
+
+        self._generated_evaluation_criteria = [
+            GeneratedCriterion(
+                id=id_list[i] if i < len(id_list) else f"E{i + 1}",
+                text=text,
+                category=(cats or {}).get(id_list[i] if i < len(id_list) else "", "standard"),
+                verify_by=(verify_by or {}).get(id_list[i] if i < len(id_list) else ""),
+                anti_patterns=(anti_patterns or {}).get(id_list[i] if i < len(id_list) else ""),
+                score_anchors=(score_anchors or {}).get(id_list[i] if i < len(id_list) else ""),
+            )
+            for i, text in enumerate(items)
+        ]
+
     def _should_evolve_criteria(self, current_answers: dict[str, str] | None = None) -> bool:
         """Return True if criteria evolution gate should run.
 
@@ -13456,7 +13488,9 @@ Your answer:"""
         coord = getattr(self.config, "coordination_config", None)
         if not coord or not getattr(coord, "evolving_criteria", False):
             return False
-        # Must have generated criteria to evolve
+        # Must have criteria to evolve — bootstrap from inline/preset if needed
+        if not getattr(self, "_generated_evaluation_criteria", None):
+            self._bootstrap_evolution_criteria_from_config()
         if not getattr(self, "_generated_evaluation_criteria", None):
             return False
         # Must be round 2+ — at least one agent must have answered once
@@ -13759,6 +13793,24 @@ Your answer:"""
                 },
             )
 
+        # Resolve display for TUI subagent cards
+        display = getattr(self.coordination_ui, "display", None) if getattr(self, "coordination_ui", None) else None
+        evo_num = self._criteria_evolution_count + 1
+        proposal_call_id = f"criteria_evolution_{evo_num}_proposals"
+        proposal_task_preview = f"Evolving criteria (v{evo_num}): analyzing score patterns across {len(agent_ids)} agent(s)"
+
+        # Notify TUI: proposal phase started
+        self._notify_precollab_started(
+            anchor_agent=primary_agent_id,
+            subagent_id=proposal_tasks[0]["subagent_id"] if proposal_tasks else f"criteria_evolver_{evo_num}",
+            call_id=proposal_call_id,
+            subagent_task=proposal_task_preview,
+            display=display,
+            timeout_seconds=timeout,
+            status_callback=None,
+            log_path=None,
+        )
+
         try:
             raw_proposals = await asyncio.wait_for(
                 self._direct_spawn_subagents(
@@ -13770,10 +13822,12 @@ Your answer:"""
             )
         except TimeoutError:
             logger.warning("[Orchestrator] Criteria evolution proposals timed out; skipping")
+            self._notify_precollab_completed(primary_agent_id, proposal_tasks[0]["subagent_id"] if proposal_tasks else "", proposal_call_id, display, status="timeout", error="timed out")
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
         except Exception:
             logger.warning("[Orchestrator] Criteria evolution proposals failed", exc_info=True)
+            self._notify_precollab_completed(primary_agent_id, proposal_tasks[0]["subagent_id"] if proposal_tasks else "", proposal_call_id, display, status="error", error="spawn failed")
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
 
@@ -13787,8 +13841,26 @@ Your answer:"""
 
         if not proposal_dicts:
             logger.warning("[Orchestrator] No valid criteria evolution proposals; skipping")
+            self._notify_precollab_completed(
+                primary_agent_id,
+                proposal_tasks[0]["subagent_id"] if proposal_tasks else "",
+                proposal_call_id,
+                display,
+                status="completed",
+                answer_preview="No valid proposals",
+            )
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
+
+        # Notify TUI: proposal phase completed
+        self._notify_precollab_completed(
+            primary_agent_id,
+            proposal_tasks[0]["subagent_id"] if proposal_tasks else "",
+            proposal_call_id,
+            display,
+            status="completed",
+            answer_preview=f"{len(proposal_dicts)} proposal(s) received",
+        )
 
         # Phase 2: Synthesis
         synthesis_task_str = self._build_criteria_evolution_synthesis_task(
@@ -13797,6 +13869,7 @@ Your answer:"""
             evolution_data["original_task"],
         )
         synthesis_subagent_id = f"criteria_evolution_synthesizer_{self._criteria_evolution_count + 1}"
+        synthesis_call_id = f"criteria_evolution_{evo_num}_synthesis"
         synthesis_payload: list[dict[str, Any]] = [
             {
                 "subagent_id": synthesis_subagent_id,
@@ -13805,6 +13878,18 @@ Your answer:"""
                 "timeout_seconds": max(60, timeout // 3),
             },
         ]
+
+        # Notify TUI: synthesis phase started
+        self._notify_precollab_started(
+            anchor_agent=primary_agent_id,
+            subagent_id=synthesis_subagent_id,
+            call_id=synthesis_call_id,
+            subagent_task=f"Synthesizing {len(proposal_dicts)} evolution proposal(s) into final criteria",
+            display=display,
+            timeout_seconds=timeout // 2,
+            status_callback=None,
+            log_path=None,
+        )
 
         try:
             raw_synthesis = await asyncio.wait_for(
@@ -13817,10 +13902,12 @@ Your answer:"""
             )
         except TimeoutError:
             logger.warning("[Orchestrator] Criteria evolution synthesis timed out; skipping")
+            self._notify_precollab_completed(primary_agent_id, synthesis_subagent_id, synthesis_call_id, display, status="timeout", error="timed out")
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
         except Exception:
             logger.warning("[Orchestrator] Criteria evolution synthesis failed", exc_info=True)
+            self._notify_precollab_completed(primary_agent_id, synthesis_subagent_id, synthesis_call_id, display, status="error", error="spawn failed")
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
 
@@ -13840,13 +13927,26 @@ Your answer:"""
             logger.info(
                 "[Orchestrator] Criteria evolution synthesizer returned UNCHANGED; criteria are still effective",
             )
+            self._notify_precollab_completed(primary_agent_id, synthesis_subagent_id, synthesis_call_id, display, status="completed", answer_preview="Criteria unchanged")
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
 
         if evolved is None:
             logger.warning("[Orchestrator] Failed to parse criteria evolution synthesis result; skipping")
+            self._notify_precollab_completed(primary_agent_id, synthesis_subagent_id, synthesis_call_id, display, status="completed", answer_preview="Parse failed")
             self._criteria_evolution_completed_labels.add(label_tuple)
             return True
+
+        # Notify TUI: synthesis completed successfully
+        evolved_count = sum(1 for old_c, new_c in zip(evolution_data["current_criteria"], evolved) if old_c.text != new_c.text)
+        self._notify_precollab_completed(
+            primary_agent_id,
+            synthesis_subagent_id,
+            synthesis_call_id,
+            display,
+            status="completed",
+            answer_preview=f"{evolved_count} criteria evolved",
+        )
 
         # Apply evolved criteria
         old_criteria = list(evolution_data["current_criteria"])
