@@ -7,7 +7,7 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server, fix for duplicate tool calls in chat completions backend, MiniMax backend fix, and evaluation criteria refinements.
+We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server, fix for duplicate tool calls in ChatCompletions backend (including MiniMax), and evaluation criteria refinements.
 
 ## Install
 
@@ -29,7 +29,7 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server. Fix for duplicate tool calls in chat completions backend. MiniMax backend fix and evaluation criteria refinements.
+We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server. Fix for duplicate tool calls in ChatCompletions backend (including MiniMax). Evaluation criteria refinements.
 
 **Key Improvements:**
 
@@ -41,15 +41,15 @@ We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call
 🔧 **Duplicate Tool Call Fix** — Resolved duplicate tool call issues in ChatCompletions and Response API backends
 
 **Plus:**
-- 🐛 **MiniMax backend fix** — Stability fix for MiniMax provider
 - 📋 **Evaluation criteria refinements** — Pre-collab criteria generation improvements
 
 **Getting Started:**
 
 ```bash
 pip install massgen==0.1.74
-# Try checkpoint mode -- click 'COORD' in the mode bar above the input then the checkpoint box
-uv run massgen --web
+# Try checkpoint mode in Claude Code
+claude mcp add massgen-checkpoint-mcp -- \
+  uvx --from massgen massgen-checkpoint-mcp --config path/to/config.yaml
 ```
 
 Release notes: https://github.com/massgen/MassGen/releases/tag/v0.1.74

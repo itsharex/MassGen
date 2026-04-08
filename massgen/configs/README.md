@@ -232,15 +232,15 @@ Most configurations use environment variables for API keys:so
 
 **Key Features:**
 - **Checkpoint MCP Improvements**: Major enhancements to the standalone checkpoint MCP server — subprocess execution, isolation, and event relay refinements
-- **Duplicate Tool Call Fix**: Resolved duplicate tool call issues in ChatCompletions and Response API backends
-- **MiniMax Backend Fix**: Stability fix for MiniMax provider
+- **Duplicate Tool Call Fix**: Resolved duplicate tool call issues in ChatCompletions (including MiniMax) and Response API backends
 - **Pre-collab Criteria Refinements**: Improvements to evaluation criteria generation in pre-collaboration phase
 
 **Try It:**
 ```bash
 pip install massgen==0.1.74
-# Try checkpoint mode -- click 'COORD' in the mode bar above the input then the checkpoint box
-uv run massgen --web
+# Try checkpoint mode in Claude Code
+claude mcp add massgen-checkpoint-mcp -- \
+  uvx --from massgen massgen-checkpoint-mcp --config path/to/config.yaml
 ```
 
 ### v0.1.73

@@ -202,7 +202,7 @@ Recent Releases
 
 **v0.1.74 (April 8, 2026)** - Checkpoint Improvements & Tool Call Fixes
 
-Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions and Response API backends. MiniMax backend fix and pre-collab evaluation criteria refinements.
+Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including MiniMax) and Response API backends. Pre-collab evaluation criteria refinements.
 
 **v0.1.73 (April 6, 2026)** - Eval Criteria Evolver & Checkpoint Objectives
 

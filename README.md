@@ -161,14 +161,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 **What's New in v0.1.74:**
 - **🛡️ Checkpoint MCP Improvements** - Major enhancements to standalone checkpoint MCP server.
-- **🔧 Duplicate Tool Call Fix** - Resolved duplicate tool calls in ChatCompletions and Response API backends.
-- **🐛 MiniMax & Pre-collab Criteria Fixes** - Stability fixes across MiniMax provider and pre-collab criteria generation.
+- **🔧 Duplicate Tool Call Fix** - Resolved duplicate tool calls in ChatCompletions (including MiniMax) and Response API backends.
+- **📋 Pre-collab Criteria Refinements** - Improvements to evaluation criteria generation in pre-collaboration phase.
 
 **Try v0.1.74 Features:**
 ```bash
 pip install massgen==0.1.74
-# Try checkpoint mode -- click 'COORD' in the mode bar above the input then the checkpoint box
-uv run massgen --web
+# Try checkpoint mode in Claude Code
+claude mcp add massgen-checkpoint-mcp -- \
+  uvx --from massgen massgen-checkpoint-mcp --config path/to/config.yaml
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1246,8 +1247,7 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 #### Checkpoint Improvements & Tool Call Fixes
 - **Checkpoint MCP Improvements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Major enhancements to the standalone checkpoint MCP server — subprocess execution, isolation, and event relay refinements
-- **Duplicate Tool Call Fix** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in ChatCompletions and Response API backends
-- **MiniMax Backend Fix** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Stability fix for MiniMax provider
+- **Duplicate Tool Call Fix** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in ChatCompletions (including MiniMax) and Response API backends
 - **Pre-collab Criteria Refinements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Improvements to evaluation criteria generation in pre-collaboration phase
 
 ### Previous Achievements (v0.0.3 - v0.1.73)
