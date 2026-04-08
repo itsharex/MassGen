@@ -7,7 +7,7 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server, fix for duplicate tool calls in ChatCompletions backend (including MiniMax), and evaluation criteria refinements.
+We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server, fix for duplicate tool calls in ChatCompletions backend (including for MiniMax on OpenRouter), and evaluation criteria refinements.
 
 ## Install
 
@@ -29,7 +29,7 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server. Fix for duplicate tool calls in ChatCompletions backend (including MiniMax). Evaluation criteria refinements.
+We're excited to release MassGen v0.1.74 — Checkpoint Improvements & Tool Call Fixes! 🚀 Major improvements to checkpoint MCP standalone server. Fix for duplicate tool calls in ChatCompletions backend (including for MiniMax on OpenRouter). Evaluation criteria refinements.
 
 **Key Improvements:**
 

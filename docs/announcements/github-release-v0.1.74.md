@@ -5,7 +5,7 @@
 - **Subprocess execution refinements**: Better isolation, workspace handling, and event relay
 
 ### 🔧 [Duplicate Tool Call Fix](https://docs.massgen.ai/en/latest/user_guide/backends.html)
-- **ChatCompletions and Response API** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in `base_with_custom_tool_and_mcp.py`, ChatCompletions (including MiniMax), and Response backends
+- **ChatCompletions and Response API** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in `base_with_custom_tool_and_mcp.py`, ChatCompletions (including for MiniMax on OpenRouter), and Response backends
 
 ### 🐛 Fixes
 - **Pre-collab criteria fix**: Refinements to evaluation criteria generation in pre-collaboration phase

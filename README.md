@@ -161,7 +161,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 **What's New in v0.1.74:**
 - **🛡️ Checkpoint MCP Improvements** - Major enhancements to standalone checkpoint MCP server.
-- **🔧 Duplicate Tool Call Fix** - Resolved duplicate tool calls in ChatCompletions (including MiniMax) and Response API backends.
+- **🔧 Duplicate Tool Call Fix** - Resolved duplicate tool calls in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends.
 - **📋 Pre-collab Criteria Refinements** - Improvements to evaluation criteria generation in pre-collaboration phase.
 
 **Try v0.1.74 Features:**
@@ -1247,7 +1247,7 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 #### Checkpoint Improvements & Tool Call Fixes
 - **Checkpoint MCP Improvements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Major enhancements to the standalone checkpoint MCP server — subprocess execution, isolation, and event relay refinements
-- **Duplicate Tool Call Fix** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in ChatCompletions (including MiniMax) and Response API backends
+- **Duplicate Tool Call Fix** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends
 - **Pre-collab Criteria Refinements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Improvements to evaluation criteria generation in pre-collaboration phase
 
 ### Previous Achievements (v0.0.3 - v0.1.73)

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Recent Releases
 
 **v0.1.74 (April 8, 2026)** - Checkpoint Improvements & Tool Call Fixes
-Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including MiniMax) and Response API backends. Pre-collab evaluation criteria refinements.
+Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends. Pre-collab evaluation criteria refinements.
 
 **v0.1.73 (April 6, 2026)** - Eval Criteria Evolver & Checkpoint Objectives
 New eval criteria evolver subagent that evolves criteria across rounds. Initial draft of checkpoint objective mode for safety planning of irreversible actions. Improved visibility of evaluation criteria.
@@ -27,7 +27,7 @@ Grok backend update with latest improvements. LLM API circuit breaker extended t
 - **Pre-collab Criteria Refinements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Improvements to evaluation criteria generation in `precollab_utils.py`
 
 ### Fixed
-- **Duplicate Tool Calls** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in `base_with_custom_tool_and_mcp.py`, `chat_completions.py` (including MiniMax), and `response.py` backends
+- **Duplicate Tool Calls** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in `base_with_custom_tool_and_mcp.py`, `chat_completions.py` (including for MiniMax on OpenRouter), and `response.py` backends
 
 ### Documentation, Configurations and Resources
 - **Updated Checkpoint Module**: Updated `docs/modules/checkpoint.md` with checkpoint MCP improvements

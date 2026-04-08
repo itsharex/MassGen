@@ -56,7 +56,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ### Features
 - **Checkpoint MCP Improvements**: Major enhancements to the standalone checkpoint MCP server — subprocess execution, isolation, and event relay refinements
-- **Duplicate Tool Call Fix**: Resolved duplicate tool call issues in ChatCompletions (including MiniMax) and Response API backends
+- **Duplicate Tool Call Fix**: Resolved duplicate tool call issues in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends
 - **Pre-collab Criteria Refinements**: Improvements to evaluation criteria generation in pre-collaboration phase
 
 ---
