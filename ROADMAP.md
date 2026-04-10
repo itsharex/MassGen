@@ -62,39 +62,6 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 
 ---
 
-## ✅ v0.1.74 - Checkpoint Improvements & Tool Call Fixes (Completed)
-
-**Released:** April 8, 2026 | PRs: [#1050](https://github.com/massgen/MassGen/pull/1050)
-
-### Features
-- **Checkpoint MCP Improvements**: Major enhancements to the standalone checkpoint MCP server — subprocess execution, isolation, and event relay refinements
-- **Duplicate Tool Call Fix**: Resolved duplicate tool call issues in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends
-- **Pre-collab Criteria Refinements**: Improvements to evaluation criteria generation in pre-collaboration phase
-
----
-
-## ✅ v0.1.73 - Eval Criteria Evolver & Checkpoint Objectives (Completed)
-
-**Released:** April 6, 2026 | PRs: [#1047](https://github.com/massgen/MassGen/pull/1047)
-
-### Features
-- **Eval Criteria Evolver Subagent**: New subagent type that evolves evaluation criteria across rounds — sharper, more opinionated criteria as the run progresses
-- **Checkpoint Objective Mode (Initial Draft)**: Initial draft of checkpoint MCP with `objective` mode for safety planning of irreversible actions
-- **Improved Eval Criteria Visibility**: Clearer visibility into what criteria agents are working against
-
----
-
-## ✅ v0.1.72 - Grok Backend Update & Circuit Breaker Phase 2 (Completed)
-
-**Released:** April 3, 2026 | PRs: [#1038](https://github.com/massgen/MassGen/pull/1038), [#1044](https://github.com/massgen/MassGen/pull/1044)
-
-### Features
-- **Grok Backend Update**: Updated Grok backend with latest improvements
-- **Circuit Breaker Phase 2**: LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only); Gemini also handles 503
-- **Config Plumbing Smoke Tests**: Verify circuit breaker wiring for all backends
-
----
-
 ## 📋 v0.1.76 - Cloud Modal MVP
 
 ### Features
