@@ -91,7 +91,8 @@ class LLMCircuitBreakerConfig:
             )
         if self.retry_after_threshold_seconds < 0:
             raise ValueError(
-                f"retry_after_threshold_seconds must be >= 0, " f"got {self.retry_after_threshold_seconds}",
+                "retry_after_threshold_seconds must be >= 0, "
+                f"got {self.retry_after_threshold_seconds}",
             )
 
 
@@ -328,65 +329,43 @@ class LLMCircuitBreaker:
             return
 
         if self._store is not None:
-            previous = self._store.get_state(self.backend_name)
-            previous_state = CircuitState(previous["state"])
-            failure_count = self._store.increment_failure(self.backend_name)
-            now = time.monotonic()
+            new_state = self._store.atomic_record_failure(
+                self.backend_name,
+                self.config.max_failures,
+                float(self.config.reset_time_seconds),
+            )
+            failure_count = int(new_state["failure_count"])
+            new_state_str = new_state["state"]
 
-            if previous_state == CircuitState.HALF_OPEN:
-                self._store.cas_state(
-                    self.backend_name,
-                    CircuitState.HALF_OPEN.value,
-                    {
-                        "state": CircuitState.OPEN.value,
-                        "last_failure_time": now,
-                        "open_until": now + self.config.reset_time_seconds,
-                        "half_open_probe_active": False,
-                    },
-                )
-                self._log(
-                    "Probe failed, circuit breaker re-opened",
-                    failure_count=failure_count,
-                    error_type=error_type,
-                )
-                if self._metrics is not None:
-                    self._safe_emit(
-                        self._metrics.record_state_transition,
-                        self.backend_name,
-                        "half_open",
-                        "open",
+            if new_state_str == CircuitState.OPEN.value:
+                prev_label = "half_open" if new_state.get("_prev_was_half_open") else new_state.get("_prev_state", "closed")
+                if new_state.get("_prev_was_half_open"):
+                    self._log(
+                        "Probe failed, circuit breaker re-opened",
+                        failure_count=failure_count,
+                        error_type=error_type,
                     )
-                return
-
-            if failure_count >= self.config.max_failures:
-                self._store.cas_state(
-                    self.backend_name,
-                    previous_state.value,
-                    {
-                        "state": CircuitState.OPEN.value,
-                        "last_failure_time": now,
-                        "open_until": now + self.config.reset_time_seconds,
-                        "half_open_probe_active": False,
-                    },
-                )
-                self._log(
-                    "Circuit breaker opened",
-                    failure_count=failure_count,
-                    error_type=error_type,
-                )
-                if self._metrics is not None:
-                    self._safe_emit(
-                        self._metrics.record_state_transition,
-                        self.backend_name,
-                        previous_state.value,
-                        "open",
+                    if self._metrics is not None:
+                        self._safe_emit(
+                            self._metrics.record_state_transition,
+                            self.backend_name,
+                            "half_open",
+                            "open",
+                        )
+                else:
+                    self._log(
+                        "Circuit breaker opened",
+                        failure_count=failure_count,
+                        error_type=error_type,
                     )
+                    if self._metrics is not None:
+                        self._safe_emit(
+                            self._metrics.record_state_transition,
+                            self.backend_name,
+                            prev_label,
+                            "open",
+                        )
             else:
-                self._store.cas_state(
-                    self.backend_name,
-                    previous_state.value,
-                    {"last_failure_time": now},
-                )
                 self._log(
                     "Failure recorded",
                     failure_count=failure_count,
@@ -444,24 +423,19 @@ class LLMCircuitBreaker:
             return
 
         if self._store is not None:
-            prev_state = CircuitState(
-                self._store.get_state(self.backend_name)["state"],
-            )
-            self._store.set_state(
-                self.backend_name,
-                dict(DEFAULT_CIRCUIT_BREAKER_STATE),
-            )
+            prev_state_str = self._store.get_state(self.backend_name)["state"]
+            self._store.atomic_record_success(self.backend_name)
 
-            if prev_state != CircuitState.CLOSED:
+            if prev_state_str != CircuitState.CLOSED.value:
                 self._log(
                     "Circuit breaker closed after success",
-                    previous_state=prev_state.value,
+                    previous_state=prev_state_str,
                 )
                 if self._metrics is not None:
                     self._safe_emit(
                         self._metrics.record_state_transition,
                         self.backend_name,
-                        prev_state.value,
+                        prev_state_str,
                         "closed",
                     )
             return
@@ -639,7 +613,8 @@ class LLMCircuitBreaker:
                     if self._metrics is not None:
                         self._safe_emit(self._metrics.record_request, self.backend_name, outcome, 0.0)
                     raise CircuitBreakerOpenError(
-                        f"Circuit breaker became {state_label} during retries for {self.backend_name}",
+                        f"Circuit breaker became {state_label} during retries "
+                        f"for {self.backend_name}",
                     )
 
                 if attempt > 1 and not _owns_probe:
@@ -672,7 +647,9 @@ class LLMCircuitBreaker:
                         if action == RateLimitAction.STOP:
                             # Quota exhaustion -- open CB for full Retry-After window
                             self.force_open(
-                                f"429 STOP: Retry-After={retry_after}s > " f"threshold={self.config.retry_after_threshold_seconds}s",
+                                f"429 STOP: Retry-After={retry_after}s > "
+                                "threshold="
+                                f"{self.config.retry_after_threshold_seconds}s",
                                 open_for_seconds=retry_after or 0,
                             )
                             if self._metrics is not None:
@@ -685,7 +662,9 @@ class LLMCircuitBreaker:
                                 self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                             if attempt >= max_retries:
                                 raise
-                            wait_seconds = retry_after if retry_after is not None else 1.0
+                            wait_seconds = (
+                                retry_after if retry_after is not None else 1.0
+                            )
                             self._log(
                                 "429 WAIT: retrying after Retry-After",
                                 retry_after=wait_seconds,
@@ -765,11 +744,15 @@ class LLMCircuitBreaker:
             if _owns_probe:
                 if self._store is not None:
                     state = self._store.get_state(self.backend_name)
-                    if CircuitState(state["state"]) == CircuitState.HALF_OPEN and state["half_open_probe_active"]:
+                    if (
+                        CircuitState(state["state"]) == CircuitState.HALF_OPEN
+                        and state["half_open_probe_active"]
+                    ):
                         state.update(
                             {
                                 "state": CircuitState.OPEN.value,
-                                "open_until": time.monotonic() + self.config.reset_time_seconds,
+                                "open_until": time.monotonic()
+                                + self.config.reset_time_seconds,
                                 "half_open_probe_active": False,
                             },
                         )
@@ -815,7 +798,9 @@ class LLMCircuitBreaker:
 
     def _log(self, message: str, **details: Any) -> None:
         """Log via structured backend activity logger."""
-        log_details: dict[str, Any] = {k: v for k, v in details.items() if v is not None}
+        log_details: dict[str, Any] = {
+            k: v for k, v in details.items() if v is not None
+        }
         log_backend_activity(
             self.backend_name,
             message,
@@ -827,11 +812,19 @@ class LLMCircuitBreaker:
         if self._store is not None:
             state = self.state.value
             failures = self.failure_count
-            return f"LLMCircuitBreaker(state={state}, " f"failures={failures}/{self.config.max_failures}, " f"backend={self.backend_name!r})"
+            return (
+                f"LLMCircuitBreaker(state={state}, "
+                f"failures={failures}/{self.config.max_failures}, "
+                f"backend={self.backend_name!r})"
+            )
         with self._lock:
             state = self._state.value
             failures = self._failure_count
-        return f"LLMCircuitBreaker(state={state}, " f"failures={failures}/{self.config.max_failures}, " f"backend={self.backend_name!r})"
+        return (
+            f"LLMCircuitBreaker(state={state}, "
+            f"failures={failures}/{self.config.max_failures}, "
+            f"backend={self.backend_name!r})"
+        )
 
 
 # ---------------------------------------------------------------------------

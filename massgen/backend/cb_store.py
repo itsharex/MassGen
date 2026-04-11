@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
+from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 DEFAULT_CIRCUIT_BREAKER_STATE: dict[str, Any] = {
@@ -35,6 +36,31 @@ class CircuitBreakerStore(Protocol):
 
     def increment_failure(self, backend: str) -> int:
         """Atomically increment and return the backend failure count."""
+
+    def atomic_record_failure(
+        self,
+        backend: str,
+        failure_threshold: int,
+        recovery_timeout: float,
+    ) -> dict:
+        """Atomically record a failed call and return the new full state.
+
+        The operation increments failure_count, records the current failure
+        time, and applies the CLOSED/HALF_OPEN -> OPEN transition rules in one
+        store-level critical section.
+        """
+
+    def atomic_record_success(
+        self,
+        backend: str,
+        expected_state: str | None = None,
+    ) -> dict:
+        """Atomically record a successful call and return the new full state.
+
+        When expected_state is provided, the update is constrained to that
+        current state. Without an expected state, OPEN is treated as a forced
+        open guard and is returned unchanged.
+        """
 
     def clear(self, backend: str) -> None:
         """Remove persisted state for a backend."""
@@ -74,6 +100,64 @@ class InMemoryStore:
             state["failure_count"] = int(state["failure_count"]) + 1
             self.set_state(backend, state)
             return int(state["failure_count"])
+
+    def atomic_record_failure(
+        self,
+        backend: str,
+        failure_threshold: int,
+        recovery_timeout: float,
+    ) -> dict:
+        with self._lock:
+            if backend not in self._storage:
+                self._storage[backend] = _default_state()
+
+            state = copy.deepcopy(self._storage[backend])
+            now = time.monotonic()
+            failure_count = int(state["failure_count"]) + 1
+            state["failure_count"] = failure_count
+            state["last_failure_time"] = now
+
+            if state["state"] == "half_open":
+                state["state"] = "open"
+                state["open_until"] = now + recovery_timeout
+                state["half_open_probe_active"] = False
+            elif state["state"] == "closed" and failure_count >= failure_threshold:
+                state["state"] = "open"
+                state["open_until"] = now + recovery_timeout
+                state["half_open_probe_active"] = False
+
+            self._storage[backend] = state
+            return copy.deepcopy(state)
+
+    def atomic_record_success(
+        self,
+        backend: str,
+        expected_state: str | None = None,
+    ) -> dict:
+        with self._lock:
+            if backend not in self._storage:
+                self._storage[backend] = _default_state()
+
+            state = copy.deepcopy(self._storage[backend])
+            current_state = str(state["state"])
+
+            if expected_state is not None and current_state != expected_state:
+                return copy.deepcopy(state)
+
+            if expected_state is None and current_state == "open":
+                return copy.deepcopy(state)
+
+            if current_state == "closed":
+                state["failure_count"] = 0
+                state["half_open_probe_active"] = False
+                self._storage[backend] = state
+            elif current_state == "half_open":
+                state["state"] = "closed"
+                state["failure_count"] = 0
+                state["half_open_probe_active"] = False
+                self._storage[backend] = state
+
+            return copy.deepcopy(state)
 
     def clear(self, backend: str) -> None:
         with self._lock:
@@ -122,6 +206,168 @@ redis.call("EXPIRE", KEYS[1], new_ttl)
 return count
 """
 
+    _RECORD_FAILURE_SCRIPT = """
+local raw = redis.call("HGETALL", KEYS[1])
+local state = {
+    state = "closed",
+    failure_count = "0",
+    last_failure_time = "0.0",
+    open_until = "0.0",
+    half_open_probe_active = "False"
+}
+for i = 1, #raw, 2 do
+    state[raw[i]] = raw[i + 1]
+end
+
+local failure_threshold = tonumber(ARGV[1])
+local recovery_timeout = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
+if now == nil then
+    local redis_time = redis.call("TIME")
+    now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
+end
+
+local failure_count = tonumber(state["failure_count"]) or 0
+failure_count = failure_count + 1
+state["failure_count"] = tostring(failure_count)
+state["last_failure_time"] = tostring(now)
+
+if state["state"] == "half_open" then
+    state["state"] = "open"
+    state["open_until"] = tostring(now + recovery_timeout)
+    state["half_open_probe_active"] = "False"
+elseif state["state"] == "closed" and failure_count >= failure_threshold then
+    state["state"] = "open"
+    state["open_until"] = tostring(now + recovery_timeout)
+    state["half_open_probe_active"] = "False"
+end
+
+redis.call(
+    "HSET",
+    KEYS[1],
+    "state",
+    state["state"],
+    "failure_count",
+    state["failure_count"],
+    "last_failure_time",
+    state["last_failure_time"],
+    "open_until",
+    state["open_until"],
+    "half_open_probe_active",
+    state["half_open_probe_active"]
+)
+local effective_ttl = ttl
+if state["state"] == "open" then
+    local remaining = tonumber(state["open_until"]) - now
+    if remaining ~= nil and remaining > 0 then
+        local open_ttl = math.floor(remaining) + 60
+        if open_ttl > effective_ttl then
+            effective_ttl = open_ttl
+        end
+    end
+end
+redis.call("EXPIRE", KEYS[1], effective_ttl)
+return {
+    "state",
+    state["state"],
+    "failure_count",
+    state["failure_count"],
+    "last_failure_time",
+    state["last_failure_time"],
+    "open_until",
+    state["open_until"],
+    "half_open_probe_active",
+    state["half_open_probe_active"]
+}
+"""
+
+    _RECORD_SUCCESS_SCRIPT = """
+local raw = redis.call("HGETALL", KEYS[1])
+local state = {
+    state = "closed",
+    failure_count = "0",
+    last_failure_time = "0.0",
+    open_until = "0.0",
+    half_open_probe_active = "False"
+}
+for i = 1, #raw, 2 do
+    state[raw[i]] = raw[i + 1]
+end
+
+local expected_state = ARGV[1]
+local ttl = tonumber(ARGV[2])
+local should_write = 0
+
+if expected_state ~= "" and state["state"] ~= expected_state then
+    return {
+        "state",
+        state["state"],
+        "failure_count",
+        state["failure_count"],
+        "last_failure_time",
+        state["last_failure_time"],
+        "open_until",
+        state["open_until"],
+        "half_open_probe_active",
+        state["half_open_probe_active"]
+    }
+end
+
+if state["state"] == "open" and expected_state == "" then
+    return {
+        "state",
+        state["state"],
+        "failure_count",
+        state["failure_count"],
+        "last_failure_time",
+        state["last_failure_time"],
+        "open_until",
+        state["open_until"],
+        "half_open_probe_active",
+        state["half_open_probe_active"]
+    }
+end
+
+if state["state"] == "closed" or state["state"] == "half_open" then
+    state["state"] = "closed"
+    state["failure_count"] = "0"
+    state["half_open_probe_active"] = "False"
+    should_write = 1
+end
+
+if should_write == 1 then
+    redis.call(
+        "HSET",
+        KEYS[1],
+        "state",
+        state["state"],
+        "failure_count",
+        state["failure_count"],
+        "last_failure_time",
+        state["last_failure_time"],
+        "open_until",
+        state["open_until"],
+        "half_open_probe_active",
+        state["half_open_probe_active"]
+    )
+    redis.call("EXPIRE", KEYS[1], ttl)
+end
+
+return {
+    "state",
+    state["state"],
+    "failure_count",
+    state["failure_count"],
+    "last_failure_time",
+    state["last_failure_time"],
+    "open_until",
+    state["open_until"],
+    "half_open_probe_active",
+    state["half_open_probe_active"]
+}
+"""
+
     def __init__(
         self,
         redis_client: Any,
@@ -131,28 +377,22 @@ return count
         self._client = redis_client
         self._ttl = ttl
         self._key_prefix = key_prefix
+        self._fallback_lock = threading.Lock()
 
     def get_state(self, backend: str) -> dict:
         raw_state = self._client.hgetall(self._key(backend))
-        state = _default_state()
-        for raw_key, raw_value in raw_state.items():
-            key = self._decode(raw_key)
-            value = self._decode(raw_value)
-            if key == "failure_count":
-                state[key] = int(value)
-            elif key in {"last_failure_time", "open_until"}:
-                state[key] = float(value)
-            elif key == "half_open_probe_active":
-                state[key] = value == "True"
-            elif key == "state":
-                state[key] = value
-        return state
+        return self._state_from_items(raw_state.items())
 
     def set_state(self, backend: str, state: dict) -> None:
         key = self._key(backend)
-        mapping = {field: self._to_redis_value(state[field]) for field in DEFAULT_CIRCUIT_BREAKER_STATE}
+        complete_state = _default_state()
+        complete_state.update(copy.deepcopy(state))
+        mapping = {
+            field: self._to_redis_value(complete_state[field])
+            for field in DEFAULT_CIRCUIT_BREAKER_STATE
+        }
         self._client.hset(key, mapping=mapping)
-        self._client.expire(key, self._compute_ttl(state))
+        self._client.expire(key, self._compute_ttl(complete_state))
 
     def cas_state(self, backend: str, expected_state: str, updates: dict) -> bool:
         args: list[Any] = [expected_state, str(self._compute_ttl(updates))]
@@ -180,6 +420,51 @@ return count
             return self._increment_failure_without_lua(backend)
         return int(result)
 
+    def atomic_record_failure(
+        self,
+        backend: str,
+        failure_threshold: int,
+        recovery_timeout: float,
+    ) -> dict:
+        try:
+            result = self._client.eval(
+                self._RECORD_FAILURE_SCRIPT,
+                1,
+                self._key(backend),
+                str(int(failure_threshold)),
+                str(float(recovery_timeout)),
+                str(self._ttl),
+                str(time.monotonic()),
+            )
+        except Exception as exc:
+            if not self._script_unavailable(exc):
+                raise
+            return self._atomic_record_failure_without_lua(
+                backend,
+                failure_threshold,
+                recovery_timeout,
+            )
+        return self._state_from_flat_pairs(result)
+
+    def atomic_record_success(
+        self,
+        backend: str,
+        expected_state: str | None = None,
+    ) -> dict:
+        try:
+            result = self._client.eval(
+                self._RECORD_SUCCESS_SCRIPT,
+                1,
+                self._key(backend),
+                expected_state or "",
+                str(self._ttl),
+            )
+        except Exception as exc:
+            if not self._script_unavailable(exc):
+                raise
+            return self._atomic_record_success_without_lua(backend, expected_state)
+        return self._state_from_flat_pairs(result)
+
     def clear(self, backend: str) -> None:
         self._client.delete(self._key(backend))
 
@@ -198,13 +483,44 @@ return count
             return "True" if value else "False"
         return str(value)
 
+    def _state_from_items(self, items: Iterable[tuple[Any, Any]]) -> dict:
+        state = _default_state()
+        for raw_key, raw_value in items:
+            key = self._decode(raw_key)
+            value = self._decode(raw_value)
+            if key == "failure_count":
+                state[key] = int(value)
+            elif key in {"last_failure_time", "open_until"}:
+                state[key] = float(value)
+            elif key == "half_open_probe_active":
+                state[key] = value == "True"
+            elif key == "state":
+                state[key] = value
+        return state
+
+    def _state_from_flat_pairs(self, raw_pairs: Any) -> dict:
+        pairs = list(raw_pairs)
+        if len(pairs) % 2 != 0:
+            raise ValueError("Redis circuit breaker script returned uneven field pairs")
+        return self._state_from_items(zip(pairs[0::2], pairs[1::2]))
+
+    def _state_to_mapping(self, state: dict) -> dict:
+        return {
+            field: self._to_redis_value(state[field])
+            for field in DEFAULT_CIRCUIT_BREAKER_STATE
+        }
+
     @staticmethod
     def _script_unavailable(exc: Exception) -> bool:
         # Match only known Lua/EVAL unavailability signatures.
         # Require "unknown command" context to avoid classifying READONLY,
         # ACL-denied, proxy, or other operational errors as Lua unavailability.
         message = str(exc).lower()
-        unknown_command = "unknown command" in message or "unknown redis command" in message or "err unknown command" in message
+        unknown_command = (
+            "unknown command" in message
+            or "unknown redis command" in message
+            or "err unknown command" in message
+        )
         mentions_script_command = "eval" in message or "evalsha" in message
         return "lupa" in message or (unknown_command and mentions_script_command)
 
@@ -214,6 +530,18 @@ return count
             remaining = int(open_until - time.monotonic())
             return max(1, self._ttl, remaining + 60)
         return max(1, self._ttl)
+
+    @staticmethod
+    def _watch_retryable(exc: Exception) -> bool:
+        err_msg = str(exc).lower()
+        class_name = exc.__class__.__name__.lower()
+        return (
+            "watch" in err_msg
+            or "execabort" in err_msg
+            or "multi" in err_msg
+            or "wrongtype" in err_msg
+            or class_name == "watcherror"
+        )
 
     def _cas_state_without_lua(
         self,
@@ -243,7 +571,12 @@ return count
                 return True
             except Exception as exc:
                 err_msg = str(exc).lower()
-                if "watch" in err_msg or "multi" in err_msg or "wrongtype" in err_msg or "execabort" in err_msg:
+                if (
+                    "watch" in err_msg
+                    or "multi" in err_msg
+                    or "wrongtype" in err_msg
+                    or "execabort" in err_msg
+                ):
                     time.sleep(0.001 * (2**attempt))
                     continue
                 raise
@@ -258,7 +591,10 @@ return count
                 state = self.get_state(backend)
                 state["failure_count"] = int(state["failure_count"]) + 1
                 pipe.multi()
-                mapping = {field: self._to_redis_value(state[field]) for field in DEFAULT_CIRCUIT_BREAKER_STATE}
+                mapping = {
+                    field: self._to_redis_value(state[field])
+                    for field in DEFAULT_CIRCUIT_BREAKER_STATE
+                }
                 pipe.hset(key, mapping=mapping)
                 pipe.expire(key, self._compute_ttl(state))
                 pipe.execute()
@@ -270,7 +606,97 @@ return count
                     continue
                 raise
         raise RuntimeError(
-            f"Failed to atomically increment failure count for {backend!r} after 3 retries",
+            f"Failed to atomically increment failure count for {backend!r} "
+            "after 3 retries",
+        )
+
+    def _atomic_record_failure_without_lua(
+        self,
+        backend: str,
+        failure_threshold: int,
+        recovery_timeout: float,
+    ) -> dict:
+        key = self._key(backend)
+        with self._fallback_lock:
+            for attempt in range(3):
+                pipe = self._client.pipeline(True)
+                try:
+                    pipe.watch(key)
+                    raw_state = pipe.hgetall(key)
+                    state = self._state_from_items(raw_state.items())
+                    now = time.monotonic()
+                    failure_count = int(state["failure_count"]) + 1
+                    state["failure_count"] = failure_count
+                    state["last_failure_time"] = now
+
+                    if state["state"] == "half_open":
+                        state["state"] = "open"
+                        state["open_until"] = now + recovery_timeout
+                        state["half_open_probe_active"] = False
+                    elif (
+                        state["state"] == "closed"
+                        and failure_count >= failure_threshold
+                    ):
+                        state["state"] = "open"
+                        state["open_until"] = now + recovery_timeout
+                        state["half_open_probe_active"] = False
+
+                    pipe.multi()
+                    pipe.hset(key, mapping=self._state_to_mapping(state))
+                    pipe.expire(key, self._compute_ttl(state))
+                    pipe.execute()
+                    return state
+                except Exception as exc:
+                    if self._watch_retryable(exc):
+                        time.sleep(0.001 * (2**attempt))
+                        continue
+                    raise
+                finally:
+                    pipe.reset()
+        raise RuntimeError(
+            f"Failed to atomically record failure for {backend!r} after 3 retries",
+        )
+
+    def _atomic_record_success_without_lua(
+        self,
+        backend: str,
+        expected_state: str | None = None,
+    ) -> dict:
+        key = self._key(backend)
+        with self._fallback_lock:
+            for attempt in range(3):
+                pipe = self._client.pipeline(True)
+                try:
+                    pipe.watch(key)
+                    raw_state = pipe.hgetall(key)
+                    state = self._state_from_items(raw_state.items())
+                    current_state = str(state["state"])
+
+                    if expected_state is not None and current_state != expected_state:
+                        return state
+
+                    if expected_state is None and current_state == "open":
+                        return state
+
+                    if current_state in {"closed", "half_open"}:
+                        state["state"] = "closed"
+                        state["failure_count"] = 0
+                        state["half_open_probe_active"] = False
+                        pipe.multi()
+                        pipe.hset(key, mapping=self._state_to_mapping(state))
+                        pipe.expire(key, self._compute_ttl(state))
+                        pipe.execute()
+
+                    return state
+                except Exception as exc:
+                    if self._watch_retryable(exc):
+                        time.sleep(0.001 * (2**attempt))
+                        continue
+                    raise
+                finally:
+                    pipe.reset()
+        raise RuntimeError(
+            f"Failed to atomically record success for {backend!r} after 3 retries",
         )
 
 

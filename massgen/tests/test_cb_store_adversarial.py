@@ -124,7 +124,10 @@ class TestAdversarialInMemoryStoreConcurrency:
     def test_concurrent_increment_failure_100_threads(self) -> None:
         store = InMemoryStore()
 
-        threads = [threading.Thread(target=store.increment_failure, args=("backend",)) for _ in range(100)]
+        threads = [
+            threading.Thread(target=store.increment_failure, args=("backend",))
+            for _ in range(100)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -168,7 +171,14 @@ class TestAdversarialInMemoryStoreConcurrency:
                 with exception_lock:
                     exceptions.append(exc)
 
-        threads = [threading.Thread(target=run_safely, args=(store.increment_failure,)) for _ in range(50)] + [threading.Thread(target=run_safely, args=(store.clear,)) for _ in range(50)]
+        threads = [
+            threading.Thread(target=run_safely, args=(store.increment_failure,))
+            for _ in range(50)
+        ]
+        threads.extend(
+            threading.Thread(target=run_safely, args=(store.clear,))
+            for _ in range(50)
+        )
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -200,7 +210,8 @@ class TestAdversarialInMemoryStoreConcurrency:
                 with lock:
                     exceptions.append(exc)
 
-        threads = [threading.Thread(target=set_open_state) for _ in range(50)] + [threading.Thread(target=get_state) for _ in range(50)]
+        threads = [threading.Thread(target=set_open_state) for _ in range(50)]
+        threads.extend(threading.Thread(target=get_state) for _ in range(50))
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -259,7 +270,10 @@ class TestAdversarialRedisStore:
 
         assert client.ttl("massgen:cb:backend") >= ttl_before - 1
 
-    def test_redis_store_increment_without_lua_preserves_open_state_ttl(self, monkeypatch) -> None:
+    def test_redis_store_increment_without_lua_preserves_open_state_ttl(
+        self,
+        monkeypatch,
+    ) -> None:
         client = _fake_redis()
         store = RedisStore(client, ttl=1)
         open_until = time.monotonic() + 120
@@ -278,7 +292,10 @@ class TestAdversarialRedisStore:
 
         assert client.ttl("massgen:cb:backend") >= ttl_before - 1
 
-    def test_redis_store_increment_without_lua_retry_exhaustion_raises(self, monkeypatch) -> None:
+    def test_redis_store_increment_without_lua_retry_exhaustion_raises(
+        self,
+        monkeypatch,
+    ) -> None:
         store = RedisStore(_fake_redis())
 
         def raise_unknown_command(*args: Any, **kwargs: Any) -> None:
@@ -289,11 +306,18 @@ class TestAdversarialRedisStore:
                 raise RuntimeError("watch conflict")
 
         monkeypatch.setattr(store._client, "eval", raise_unknown_command)
-        monkeypatch.setattr(store._client, "pipeline", lambda transaction=True: FailingWatchPipeline())
+        monkeypatch.setattr(
+            store._client,
+            "pipeline",
+            lambda transaction=True: FailingWatchPipeline(),
+        )
 
         with pytest.raises(
             RuntimeError,
-            match="Failed to atomically increment failure count for 'backend' after 3 retries",
+            match=(
+                "Failed to atomically increment failure count for 'backend' "
+                "after 3 retries"
+            ),
         ):
             store.increment_failure("backend")
 
@@ -357,7 +381,7 @@ class TestAdversarialRedisStore:
         assert state == DEFAULT_CIRCUIT_BREAKER_STATE
 
     def test_redis_store_cas_without_lua_only_one_winner(self, monkeypatch) -> None:
-        """Concurrent CAS through non-Lua fallback: exactly 1 thread wins closed->open."""
+        """Concurrent CAS fallback allows exactly one closed-to-open winner."""
         client = _fake_redis()
         store = RedisStore(client)
 
@@ -380,10 +404,10 @@ class TestAdversarialRedisStore:
                 results.append(res)
 
         threads = [threading.Thread(target=attempt) for _ in range(20)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
         assert results.count(True) == 1
         assert results.count(False) == 19
@@ -530,7 +554,7 @@ class TestAdversarialCBIntegration:
         assert cb.state == CircuitState.CLOSED
         assert store.get_state("test")["failure_count"] == 0
 
-    def test_open_record_success_closes_circuit(self) -> None:
+    def test_open_record_success_does_not_close_forced_open_circuit(self) -> None:
         config = LLMCircuitBreakerConfig(enabled=True, max_failures=1)
         store = InMemoryStore()
         cb = LLMCircuitBreaker(config, backend_name="test", store=store)
@@ -540,8 +564,8 @@ class TestAdversarialCBIntegration:
 
         cb.record_success()
 
-        assert cb.state == CircuitState.CLOSED
-        assert store.get_state("test")["failure_count"] == 0
+        assert cb.state == CircuitState.OPEN
+        assert store.get_state("test")["state"] == "open"
 
     def test_state_machine_all_closed_transitions(self) -> None:
         store = InMemoryStore()
@@ -628,17 +652,22 @@ class TestAdversarialCBIntegration:
         assert cb.state == CircuitState.HALF_OPEN
 
     def test_exception_during_store_raises_propagates(self) -> None:
-        class RaisingSetStateStore(InMemoryStore):
-            def set_state(self, backend: str, state: dict) -> None:
-                raise RuntimeError("set_state failed")
+        class RaisingAtomicFailureStore(InMemoryStore):
+            def atomic_record_failure(
+                self,
+                backend: str,
+                failure_threshold: int,
+                recovery_timeout: float,
+            ) -> dict:
+                raise RuntimeError("atomic_record_failure failed")
 
         cb = LLMCircuitBreaker(
             config=_enabled_config(max_failures=1),
             backend_name="backend",
-            store=RaisingSetStateStore(),
+            store=RaisingAtomicFailureStore(),
         )
 
-        with pytest.raises(RuntimeError, match="set_state failed"):
+        with pytest.raises(RuntimeError, match="atomic_record_failure failed"):
             cb.record_failure()
 
     def test_rule_45_no_mutation_before_validation(self) -> None:
@@ -664,10 +693,18 @@ class TestAdversarialCBIntegration:
             store=store,
         )
 
-        def fail_set_state(self: InMemoryStore, backend: str, state: dict) -> None:
+        def fail_atomic_record_success(
+            self: InMemoryStore,
+            backend: str,
+            expected_state: str | None = None,
+        ) -> dict:
             raise RuntimeError("write failed")
 
-        monkeypatch.setattr(InMemoryStore, "set_state", fail_set_state)
+        monkeypatch.setattr(
+            InMemoryStore,
+            "atomic_record_success",
+            fail_atomic_record_success,
+        )
 
         with pytest.raises(RuntimeError, match="write failed"):
             cb.record_success()
@@ -727,3 +764,95 @@ class TestAdversarialCBIntegration:
         assert backend_a.state == CircuitState.OPEN
         assert backend_b.state == CircuitState.CLOSED
         assert backend_b.failure_count == 0
+
+
+class TestConcurrentLinearizability:
+    def test_100_threads_mixed_failure_success_linearizable(self) -> None:
+        store = InMemoryStore()
+        failure_count = 50
+        success_count = 50
+
+        threads = [
+            threading.Thread(
+                target=store.atomic_record_failure,
+                args=("claude", 200, 30.0),
+            )
+            for _ in range(failure_count)
+        ]
+        threads.extend(
+            threading.Thread(target=store.atomic_record_success, args=("claude",))
+            for _ in range(success_count)
+        )
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        state = store.get_state("claude")
+        assert state["state"] == "closed"
+        assert 0 <= state["failure_count"] <= failure_count
+        assert state["half_open_probe_active"] is False
+
+
+class TestForceOpenRace:
+    def test_force_open_wins_over_concurrent_record_success(self) -> None:
+        success_read = threading.Event()
+        force_open_done = threading.Event()
+
+        class CoordinatedStore(InMemoryStore):
+            def get_state(self, backend: str) -> dict:
+                state = super().get_state(backend)
+                if threading.current_thread().name == "record-success":
+                    success_read.set()
+                    assert force_open_done.wait(timeout=5)
+                return state
+
+        store = CoordinatedStore()
+        cb = LLMCircuitBreaker(
+            config=_enabled_config(max_failures=10, reset_time_seconds=30),
+            backend_name="claude",
+            store=store,
+        )
+
+        def force_open() -> None:
+            assert success_read.wait(timeout=5)
+            cb.force_open("quota", open_for_seconds=30)
+            force_open_done.set()
+
+        def record_success() -> None:
+            cb.record_success()
+
+        threads = [
+            threading.Thread(target=force_open),
+            threading.Thread(target=record_success, name="record-success"),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert cb.state == CircuitState.OPEN
+        assert store.get_state("claude")["state"] == "open"
+
+
+class TestAtomicFailureOrdering:
+    def test_failure_count_never_exceeds_thread_count(self) -> None:
+        store = InMemoryStore()
+        thread_count = 100
+
+        threads = [
+            threading.Thread(
+                target=store.atomic_record_failure,
+                args=("claude", 200, 30.0),
+            )
+            for _ in range(thread_count)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        state = store.get_state("claude")
+        assert state["failure_count"] == thread_count
+        assert state["failure_count"] <= thread_count

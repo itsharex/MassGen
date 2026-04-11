@@ -123,7 +123,10 @@ class TestInMemoryStoreThreadSafety:
     def test_concurrent_increment_failure_100_threads(self):
         store = InMemoryStore()
 
-        threads = [threading.Thread(target=store.increment_failure, args=("claude",)) for _ in range(100)]
+        threads = [
+            threading.Thread(target=store.increment_failure, args=("claude",))
+            for _ in range(100)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -149,6 +152,130 @@ class TestInMemoryStoreThreadSafety:
 
         assert results.count(True) == 1
         assert results.count(False) == 99
+
+
+class TestInMemoryStoreAtomicRecordFailure:
+    def test_basic_increment_increments_count(self):
+        store = InMemoryStore()
+
+        state = store.atomic_record_failure(
+            "claude",
+            failure_threshold=3,
+            recovery_timeout=1.0,
+        )
+
+        assert state["failure_count"] == 1
+        assert store.get_state("claude")["failure_count"] == 1
+
+    def test_closed_to_open_transition_at_threshold(self):
+        store = InMemoryStore()
+
+        for _ in range(3):
+            state = store.atomic_record_failure(
+                "claude",
+                failure_threshold=3,
+                recovery_timeout=1.0,
+            )
+
+        assert state["state"] == "open"
+        assert state["failure_count"] == 3
+        assert state["open_until"] > state["last_failure_time"]
+
+    def test_half_open_to_open_on_any_failure(self):
+        store = InMemoryStore()
+        store.set_state(
+            "claude",
+            {"state": "half_open", "half_open_probe_active": True},
+        )
+
+        state = store.atomic_record_failure(
+            "claude",
+            failure_threshold=5,
+            recovery_timeout=1.0,
+        )
+
+        assert state["state"] == "open"
+        assert state["half_open_probe_active"] is False
+        assert state["failure_count"] == 1
+
+    def test_below_threshold_stays_closed(self):
+        store = InMemoryStore()
+
+        for _ in range(3):
+            state = store.atomic_record_failure(
+                "claude",
+                failure_threshold=5,
+                recovery_timeout=1.0,
+            )
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 3
+
+    def test_concurrent_100_threads_exact_count(self):
+        store = InMemoryStore()
+
+        threads = [
+            threading.Thread(
+                target=store.atomic_record_failure,
+                args=("claude", 200, 1.0),
+            )
+            for _ in range(100)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert store.get_state("claude")["failure_count"] == 100
+
+
+class TestInMemoryStoreAtomicRecordSuccess:
+    def test_closed_resets_failure_count(self):
+        store = InMemoryStore()
+        store.set_state("claude", {"state": "closed", "failure_count": 5})
+
+        state = store.atomic_record_success("claude")
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 0
+        assert state["half_open_probe_active"] is False
+
+    def test_half_open_transitions_to_closed(self):
+        store = InMemoryStore()
+        store.set_state(
+            "claude",
+            {
+                "state": "half_open",
+                "failure_count": 5,
+                "half_open_probe_active": True,
+            },
+        )
+
+        state = store.atomic_record_success("claude")
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 0
+        assert state["half_open_probe_active"] is False
+
+    def test_open_with_no_expected_state_is_noop(self):
+        store = InMemoryStore()
+        expected = _open_state(failure_count=5, half_open_probe_active=False)
+        store.set_state("claude", expected)
+
+        state = store.atomic_record_success("claude")
+
+        assert state == expected
+        assert store.get_state("claude") == expected
+
+    def test_expected_state_mismatch_is_noop(self):
+        store = InMemoryStore()
+        expected = {"state": "closed", "failure_count": 5}
+        store.set_state("claude", expected)
+
+        state = store.atomic_record_success("claude", expected_state="half_open")
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 5
 
 
 class TestRedisStoreHappyPath:
@@ -204,6 +331,130 @@ class TestRedisStoreHappyPath:
         store.set_state("claude", DEFAULT_CIRCUIT_BREAKER_STATE)
 
         assert client.ttl("massgen:cb:claude") == 123
+
+
+class TestRedisStoreAtomicRecordFailure:
+    def test_basic_increment_increments_count(self):
+        store = RedisStore(_fake_redis())
+
+        state = store.atomic_record_failure(
+            "claude",
+            failure_threshold=3,
+            recovery_timeout=1.0,
+        )
+
+        assert state["failure_count"] == 1
+        assert store.get_state("claude")["failure_count"] == 1
+
+    def test_closed_to_open_transition_at_threshold(self):
+        store = RedisStore(_fake_redis())
+
+        for _ in range(3):
+            state = store.atomic_record_failure(
+                "claude",
+                failure_threshold=3,
+                recovery_timeout=1.0,
+            )
+
+        assert state["state"] == "open"
+        assert state["failure_count"] == 3
+        assert state["open_until"] > state["last_failure_time"]
+
+    def test_half_open_to_open_on_any_failure(self):
+        store = RedisStore(_fake_redis())
+        store.set_state(
+            "claude",
+            {"state": "half_open", "half_open_probe_active": True},
+        )
+
+        state = store.atomic_record_failure(
+            "claude",
+            failure_threshold=5,
+            recovery_timeout=1.0,
+        )
+
+        assert state["state"] == "open"
+        assert state["half_open_probe_active"] is False
+        assert state["failure_count"] == 1
+
+    def test_below_threshold_stays_closed(self):
+        store = RedisStore(_fake_redis())
+
+        for _ in range(3):
+            state = store.atomic_record_failure(
+                "claude",
+                failure_threshold=5,
+                recovery_timeout=1.0,
+            )
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 3
+
+    def test_concurrent_100_threads_exact_count(self):
+        store = RedisStore(_fake_redis())
+
+        threads = [
+            threading.Thread(
+                target=store.atomic_record_failure,
+                args=("claude", 200, 1.0),
+            )
+            for _ in range(100)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert store.get_state("claude")["failure_count"] == 100
+
+
+class TestRedisStoreAtomicRecordSuccess:
+    def test_closed_resets_failure_count(self):
+        store = RedisStore(_fake_redis())
+        store.set_state("claude", {"state": "closed", "failure_count": 5})
+
+        state = store.atomic_record_success("claude")
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 0
+        assert state["half_open_probe_active"] is False
+
+    def test_half_open_transitions_to_closed(self):
+        store = RedisStore(_fake_redis())
+        store.set_state(
+            "claude",
+            {
+                "state": "half_open",
+                "failure_count": 5,
+                "half_open_probe_active": True,
+            },
+        )
+
+        state = store.atomic_record_success("claude")
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 0
+        assert state["half_open_probe_active"] is False
+
+    def test_open_with_no_expected_state_is_noop(self):
+        store = RedisStore(_fake_redis())
+        expected = _open_state(failure_count=5, half_open_probe_active=False)
+        store.set_state("claude", expected)
+
+        state = store.atomic_record_success("claude")
+
+        assert state == expected
+        assert store.get_state("claude") == expected
+
+    def test_expected_state_mismatch_is_noop(self):
+        store = RedisStore(_fake_redis())
+        expected = {"state": "closed", "failure_count": 5}
+        store.set_state("claude", expected)
+
+        state = store.atomic_record_success("claude", expected_state="half_open")
+
+        assert state["state"] == "closed"
+        assert state["failure_count"] == 5
 
 
 class TestMakeStore:
