@@ -602,3 +602,89 @@ class TestAdversarialRound5:
         completed = done_event.wait(timeout=5.0)
         assert completed, "Deadlock: record_state_transition did not complete within 5s"
         assert deadlock_errors == [], f"Errors during reentrant call: {deadlock_errors}"
+
+
+# ---------------------------------------------------------------------------
+# Category 6: Mid-retry probe ownership transfer regression
+# ---------------------------------------------------------------------------
+
+
+class TestAdversarialMidRetryProbeTransfer:
+    """Regression: _owns_probe tracked dynamically when circuit becomes HALF_OPEN mid-retry.
+
+    Before the fix, _probe_was_half_open was a stale snapshot captured before the
+    retry loop. If the circuit transitioned OPEN->HALF_OPEN on a later attempt, the
+    except-BaseException cleanup ignored it and left _half_open_probe_active=True,
+    wedging the breaker permanently.
+    """
+
+    def setup_method(self) -> None:
+        _remove_fake()
+        _build_fake_prometheus_with_counters()
+
+    def teardown_method(self) -> None:
+        _remove_fake()
+
+    @pytest.mark.asyncio
+    async def test_probe_flag_cleared_after_mid_retry_half_open(self) -> None:
+        """Probe flag is cleared and breaker closes when OPEN->HALF_OPEN transition occurs mid-retry."""
+        import time as _time
+
+        cb = LLMCircuitBreaker(
+            backend_name="test_mid_retry",
+            config=LLMCircuitBreakerConfig(
+                max_failures=1,
+                reset_time_seconds=999.0,
+                enabled=True,
+            ),
+        )
+
+        # Trip the breaker to OPEN
+        cb.record_failure(error_type="test")
+        assert cb.state == CircuitState.OPEN
+
+        # Expire the open window so the NEXT should_block() call transitions to HALF_OPEN
+        # (simulating time passage between circuit open and call attempt)
+        cb._open_until = _time.monotonic() - 1.0
+
+        # coro_factory: first call succeeds (probe success -> CLOSED)
+        # The circuit is OPEN at call_with_retry entry, but should_block() will
+        # transition it to HALF_OPEN and allow this call through as the probe.
+        async def succeed_on_first():
+            return "ok"
+
+        result = await cb.call_with_retry(succeed_on_first, max_retries=1)
+        assert result == "ok"
+        assert cb._half_open_probe_active is False, "_half_open_probe_active must be False after successful probe"
+        assert cb.state == CircuitState.CLOSED, "Breaker must be CLOSED after successful probe"
+
+    @pytest.mark.asyncio
+    async def test_probe_flag_cleared_on_failed_mid_retry_half_open(self) -> None:
+        """Probe flag is cleared and breaker is OPEN when probe acquired mid-retry then fails."""
+        import time as _time
+
+        cb = LLMCircuitBreaker(
+            backend_name="test_mid_retry_fail",
+            config=LLMCircuitBreakerConfig(
+                max_failures=1,
+                reset_time_seconds=999.0,
+                enabled=True,
+            ),
+        )
+
+        # Trip the breaker to OPEN
+        cb.record_failure(error_type="test")
+        assert cb.state == CircuitState.OPEN
+
+        # Expire the window so should_block() transitions to HALF_OPEN
+        cb._open_until = _time.monotonic() - 1.0
+
+        async def always_fail():
+            raise ValueError("probe failure")
+
+        with pytest.raises(ValueError, match="probe failure"):
+            await cb.call_with_retry(always_fail, max_retries=1)
+
+        # Probe failed -- breaker must be re-opened, flag must be cleared
+        assert cb._half_open_probe_active is False, "_half_open_probe_active must be False after failed probe"
+        assert cb.state == CircuitState.OPEN, "Breaker must be OPEN after failed probe"

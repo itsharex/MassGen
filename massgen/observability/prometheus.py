@@ -50,6 +50,11 @@ class CircuitBreakerMetrics:
     _LATENCY_BUCKETS = (0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600)
 
     def __init__(self) -> None:
+        """Initialize the metrics collector in a deferred (lazy) state.
+
+        No Prometheus objects are created here. The first call to any
+        record_* method triggers lazy initialization via _ensure_metrics.
+        """
         self._available: bool | None = None
         self._lock = RLock()
         self._registry: Any = None
@@ -115,14 +120,25 @@ class CircuitBreakerMetrics:
             )
 
     def get_registry(self) -> Any:
-        """Return this instance's custom Prometheus registry, if available."""
+        """Return this instance's custom Prometheus registry, if available.
+
+        Returns:
+            The CollectorRegistry used by this instance, or None if
+            prometheus_client is not installed or initialization failed.
+        """
         if not self._ensure_metrics():
             return None
 
         return self._registry
 
     def _ensure_metrics(self) -> bool:
-        """Initialize Prometheus metrics lazily."""
+        """Initialize Prometheus metrics lazily on first use.
+
+        Returns:
+            True if metrics are available and initialized, False otherwise.
+            Once False is returned the result is cached and subsequent calls
+            skip initialization entirely.
+        """
         if self._available is False:
             return False
         if self._available is True:
@@ -184,5 +200,13 @@ class CircuitBreakerMetrics:
             return True
 
     def _state_value(self, state: str) -> int:
-        """Return the numeric gauge value for a circuit breaker state."""
+        """Return the numeric gauge value for a circuit breaker state string.
+
+        Args:
+            state: State name, case-insensitive (e.g. "closed", "OPEN").
+
+        Returns:
+            Integer gauge value: 0 for CLOSED, 1 for HALF_OPEN, 2 for OPEN.
+            Returns -1 for unknown state strings.
+        """
         return self._STATE_VALUES.get(state.upper(), -1)
