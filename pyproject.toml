@@ -131,6 +131,7 @@ all = [
 [project.scripts]
 massgen = "massgen.cli:cli_main"
 massgen-checkpoint-mcp = "massgen.mcp_tools.standalone.checkpoint_mcp_server:main"
+massgen-checkpoint-setup = "massgen.mcp_tools.standalone.setup_instructions:main"
 
 [project.urls]
 Homepage = "https://github.com/Leezekun/MassGen"
