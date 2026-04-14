@@ -294,10 +294,28 @@ end
 if current_state ~= ARGV[1] then
     return 0
 end
-for i = 3, #ARGV, 2 do
+for i = 4, #ARGV, 2 do
 redis.call("HSET", KEYS[1], ARGV[i], ARGV[i + 1])
 end
-redis.call("EXPIRE", KEYS[1], ARGV[2])
+local base_ttl = tonumber(ARGV[2])
+local half_open_probe_ttl = tonumber(ARGV[3])
+local final_state = redis.call("HGET", KEYS[1], "state")
+if final_state == false then final_state = "closed" end
+local effective_ttl = base_ttl
+if final_state == "open" then
+    local open_until = tonumber(redis.call("HGET", KEYS[1], "open_until") or "0")
+    local t = redis.call("TIME")
+    local now = tonumber(t[1])
+    local remaining = open_until - now
+    if remaining + 60 > effective_ttl then effective_ttl = math.ceil(remaining + 60) end
+elseif final_state == "half_open" then
+    local probe_active = redis.call("HGET", KEYS[1], "half_open_probe_active")
+    if probe_active == "True" then
+        if half_open_probe_ttl > effective_ttl then effective_ttl = half_open_probe_ttl end
+    end
+end
+if effective_ttl < 1 then effective_ttl = 1 end
+redis.call("EXPIRE", KEYS[1], effective_ttl)
 return 1
 """
 
@@ -586,7 +604,9 @@ return {
         # Probe TTL must be at least as long as the base TTL so the
         # half_open state survives a long probe request even when callers
         # configure a small base TTL.
-        self._half_open_probe_ttl = max(ttl, half_open_probe_ttl) if half_open_probe_ttl is not None else ttl
+        self._half_open_probe_ttl = (
+            max(ttl, half_open_probe_ttl) if half_open_probe_ttl is not None else ttl
+        )
         self._fallback_lock = threading.Lock()
 
     def get_state(self, backend: str) -> dict:
@@ -597,12 +617,19 @@ return {
         key = self._key(backend)
         complete_state = _default_state()
         complete_state.update(copy.deepcopy(state))
-        mapping = {field: self._to_redis_value(complete_state[field]) for field in DEFAULT_CIRCUIT_BREAKER_STATE}
+        mapping = {
+            field: self._to_redis_value(complete_state[field])
+            for field in DEFAULT_CIRCUIT_BREAKER_STATE
+        }
         self._client.hset(key, mapping=mapping)
         self._client.expire(key, self._compute_ttl(complete_state))
 
     def cas_state(self, backend: str, expected_state: str, updates: dict) -> bool:
-        args: list[Any] = [expected_state, str(self._compute_ttl(updates))]
+        args: list[Any] = [
+            expected_state,
+            str(self._ttl),
+            str(self._half_open_probe_ttl),
+        ]
         for field, value in updates.items():
             args.extend([field, self._to_redis_value(value)])
         try:
@@ -788,7 +815,10 @@ return {
         return self._state_from_items(zip(pairs[0::2], pairs[1::2], strict=True))
 
     def _state_to_mapping(self, state: dict) -> dict:
-        return {field: self._to_redis_value(state[field]) for field in DEFAULT_CIRCUIT_BREAKER_STATE}
+        return {
+            field: self._to_redis_value(state[field])
+            for field in DEFAULT_CIRCUIT_BREAKER_STATE
+        }
 
     @staticmethod
     def _script_unavailable(exc: Exception) -> bool:
@@ -796,7 +826,11 @@ return {
         # Require "unknown command" context to avoid classifying READONLY,
         # ACL-denied, proxy, or other operational errors as Lua unavailability.
         message = str(exc).lower()
-        unknown_command = "unknown command" in message or "unknown redis command" in message or "err unknown command" in message
+        unknown_command = (
+            "unknown command" in message
+            or "unknown redis command" in message
+            or "err unknown command" in message
+        )
         mentions_script_command = "eval" in message or "evalsha" in message
         return "lupa" in message or (unknown_command and mentions_script_command)
 
@@ -805,7 +839,9 @@ return {
             open_until = float(updates.get("open_until", 0))
             remaining = int(open_until - time.time())
             return max(1, self._ttl, remaining + 60)
-        if updates.get("state") == "half_open" and updates.get("half_open_probe_active"):
+        if updates.get("state") == "half_open" and updates.get(
+            "half_open_probe_active"
+        ):
             return max(1, self._half_open_probe_ttl)
         return max(1, self._ttl)
 
@@ -813,7 +849,13 @@ return {
     def _watch_retryable(exc: Exception) -> bool:
         err_msg = str(exc).lower()
         class_name = exc.__class__.__name__.lower()
-        return "watch" in err_msg or "execabort" in err_msg or "multi" in err_msg or "wrongtype" in err_msg or class_name == "watcherror"
+        return (
+            "watch" in err_msg
+            or "execabort" in err_msg
+            or "multi" in err_msg
+            or "wrongtype" in err_msg
+            or class_name == "watcherror"
+        )
 
     def _cas_state_without_lua(
         self,
@@ -834,16 +876,23 @@ return {
                 if current != expected_state:
                     pipe.reset()
                     return False
+                existing = self._state_from_items(self._client.hgetall(key).items())
+                existing.update(updates)
                 pipe.multi()
                 for field, value in updates.items():
                     pipe.hset(key, field, self._to_redis_value(value))
-                effective_ttl = self._compute_ttl(updates)
+                effective_ttl = self._compute_ttl(existing)
                 pipe.expire(key, effective_ttl)
                 pipe.execute()
                 return True
             except Exception as exc:
                 err_msg = str(exc).lower()
-                if "watch" in err_msg or "multi" in err_msg or "wrongtype" in err_msg or "execabort" in err_msg:
+                if (
+                    "watch" in err_msg
+                    or "multi" in err_msg
+                    or "wrongtype" in err_msg
+                    or "execabort" in err_msg
+                ):
                     time.sleep(0.001 * (2**attempt))
                     continue
                 raise
@@ -860,7 +909,10 @@ return {
                 state = self.get_state(backend)
                 state["failure_count"] = int(state["failure_count"]) + 1
                 pipe.multi()
-                mapping = {field: self._to_redis_value(state[field]) for field in DEFAULT_CIRCUIT_BREAKER_STATE}
+                mapping = {
+                    field: self._to_redis_value(state[field])
+                    for field in DEFAULT_CIRCUIT_BREAKER_STATE
+                }
                 pipe.hset(key, mapping=mapping)
                 pipe.expire(key, self._compute_ttl(state))
                 pipe.execute()
@@ -874,7 +926,8 @@ return {
             finally:
                 pipe.reset()
         raise RuntimeError(
-            f"Failed to atomically increment failure count for {backend!r} " "after 3 retries",
+            f"Failed to atomically increment failure count for {backend!r} "
+            "after 3 retries",
         )
 
     def _atomic_record_failure_without_lua(
@@ -901,13 +954,18 @@ return {
                         state["state"] = "open"
                         state["open_until"] = now + recovery_timeout
                         state["half_open_probe_active"] = False
-                    elif state["state"] == "closed" and failure_count >= failure_threshold:
+                    elif (
+                        state["state"] == "closed"
+                        and failure_count >= failure_threshold
+                    ):
                         state["state"] = "open"
                         state["open_until"] = now + recovery_timeout
                         state["half_open_probe_active"] = False
                     elif state["state"] == "open":
                         current_open_until = float(state.get("open_until", 0))
-                        state["open_until"] = max(current_open_until, now + recovery_timeout)
+                        state["open_until"] = max(
+                            current_open_until, now + recovery_timeout
+                        )
 
                     pipe.multi()
                     pipe.hset(key, mapping=self._state_to_mapping(state))
