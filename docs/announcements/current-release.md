@@ -7,7 +7,7 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.77 — Answer Now Button! 🚀 New "Answer Now" button lets agents submit answers more quickly, bypassing additional refinement rounds when the answer is already good enough.
+We're excited to release MassGen v0.1.77 — Answer Now Button! 🚀 New "Answer Now" button lets agents submit answers more quickly, both within a round, and bypassing additional refinement rounds when the answer is already good enough.
 
 ## Install
 
@@ -29,7 +29,7 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.77 — Answer Now Button! 🚀 New "Answer Now" button lets agents submit answers more quickly, bypassing additional refinement rounds when the answer is already good enough.
+We're excited to release MassGen v0.1.77 — Answer Now Button! 🚀 New "Answer Now" button lets agents submit answers more quickly, both within a round, and bypassing additional refinement rounds when the answer is already good enough.
 
 **Key Improvements:**
 

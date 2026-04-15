@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Recent Releases
 
 **v0.1.77 (April 15, 2026)** - Answer Now Button
-New "Answer Now" button lets agents submit answers more quickly, bypassing additional refinement rounds when quality is already sufficient.
+New "Answer Now" button lets agents submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is already sufficient.
 
 **v0.1.76 (April 13, 2026)** - Exa Search & Circuit Breaker Observability
 New Exa AI-powered search tool for MCP. Circuit breaker Phase 3 with observability — probe ownership, lock release, per-attempt latency tracking. Copyable checkpoint agent instructions and Docker dependency fixes.
@@ -23,7 +23,7 @@ Hybrid hook system for Codex backend combining native and MCP capabilities. Chec
 ## [0.1.77] - 2026-04-15
 
 ### Added
-- **Answer Now Button** ([#1062](https://github.com/massgen/MassGen/pull/1062)): New "Answer Now" button lets agents submit answers more quickly, bypassing additional refinement rounds when quality is already sufficient
+- **Answer Now Button** ([#1062](https://github.com/massgen/MassGen/pull/1062)): New "Answer Now" button lets agents submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is already sufficient
 
 ### Changed
 - **Updated Checkpoint Instructions**: Refined agent memory instructions for checkpoint MCP

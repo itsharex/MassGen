@@ -160,7 +160,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 **🎉 Released: April 15, 2026**
 
 **What's New in v0.1.77:**
-- **⚡ Answer Now Button** - Agents can submit answers immediately, bypassing additional refinement rounds when quality is sufficient.
+- **⚡ Answer Now Button** - Agents can submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is sufficient.
 
 **Try v0.1.77 Features:**
 ```bash
@@ -1242,7 +1242,7 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 **🎉 Released: April 15, 2026**
 
 #### Answer Now Button
-- **Answer Now Button** ([#1062](https://github.com/massgen/MassGen/pull/1062)): Agents can submit answers immediately, bypassing additional refinement rounds when quality is sufficient
+- **Answer Now Button** ([#1062](https://github.com/massgen/MassGen/pull/1062)): Agents can submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is sufficient
 
 ### Previous Achievements (v0.0.3 - v0.1.76)
 

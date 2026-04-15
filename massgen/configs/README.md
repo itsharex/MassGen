@@ -231,7 +231,7 @@ Most configurations use environment variables for API keys:so
 **New Features:** Answer Now Button
 
 **Key Features:**
-- **Answer Now Button**: Agents can submit answers immediately, bypassing additional refinement rounds when quality is sufficient
+- **Answer Now Button**: Agents can submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is sufficient
 
 **Try It:**
 ```bash

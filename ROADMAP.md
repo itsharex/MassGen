@@ -55,7 +55,7 @@ Want to contribute or collaborate on a specific track? Reach out to the track ow
 **Released:** April 15, 2026 | PRs: [#1062](https://github.com/massgen/MassGen/pull/1062)
 
 ### Features
-- **Answer Now Button**: Agents can submit answers immediately, bypassing additional refinement rounds when quality is already sufficient
+- **Answer Now Button**: Agents can submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is already sufficient
 
 ---
 

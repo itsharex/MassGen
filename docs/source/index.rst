@@ -202,7 +202,7 @@ Recent Releases
 
 **v0.1.77 (April 15, 2026)** - Answer Now Button
 
-New "Answer Now" button lets agents submit answers immediately, bypassing additional refinement rounds when quality is sufficient.
+New "Answer Now" button lets agents submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is sufficient.
 
 **v0.1.76 (April 13, 2026)** - Exa Search & Circuit Breaker Observability
 
